@@ -128,33 +128,101 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
 }
 #sentences-section { flex-shrink: 0; border-bottom: 1px solid var(--border); max-height: 50%; overflow-y: auto; }
-#sentence-list { list-style: none; }
-#sentence-list li {
+.section-sentences { list-style: none; }
+.section-sentences li {
   padding: 7px 10px; cursor: pointer; display: flex; align-items: center; gap: 8px;
   border-bottom: 1px solid rgba(255,255,255,0.04); user-select: none;
   transition: background 0.1s;
 }
-#sentence-list li:hover { background: var(--hover); }
-#sentence-list li .check-box {
+.section-sentences li:hover { background: var(--hover); }
+.section-sentences li .check-box {
   width: 18px; height: 18px; border: 2px solid var(--border); border-radius: 3px;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   transition: all 0.15s;
 }
-#sentence-list li .check-box.checked { background: var(--accent); border-color: var(--accent); }
-#sentence-list li .check-box.checked::after { content: "✓"; color: #1e1e2e; font-size: 13px; font-weight: 700; }
-#sentence-list li .check-box.partial { background: var(--bg3); border-color: var(--fg-dim); }
-#sentence-list li .check-box.partial::after { content: "–"; color: var(--fg-dim); font-size: 14px; font-weight: 700; }
-#sentence-list li .sentence-text { flex: 1; }
-#sentence-list li .sentence-text.partial { color: var(--fg-dim); font-style: italic; }
+.section-sentences li .check-box.checked { background: var(--accent); border-color: var(--accent); }
+.section-sentences li .check-box.checked::after { content: "✓"; color: #1e1e2e; font-size: 13px; font-weight: 700; }
+.section-sentences li .check-box.partial { background: var(--bg3); border-color: var(--fg-dim); }
+.section-sentences li .check-box.partial::after { content: "–"; color: var(--fg-dim); font-size: 14px; font-weight: 700; }
+.section-sentences li .sentence-text { flex: 1; }
+.section-sentences li .sentence-text.partial { color: var(--fg-dim); font-style: italic; }
+.section-sentences li .remove-btn {
+  min-width: 24px; height: 24px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
+  background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
+  display: grid; place-items: center; flex-shrink: 0; padding: 0;
+  font-size: 18px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
+  opacity: 0.9; transition: all 0.15s ease;
+}
+.section-sentences li .remove-btn:hover {
+  background: #f38ba8; color: #1e1e2e; border-color: #f38ba8;
+  transform: scale(1.05);
+}
+.section-sentences li .remove-btn:focus-visible {
+  outline: 2px solid rgba(243,139,168,0.45);
+  outline-offset: 1px;
+}
 
-/* Sentence editor */
-#sentence-editor {
+/* Section add bar (top of right panel) */
+#add-section-bar {
   display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
-#new-sentence-input { flex: 1; padding: 5px 8px; background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; outline: none; }
-#new-sentence-input:focus { border-color: var(--accent); }
-#add-sentence-btn { padding: 5px 12px; background: var(--accent2); color: #1e1e2e; border: none; border-radius: 3px; cursor: pointer; font-weight: 600; }
-#remove-sentence-btn { padding: 5px 10px; background: #f38ba8; color: #1e1e2e; border: none; border-radius: 3px; cursor: pointer; font-weight: 600; font-size: 13px; }
+#add-section-bar button {
+  flex: 1; padding: 5px 12px; background: var(--accent2); color: #1e1e2e; border: none;
+  border-radius: 3px; cursor: pointer; font-weight: 600;
+}
+#add-section-bar button:hover { filter: brightness(1.1); }
+
+/* Section headers */
+.section-header {
+  padding: 5px 10px; display: flex; align-items: center; gap: 6px;
+  background: var(--bg3); cursor: grab; user-select: none;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px; font-weight: 600; color: var(--accent);
+}
+.section-header:hover { background: rgba(137,180,250,0.12); }
+.section-header .drag-handle { color: var(--fg-dim); font-size: 14px; cursor: grab; }
+.section-header .section-name {
+  flex: 1; cursor: text; padding: 1px 4px; border-radius: 3px; min-width: 30px;
+}
+.section-header .section-name:hover { background: rgba(255,255,255,0.08); }
+.section-header .section-name[contenteditable=true] {
+  outline: none; background: var(--bg); border: 1px solid var(--accent);
+}
+.section-header .section-remove-btn {
+  min-width: 22px; height: 22px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
+  background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
+  display: grid; place-items: center; padding: 0; flex-shrink: 0;
+  font-size: 16px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
+  transition: all 0.15s ease;
+}
+.section-header .section-remove-btn:hover {
+  background: #f38ba8; color: #1e1e2e; border-color: #f38ba8;
+  transform: scale(1.05);
+}
+.section-header .section-remove-btn:focus-visible {
+  outline: 2px solid rgba(243,139,168,0.45);
+  outline-offset: 1px;
+}
+.section-header.drag-over { border-bottom: 2px solid var(--accent); }
+.section-header.dragging-section { opacity: 0.5; }
+
+/* Section add-caption row */
+.section-add-row {
+  display: flex; gap: 6px; padding: 4px 10px 6px;
+}
+.section-add-row input {
+  flex: 1; padding: 4px 8px; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 3px; outline: none;
+  font-size: 13px;
+}
+.section-add-row input:focus { border-color: var(--accent); }
+.section-add-row input::placeholder { color: var(--fg-dim); }
+.section-add-row button {
+  padding: 4px 10px; background: var(--accent2); color: #1e1e2e;
+  border: 1px solid rgba(166,227,161,0.35); border-radius: 3px; cursor: pointer;
+  font-weight: 700; font-size: 13px; line-height: 1;
+}
+.section-add-row button:hover { filter: brightness(1.08); border-color: var(--accent2); }
 
 /* Free text */
 #freetext-section { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -169,7 +237,7 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 /* Multi-select info banner */
 #multi-info {
   padding: 6px 10px; background: rgba(137,180,250,0.12); color: var(--accent);
-  font-size: 12px; border-bottom: 1px solid var(--border); display: none; flex-shrink: 0;
+  font-size: 12px; border-top: 1px solid var(--border); display: none; flex-shrink: 0;
 }
 
 /* Scrollbar styling */
@@ -230,23 +298,21 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 
     <!-- RIGHT: captions -->
     <div id="right-panel">
-      <!-- Sentence definition -->
-      <div id="sentence-editor">
-        <input type="text" id="new-sentence-input" placeholder="Add a sentence..." spellcheck="false">
-        <button id="add-sentence-btn">+</button>
-        <button id="remove-sentence-btn" title="Remove selected sentence">−</button>
+      <!-- Add section button -->
+      <div id="add-section-bar">
+        <button id="add-section-btn" title="Add new section">+ Add Section</button>
       </div>
-      <!-- Multi-select info -->
-      <div id="multi-info"></div>
       <!-- Sentence toggles -->
       <div id="sentences-section">
-        <ul id="sentence-list"></ul>
+        <div id="section-container"></div>
       </div>
       <!-- Free text -->
       <div id="freetext-section">
         <div class="panel-header"><span>Free Text</span></div>
         <textarea id="free-text" placeholder="Additional caption text..." disabled></textarea>
       </div>
+      <!-- Multi-select info (at bottom) -->
+      <div id="multi-info"></div>
     </div>
   </div>
 </div>
@@ -258,7 +324,7 @@ const state = {
   images: [],            // [{name, path, size, mtime}, ...]
   selectedPaths: new Set(),
   lastClickedIndex: -1,
-  predefinedSentences: [],
+  sections: [],          // [{name: "", sentences: [...]}, {name: "Lighting", sentences: [...]}, ...]
   // Per-image caption cache: path -> {enabled_sentences: [...], free_text: ""}
   captionCache: {},
   previewPath: null,
@@ -278,10 +344,8 @@ const fileGridContainer = $("#file-grid-container");
 const previewImg = $("#preview-img");
 const previewPlaceholder = $("#preview-placeholder");
 const previewInfo = $("#preview-info");
-const sentenceList = $("#sentence-list");
-const newSentenceInput = $("#new-sentence-input");
-const addSentenceBtn = $("#add-sentence-btn");
-const removeSentenceBtn = $("#remove-sentence-btn");
+const sectionContainer = $("#section-container");
+const addSectionBtn = $("#add-section-btn");
 const freeText = $("#free-text");
 const multiInfo = $("#multi-info");
 
@@ -386,6 +450,16 @@ function preloadPreview(path) {
     .finally(() => previewLoadingSet.delete(path));
 }
 
+function updateFileCountDisplay() {
+  const total = state.images.length;
+  if (total === 0) {
+    fileCount.textContent = "No images";
+    return;
+  }
+  const captioned = state.images.filter(img => img.has_caption).length;
+  fileCount.textContent = `${total} images • ${captioned} captioned`;
+}
+
 // ===== FOLDER LOADING =====
 async function loadFolder() {
   const folder = folderInput.value.trim();
@@ -404,7 +478,7 @@ async function loadFolder() {
     state.images = data.images;
     state.folder = data.folder;
     folderInput.value = data.folder;
-    fileCount.textContent = `${state.images.length} images`;
+    updateFileCountDisplay();
     statusBar.textContent = `Loaded ${state.images.length} images`;
 
     // Save last_folder and load per-folder sentences
@@ -417,7 +491,7 @@ async function loadFolder() {
     const settingsResp = await fetch(`/api/settings?folder=${encodeURIComponent(state.folder)}`);
     if (settingsResp.ok) {
       const settings = await settingsResp.json();
-      state.predefinedSentences = settings.sentences || [];
+      state.sections = settings.sections || [{"name": "", "sentences": []}];
     }
 
     renderGrid();
@@ -486,6 +560,10 @@ function renderGrid() {
     cell.appendChild(dot);
 
     cell.addEventListener("click", (e) => handleThumbClick(i, e));
+    cell.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      fetch(`/api/open-in-explorer?path=${encodeURIComponent(img.path)}`);
+    });
     fileGrid.appendChild(cell);
   }
 }
@@ -494,6 +572,7 @@ function markCaptionIndicator(path, hasCaption) {
   // Update the has_caption flag on the image object
   const img = state.images.find(i => i.path === path);
   if (img) img.has_caption = hasCaption;
+  updateFileCountDisplay();
   // Update DOM
   const cell = fileGrid.querySelector(`[data-path="${CSS.escape(path)}"]`);
   if (cell) {
@@ -741,7 +820,8 @@ function hidePreview() {
 
 // ===== CAPTION DATA =====
 async function loadCaptionData(path) {
-  const sentencesJson = JSON.stringify(state.predefinedSentences);
+  const allSentences = state.sections.flatMap(s => s.sentences);
+  const sentencesJson = JSON.stringify(allSentences);
   try {
     const resp = await fetch(`/api/caption?path=${encodeURIComponent(path)}&sentences=${encodeURIComponent(sentencesJson)}`);
     if (resp.ok) {
@@ -760,7 +840,8 @@ async function loadCaptionData(path) {
 
 async function loadMultiCaptionState() {
   const paths = [...state.selectedPaths];
-  const sentencesJson = JSON.stringify(state.predefinedSentences);
+  const allSentences = state.sections.flatMap(s => s.sentences);
+  const sentencesJson = JSON.stringify(allSentences);
 
   // Batch load captions
   try {
@@ -788,7 +869,7 @@ function updateMultiInfo() {
 
 // ===== SENTENCES =====
 let _saveSentencesTimeout = null;
-function saveSentencesToStorage() {
+function saveSectionsToStorage() {
   // Debounce saves to avoid hammering the server during rapid edits
   if (_saveSentencesTimeout) clearTimeout(_saveSentencesTimeout);
   _saveSentencesTimeout = setTimeout(() => {
@@ -796,72 +877,220 @@ function saveSentencesToStorage() {
     fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sentences: state.predefinedSentences, folder: state.folder }),
-    }).catch(err => console.error("Failed to save sentences:", err));
+      body: JSON.stringify({ sections: state.sections, folder: state.folder }),
+    }).catch(err => console.error("Failed to save sections:", err));
   }, 300);
 }
 
-function addSentence() {
-  const text = newSentenceInput.value.trim();
-  if (!text || state.predefinedSentences.includes(text)) return;
-  state.predefinedSentences.push(text);
-  saveSentencesToStorage();
-  newSentenceInput.value = "";
+function addSentenceToSection(secIdx, text) {
+  if (!text) return;
+  const allSentences = state.sections.flatMap(s => s.sentences);
+  if (allSentences.includes(text)) return;
+  if (secIdx >= 0 && secIdx < state.sections.length) {
+    state.sections[secIdx].sentences.push(text);
+  }
+  saveSectionsToStorage();
   renderSentences();
 }
 
 function removeSentence(sentence) {
-  state.predefinedSentences = state.predefinedSentences.filter(s => s !== sentence);
-  saveSentencesToStorage();
+  for (const sec of state.sections) {
+    sec.sentences = sec.sentences.filter(s => s !== sentence);
+  }
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function addSection() {
+  const name = prompt("Section name:");
+  if (!name || !name.trim()) return;
+  state.sections.push({ name: name.trim(), sentences: [] });
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function deleteSection(index) {
+  const sec = state.sections[index];
+  const label = sec.name || "(General)";
+  if (!confirm(`Delete section "${label}" and its ${sec.sentences.length} sentence(s)?`)) return;
+  state.sections.splice(index, 1);
+  if (state.sections.length === 0) {
+    state.sections.push({ name: "", sentences: [] });
+  }
+  saveSectionsToStorage();
   renderSentences();
 }
 
 function renderSentences() {
-  sentenceList.innerHTML = "";
+  sectionContainer.innerHTML = "";
   const selectedPaths = [...state.selectedPaths];
 
-  for (const sentence of state.predefinedSentences) {
-    const li = document.createElement("li");
+  // Render each section
+  state.sections.forEach((section, secIdx) => {
+    const group = document.createElement("div");
+    group.className = "section-group";
+    group.dataset.sectionIdx = secIdx;
 
-    // Determine state across all selected images
-    let enabledCount = 0;
-    let totalCount = selectedPaths.length;
-    for (const path of selectedPaths) {
-      const cap = state.captionCache[path];
-      if (cap && cap.enabled_sentences && cap.enabled_sentences.includes(sentence)) {
-        enabledCount++;
+    // Section header
+    const header = document.createElement("div");
+    header.className = "section-header";
+    header.draggable = true;
+
+    const dragHandle = document.createElement("span");
+    dragHandle.className = "drag-handle";
+    dragHandle.textContent = "\u2800\u2801\u2802\u2803";
+    header.appendChild(dragHandle);
+
+    const nameSpan = document.createElement("span");
+    nameSpan.className = "section-name";
+    nameSpan.textContent = section.name || "(General)";
+    nameSpan.addEventListener("click", (e) => {
+      e.stopPropagation();
+      nameSpan.contentEditable = "true";
+      nameSpan.focus();
+      // Select all text
+      const range = document.createRange();
+      range.selectNodeContents(nameSpan);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+    nameSpan.addEventListener("blur", () => {
+      nameSpan.contentEditable = "false";
+      const newName = nameSpan.textContent.trim();
+      if (newName !== section.name) {
+        section.name = newName;
+        saveSectionsToStorage();
       }
+    });
+    nameSpan.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); nameSpan.blur(); }
+      if (e.key === "Escape") { nameSpan.textContent = section.name || "(General)"; nameSpan.blur(); }
+    });
+    // Prevent drag when editing name
+    nameSpan.addEventListener("mousedown", (e) => {
+      if (nameSpan.contentEditable === "true") e.stopPropagation();
+    });
+    header.appendChild(nameSpan);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "section-remove-btn";
+    removeBtn.textContent = "\u00D7";
+    removeBtn.title = "Delete section";
+    removeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteSection(secIdx);
+    });
+    header.appendChild(removeBtn);
+
+    // Drag events for section reordering
+    header.addEventListener("dragstart", (e) => {
+      if (nameSpan.contentEditable === "true") { e.preventDefault(); return; }
+      e.dataTransfer.setData("text/plain", String(secIdx));
+      e.dataTransfer.effectAllowed = "move";
+      header.classList.add("dragging-section");
+    });
+    header.addEventListener("dragend", () => {
+      header.classList.remove("dragging-section");
+      document.querySelectorAll(".section-header.drag-over").forEach(h => h.classList.remove("drag-over"));
+    });
+    header.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      header.classList.add("drag-over");
+    });
+    header.addEventListener("dragleave", () => {
+      header.classList.remove("drag-over");
+    });
+    header.addEventListener("drop", (e) => {
+      e.preventDefault();
+      header.classList.remove("drag-over");
+      const fromIdx = parseInt(e.dataTransfer.getData("text/plain"));
+      const toIdx = secIdx;
+      if (fromIdx !== toIdx) {
+        const [moved] = state.sections.splice(fromIdx, 1);
+        state.sections.splice(toIdx, 0, moved);
+        saveSectionsToStorage();
+        renderSentences();
+      }
+    });
+
+    group.appendChild(header);
+
+    // Sentence list under this section
+    const ul = document.createElement("ul");
+    ul.className = "section-sentences";
+
+    for (const sentence of section.sentences) {
+      const li = document.createElement("li");
+
+      let enabledCount = 0;
+      let totalCount = selectedPaths.length;
+      for (const path of selectedPaths) {
+        const cap = state.captionCache[path];
+        if (cap && cap.enabled_sentences && cap.enabled_sentences.includes(sentence)) {
+          enabledCount++;
+        }
+      }
+
+      const isChecked = totalCount > 0 && enabledCount === totalCount;
+      const isPartial = totalCount > 0 && enabledCount > 0 && enabledCount < totalCount;
+
+      const checkBox = document.createElement("div");
+      checkBox.className = "check-box";
+      if (isChecked) checkBox.classList.add("checked");
+      else if (isPartial) checkBox.classList.add("partial");
+
+      const textSpan = document.createElement("span");
+      textSpan.className = "sentence-text";
+      if (isPartial) textSpan.classList.add("partial");
+      textSpan.textContent = sentence;
+
+      const rmBtn = document.createElement("button");
+      rmBtn.className = "remove-btn";
+      rmBtn.textContent = "\u00D7";
+      rmBtn.title = "Remove sentence";
+      rmBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        removeSentence(sentence);
+      });
+
+      li.appendChild(checkBox);
+      li.appendChild(textSpan);
+      li.appendChild(rmBtn);
+
+      li.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleSentence(sentence, isChecked, isPartial);
+      });
+
+      ul.appendChild(li);
     }
 
-    const isChecked = totalCount > 0 && enabledCount === totalCount;
-    const isPartial = totalCount > 0 && enabledCount > 0 && enabledCount < totalCount;
-    const isUnchecked = enabledCount === 0;
+    group.appendChild(ul);
 
-    const checkBox = document.createElement("div");
-    checkBox.className = "check-box";
-    if (isChecked) checkBox.classList.add("checked");
-    else if (isPartial) checkBox.classList.add("partial");
-
-    const textSpan = document.createElement("span");
-    textSpan.className = "sentence-text";
-    if (isPartial) textSpan.classList.add("partial");
-    textSpan.textContent = sentence;
-
-    li.appendChild(checkBox);
-    li.appendChild(textSpan);
-
-    li.addEventListener("click", (e) => {
-      e.stopPropagation();
-      toggleSentence(sentence, isChecked, isPartial);
+    // Add sentence row inside section
+    const addRow = document.createElement("div");
+    addRow.className = "section-add-row";
+    const addInput = document.createElement("input");
+    addInput.type = "text";
+    addInput.placeholder = "Add caption...";
+    addInput.spellcheck = false;
+    const addBtn = document.createElement("button");
+    addBtn.textContent = "+";
+    addBtn.addEventListener("click", () => {
+      const text = addInput.value.trim();
+      if (text) { addSentenceToSection(secIdx, text); addInput.value = ""; }
     });
-
-    li.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      showSentenceContextMenu(e, sentence);
+    addInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { const text = addInput.value.trim(); if (text) { addSentenceToSection(secIdx, text); addInput.value = ""; } }
     });
+    addRow.appendChild(addInput);
+    addRow.appendChild(addBtn);
+    group.appendChild(addRow);
 
-    sentenceList.appendChild(li);
-  }
+    sectionContainer.appendChild(group);
+  });
 }
 
 async function toggleSentence(sentence, wasChecked, wasPartial) {
@@ -916,25 +1145,9 @@ async function toggleSentence(sentence, wasChecked, wasPartial) {
   }
 }
 
-function showSentenceContextMenu(event, sentence) {
-  // Remove existing
-  document.querySelectorAll(".ctx-menu").forEach(m => m.remove());
+function showSentenceContextMenu() { /* removed - using inline remove buttons now */ }
 
-  const menu = document.createElement("div");
-  menu.className = "ctx-menu";
-  menu.style.left = event.clientX + "px";
-  menu.style.top = event.clientY + "px";
-
-  const removeItem = document.createElement("div");
-  removeItem.textContent = "Remove sentence";
-  removeItem.addEventListener("click", () => { removeSentence(sentence); menu.remove(); });
-  menu.appendChild(removeItem);
-
-  document.body.appendChild(menu);
-  setTimeout(() => {
-    document.addEventListener("click", () => menu.remove(), { once: true });
-  }, 10);
-}
+function showSectionContextMenu() { /* removed - using inline controls now */ }
 
 // ===== FREE TEXT =====
 let freeTextSaveTimeout = null;
@@ -1028,22 +1241,12 @@ setupResize($("#right-resize"), $("#right-panel"), "right");
 // ===== EVENT LISTENERS =====
 loadBtn.addEventListener("click", loadFolder);
 folderInput.addEventListener("keydown", (e) => { if (e.key === "Enter") loadFolder(); });
-addSentenceBtn.addEventListener("click", addSentence);
-newSentenceInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addSentence(); });
-removeSentenceBtn.addEventListener("click", () => {
-  // Remove last sentence or open context menu logic
-  if (state.predefinedSentences.length > 0) {
-    const sentence = state.predefinedSentences[state.predefinedSentences.length - 1];
-    if (confirm(`Remove sentence: "${sentence}"?`)) {
-      removeSentence(sentence);
-    }
-  }
-});
+addSectionBtn.addEventListener("click", addSection);
 
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {
   // Ctrl+A to select all (when not in text input)
-  if ((e.ctrlKey || e.metaKey) && e.key === "a" && document.activeElement !== freeText && document.activeElement !== newSentenceInput && document.activeElement !== folderInput) {
+  if ((e.ctrlKey || e.metaKey) && e.key === "a" && document.activeElement !== freeText && document.activeElement !== folderInput) {
     e.preventDefault();
     state.selectedPaths.clear();
     state.images.forEach(img => state.selectedPaths.add(img.path));

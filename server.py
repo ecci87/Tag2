@@ -8,6 +8,8 @@ import os
 import sys
 import json
 import asyncio
+import subprocess
+import platform
 from pathlib import Path
 from io import BytesIO
 from typing import Optional
@@ -72,23 +74,48 @@ def _save_config(cfg: dict):
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
-def _get_folder_sentences(cfg: dict, folder: str) -> list[str]:
-    """Get sentences for a folder, falling back to default_sentences."""
+def _get_folder_sections(cfg: dict, folder: str) -> list[dict]:
+    """Get sections for a folder, falling back to default_sections.
+    Returns list of dicts: [{"name": "SectionName", "sentences": [...]}, ...]
+    The unnamed section (name='') holds sentences without a section header.
+    """
     folder_key = os.path.normpath(folder)
     folder_cfg = cfg.get("folders", {}).get(folder_key, None)
     if folder_cfg is not None:
-        return folder_cfg.get("sentences", [])
-    return list(cfg.get("default_sentences", []))
+        if "sections" in folder_cfg:
+            return [dict(s) for s in folder_cfg["sections"]]
+        # Migration: old flat sentences list -> single unnamed section
+        if "sentences" in folder_cfg:
+            return [{"name": "", "sentences": list(folder_cfg["sentences"])}]
+    # Try default_sections
+    default_sections = cfg.get("default_sections", [])
+    if default_sections:
+        return [dict(s) for s in default_sections]
+    # Migration from old default_sentences
+    default_sentences = cfg.get("default_sentences", [])
+    if default_sentences:
+        return [{"name": "", "sentences": list(default_sentences)}]
+    return [{"name": "", "sentences": []}]
 
 
-def _set_folder_sentences(cfg: dict, folder: str, sentences: list[str]):
-    """Set sentences for a specific folder."""
+def _set_folder_sections(cfg: dict, folder: str, sections: list[dict]):
+    """Set sections for a specific folder."""
     folder_key = os.path.normpath(folder)
     if "folders" not in cfg:
         cfg["folders"] = {}
     if folder_key not in cfg["folders"]:
         cfg["folders"][folder_key] = {}
-    cfg["folders"][folder_key]["sentences"] = sentences
+    cfg["folders"][folder_key]["sections"] = sections
+    # Remove legacy key if present
+    cfg["folders"][folder_key].pop("sentences", None)
+
+
+def _all_sentences_from_sections(sections: list[dict]) -> list[str]:
+    """Flatten sections into a single list of all predefined sentences."""
+    result = []
+    for sec in sections:
+        result.extend(sec.get("sentences", []))
+    return result
 
 
 def _generate_thumbnail(filepath: str, size: int) -> bytes:
@@ -188,12 +215,6 @@ async def get_preview(path: str = Query(...)):
     )
 
 
-class CaptionData(BaseModel):
-    image_path: str
-    sentences: list[str]  # predefined sentences that are enabled
-    free_text: str
-
-
 class BatchCaptionUpdate(BaseModel):
     image_paths: list[str]
     sentence: str
@@ -205,50 +226,56 @@ class BatchFreeTextUpdate(BaseModel):
     free_text: str
 
 
-class SentencesConfig(BaseModel):
-    sentences: list[str]
-
-
 def _get_caption_path(image_path: str) -> Path:
     """Get the corresponding .txt path for an image."""
     p = Path(image_path)
     return p.with_suffix(".txt")
 
 
-def _read_caption_file(image_path: str, predefined_sentences: list[str]) -> dict:
-    """Read caption file and separate predefined sentences from free text."""
+def _read_caption_file(image_path: str, predefined_sentences: list[str],
+                       section_headers: list[str] | None = None) -> dict:
+    """Read caption file and separate predefined sentences from free text.
+    section_headers is the list of known section header lines (freeform text).
+    Handles both old flat format and new sectioned format with '- ' prefixes.
+    """
     caption_path = _get_caption_path(image_path)
     enabled_sentences = []
     free_lines = []
+    header_set = set(section_headers or [])
 
     if caption_path.exists():
         try:
             content = caption_path.read_text(encoding="utf-8")
-            lines = content.split("\n")
             pred_set = set(predefined_sentences)
-            for line in lines:
+            in_structured = True
+
+            for line in content.split("\n"):
                 stripped = line.strip()
-                if stripped in pred_set:
-                    enabled_sentences.append(stripped)
-                elif stripped:  # non-empty, non-predefined
-                    free_lines.append(line)
-                # preserve empty lines in free text section only after we've passed predefined
-            # Actually, let's be smarter: predefined are always at top
-            # Re-parse: read from top, consume predefined lines, rest is free text
-            enabled_sentences = []
-            free_lines = []
-            in_predefined_section = True
-            for line in lines:
-                stripped = line.strip()
-                if in_predefined_section and stripped in pred_set:
-                    enabled_sentences.append(stripped)
-                else:
-                    if in_predefined_section and stripped == "":
-                        # Could be separator between predefined and free text
-                        in_predefined_section = False
+
+                if not stripped:
+                    if not in_structured:
+                        free_lines.append(line)
+                    continue
+
+                # Known section header - consume it (part of structured section)
+                if in_structured and stripped in header_set:
+                    continue
+
+                # Sentence with "- " prefix (new format)
+                if in_structured and stripped.startswith("- "):
+                    sentence_text = stripped[2:]
+                    if sentence_text in pred_set:
+                        enabled_sentences.append(sentence_text)
                         continue
-                    in_predefined_section = False
-                    free_lines.append(line)
+
+                # Backward compat: sentence without "- " prefix (old format)
+                if in_structured and stripped in pred_set:
+                    enabled_sentences.append(stripped)
+                    continue
+
+                # Not a predefined sentence - everything from here is free text
+                in_structured = False
+                free_lines.append(line)
         except Exception:
             pass
 
@@ -258,19 +285,51 @@ def _read_caption_file(image_path: str, predefined_sentences: list[str]) -> dict
     }
 
 
-def _write_caption_file(image_path: str, enabled_sentences: list[str], free_text: str):
-    """Write caption file with predefined sentences at top, then free text."""
+def _write_caption_file(image_path: str, enabled_sentences: list[str], free_text: str,
+                         sections: list[dict] | None = None):
+    """Write caption file with sectioned format.
+    Section names are written as-is (freeform headers like '## Lighting', '**Shape**', etc.).
+    Sentences get '- ' prefixed. The unnamed section (name='') has no header line.
+    Free text goes at the end.
+    """
     caption_path = _get_caption_path(image_path)
-    parts = []
-    if enabled_sentences:
-        parts.append("\n".join(enabled_sentences))
-    if free_text.strip():
-        parts.append(free_text.strip())
-    content = "\n\n".join(parts)
+
+    if sections:
+        enabled_set = set(enabled_sentences)
+        blocks = []
+
+        for section in sections:
+            sec_name = section.get("name", "")
+            sec_sentences = [s for s in section.get("sentences", []) if s in enabled_set]
+            if not sec_sentences:
+                continue
+
+            lines = []
+            if sec_name:
+                lines.append(sec_name)
+            for s in sec_sentences:
+                lines.append(f"- {s}")
+            blocks.append("\n".join(lines))
+
+        content_parts = []
+        if blocks:
+            content_parts.append("\n\n".join(blocks))
+        if free_text and free_text.strip():
+            content_parts.append(free_text.strip())
+
+        content = "\n\n".join(content_parts)
+    else:
+        # Fallback: simple format with '- ' prefix
+        parts = []
+        if enabled_sentences:
+            parts.append("\n".join(f"- {s}" for s in enabled_sentences))
+        if free_text and free_text.strip():
+            parts.append(free_text.strip())
+        content = "\n\n".join(parts)
+
     if content:
         caption_path.write_text(content + "\n", encoding="utf-8")
     elif caption_path.exists():
-        # If nothing to write but file exists, keep it empty or remove
         caption_path.write_text("", encoding="utf-8")
 
 
@@ -284,7 +343,13 @@ async def get_caption(path: str = Query(...), sentences: str = Query(default="[]
     except json.JSONDecodeError:
         predefined = []
 
-    data = _read_caption_file(path, predefined)
+    # Load section headers for proper parsing
+    cfg = _load_config()
+    folder = str(Path(path).parent)
+    sections = _get_folder_sections(cfg, folder)
+    headers = [s["name"] for s in sections if s.get("name")]
+
+    data = _read_caption_file(path, predefined, headers)
     return data
 
 
@@ -292,56 +357,31 @@ async def get_caption(path: str = Query(...), sentences: str = Query(default="[]
 async def batch_toggle_sentence(update: BatchCaptionUpdate):
     """Toggle a predefined sentence on/off for multiple images."""
     results = []
+
+    # Load sections config from the folder of the first image
+    cfg = _load_config()
+    folder = str(Path(update.image_paths[0]).parent) if update.image_paths else ""
+    sections = _get_folder_sections(cfg, folder)
+    all_sentences = _all_sentences_from_sections(sections)
+
     for img_path in update.image_paths:
         if not os.path.isfile(img_path):
             results.append({"path": img_path, "error": "File not found"})
             continue
-        # We need predefined sentences list - client sends just the sentence to toggle
-        # Read existing file, toggle the sentence
-        caption_path = _get_caption_path(img_path)
-        existing_lines = []
-        free_lines = []
 
-        if caption_path.exists():
-            try:
-                content = caption_path.read_text(encoding="utf-8")
-                existing_lines = [l.strip() for l in content.split("\n") if l.strip()]
-            except Exception:
-                pass
+        # Read existing caption data
+        headers = [s["name"] for s in sections if s.get("name")]
+        data = _read_caption_file(img_path, all_sentences, headers)
+        enabled = list(data["enabled_sentences"])
+        free_text = data["free_text"]
 
         if update.enabled:
-            # Add sentence at top if not present
-            if update.sentence not in existing_lines:
-                existing_lines.insert(0, update.sentence)
+            if update.sentence not in enabled:
+                enabled.append(update.sentence)
         else:
-            # Remove sentence
-            existing_lines = [l for l in existing_lines if l != update.sentence]
+            enabled = [s for s in enabled if s != update.sentence]
 
-        # Write back - we need to preserve structure
-        # Re-read properly to keep free text intact
-        caption_path_obj = _get_caption_path(img_path)
-        if caption_path_obj.exists():
-            raw = caption_path_obj.read_text(encoding="utf-8")
-        else:
-            raw = ""
-
-        # Parse: remove the sentence line if disabling, add at top if enabling
-        lines = raw.split("\n")
-        if update.enabled:
-            # Check if sentence already in file
-            if update.sentence not in [l.strip() for l in lines]:
-                # Insert at very top
-                lines.insert(0, update.sentence)
-        else:
-            lines = [l for l in lines if l.strip() != update.sentence]
-
-        # Clean up: remove leading/trailing empty lines
-        content = "\n".join(lines).strip()
-        if content:
-            caption_path_obj.write_text(content + "\n", encoding="utf-8")
-        else:
-            caption_path_obj.write_text("", encoding="utf-8")
-
+        _write_caption_file(img_path, enabled, free_text, sections)
         results.append({"path": img_path, "ok": True})
 
     return {"results": results}
@@ -370,7 +410,11 @@ async def save_caption(data: SaveCaptionFull):
     """Full save of caption data for one image."""
     if not os.path.isfile(data.image_path):
         raise HTTPException(status_code=404, detail="Image not found")
-    _write_caption_file(data.image_path, data.enabled_sentences, data.free_text)
+    # Load sections config for proper formatting
+    cfg = _load_config()
+    folder = str(Path(data.image_path).parent)
+    sections = _get_folder_sections(cfg, folder)
+    _write_caption_file(data.image_path, data.enabled_sentences, data.free_text, sections)
     return {"ok": True}
 
 
@@ -386,10 +430,19 @@ async def get_captions_bulk(paths: str = Query(...), sentences: str = Query(defa
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    # Load section headers (assume all images in same folder)
+    cfg = _load_config()
+    if image_paths:
+        folder = str(Path(image_paths[0]).parent)
+        sections = _get_folder_sections(cfg, folder)
+        headers = [s["name"] for s in sections if s.get("name")]
+    else:
+        headers = []
+
     results = {}
     for img_path in image_paths:
         if os.path.isfile(img_path):
-            results[img_path] = _read_caption_file(img_path, predefined)
+            results[img_path] = _read_caption_file(img_path, predefined, headers)
         else:
             results[img_path] = {"enabled_sentences": [], "free_text": ""}
 
@@ -400,34 +453,52 @@ async def get_captions_bulk(paths: str = Query(...), sentences: str = Query(defa
 
 class SettingsUpdate(BaseModel):
     last_folder: Optional[str] = None
-    sentences: Optional[list[str]] = None
-    folder: Optional[str] = None  # which folder these sentences belong to
+    sections: Optional[list[dict]] = None
+    folder: Optional[str] = None  # which folder these sections belong to
 
 
 @app.get("/api/settings")
 async def get_settings(folder: Optional[str] = Query(default=None)):
-    """Get full settings. If folder is specified, include sentences for that folder."""
+    """Get full settings. If folder is specified, include sections for that folder."""
     cfg = _load_config()
     result = {
         "last_folder": cfg.get("last_folder", ""),
-        "default_sentences": cfg.get("default_sentences", []),
     }
     if folder:
-        result["sentences"] = _get_folder_sentences(cfg, folder)
+        result["sections"] = _get_folder_sections(cfg, folder)
         result["folder"] = os.path.normpath(folder)
     return result
 
 
 @app.post("/api/settings")
 async def update_settings(data: SettingsUpdate):
-    """Update settings. Saves last_folder and/or per-folder sentences."""
+    """Update settings. Saves last_folder and/or per-folder sections."""
     cfg = _load_config()
     if data.last_folder is not None:
         cfg["last_folder"] = data.last_folder
-    if data.sentences is not None and data.folder:
-        _set_folder_sentences(cfg, data.folder, data.sentences)
+    if data.sections is not None and data.folder:
+        _set_folder_sections(cfg, data.folder, data.sections)
     _save_config(cfg)
     return {"ok": True}
+
+
+@app.get("/api/open-in-explorer")
+async def open_in_explorer(path: str = Query(...)):
+    """Open the OS file explorer with the given file selected."""
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        system = platform.system()
+        if system == "Windows":
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+        elif system == "Darwin":
+            subprocess.Popen(["open", "-R", path])
+        else:
+            # Linux: open the containing folder
+            subprocess.Popen(["xdg-open", os.path.dirname(path)])
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Serve the frontend
