@@ -616,6 +616,39 @@ class TestCropAPI:
         r, g, b = thumb.getpixel((thumb.width // 2, thumb.height // 2))
         assert r > b
 
+    def test_rotate_image_right(self, client, tmp_path):
+        image_path = str(tmp_path / "rotate.jpg")
+        Image.new("RGB", (80, 50), color="red").save(image_path)
+
+        resp = client.post("/api/rotate", json={"image_path": image_path, "direction": "right"})
+        assert resp.status_code == 200
+        crop = resp.json()["crop"]
+        assert crop["current_width"] == 50
+        assert crop["current_height"] == 80
+
+        with Image.open(image_path) as img:
+            assert img.size == (50, 80)
+
+    def test_rotate_image_preserves_crop_undo(self, client, tmp_path):
+        image_path = str(tmp_path / "rotate_crop.jpg")
+        Image.new("RGB", (120, 80), color="blue").save(image_path)
+
+        crop_resp = client.post("/api/crop", json={
+            "image_path": image_path,
+            "crop": {"x": 10, "y": 10, "w": 60, "h": 40, "ratio": "3:2"},
+        })
+        assert crop_resp.status_code == 200
+
+        rotate_resp = client.post("/api/rotate", json={"image_path": image_path, "direction": "left"})
+        assert rotate_resp.status_code == 200
+        assert rotate_resp.json()["crop"]["applied"] is True
+
+        clear_resp = client.post("/api/crop", json={"image_path": image_path, "crop": None})
+        assert clear_resp.status_code == 200
+
+        with Image.open(image_path) as img:
+            assert img.size == (80, 120)
+
 
 class TestAutoCaptionAPI:
     def test_auto_caption_single_image(self, client, single_image, monkeypatch):

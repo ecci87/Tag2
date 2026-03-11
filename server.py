@@ -357,6 +357,31 @@ def _remove_real_crop(image_path: str) -> bool:
     _clear_thumbnail_cache_for_path(image_path)
     return True
 
+def _rotate_image_file(filepath: str, clockwise: bool):
+    """Rotate an image file by 90 degrees while preserving metadata."""
+    image, original_format, exif_bytes, icc_profile = _load_oriented_image(filepath)
+    try:
+        rotated = image.transpose(Image.Transpose.ROTATE_270 if clockwise else Image.Transpose.ROTATE_90)
+        _save_image_file(filepath, rotated, original_format, exif_bytes, icc_profile)
+    finally:
+        image.close()
+
+def _rotate_image(image_path: str, direction: str) -> dict:
+    """Rotate the actual image file and any active crop backup by 90 degrees."""
+    normalized_direction = str(direction or "").strip().lower()
+    if normalized_direction not in {"left", "right"}:
+        raise ValueError("direction must be 'left' or 'right'")
+
+    clockwise = normalized_direction == "right"
+    _rotate_image_file(image_path, clockwise)
+
+    backup_path = _get_crop_backup_path(image_path)
+    if os.path.isfile(backup_path):
+        _rotate_image_file(backup_path, clockwise)
+
+    _clear_thumbnail_cache_for_path(image_path)
+    return _get_image_crop(image_path)
+
 
 def _get_ollama_host(cfg: dict) -> str:
     """Get the configured Ollama host."""
@@ -789,6 +814,10 @@ class CropUpdate(BaseModel):
     image_path: str
     crop: Optional[dict] = None
 
+class RotateUpdate(BaseModel):
+    image_path: str
+    direction: str
+
 
 def _get_caption_path(image_path: str) -> Path:
     """Get the corresponding .txt path for an image."""
@@ -826,6 +855,22 @@ async def save_crop(data: CropUpdate):
     return {
         "ok": True,
         "crop": _get_image_crop(data.image_path),
+    }
+
+@app.post("/api/rotate")
+async def rotate_image(data: RotateUpdate):
+    """Rotate an image by 90 degrees left or right."""
+    if not os.path.isfile(data.image_path):
+        raise HTTPException(status_code=404, detail="Image file not found")
+    try:
+        crop_state = _rotate_image(data.image_path, data.direction)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid rotation: {e}") from e
+    return {
+        "ok": True,
+        "crop": crop_state,
     }
 
 

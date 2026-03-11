@@ -197,6 +197,29 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 }
 #crop-remove-btn.visible { display: block; }
 #crop-remove-btn:hover { filter: brightness(1.08); }
+#rotate-controls {
+  position: absolute;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  display: none;
+  gap: 10px;
+  pointer-events: auto;
+}
+#rotate-controls.visible { display: flex; }
+.rotate-btn {
+  width: 40px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(38,38,55,0.92);
+  color: var(--fg);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+.rotate-btn:hover { filter: brightness(1.08); border-color: var(--accent); color: var(--accent); }
 #preview-placeholder {
   color: var(--fg-dim); font-size: 16px; text-align: center; padding: 20px;
 }
@@ -255,27 +278,27 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 }
 .section-sentences { list-style: none; }
 .section-sentences li {
-  padding: 7px 10px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; cursor: pointer; display: flex; align-items: center; gap: 6px;
   border-bottom: 1px solid rgba(255,255,255,0.04); user-select: none;
-  transition: background 0.1s;
+  transition: background 0.1s; font-size: 12px;
 }
 .section-sentences li:hover { background: var(--hover); }
 .section-sentences li .check-box {
-  width: 18px; height: 18px; border: 2px solid var(--border); border-radius: 3px;
+  width: 14px; height: 14px; border: 2px solid var(--border); border-radius: 3px;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   transition: all 0.15s;
 }
 .section-sentences li .check-box.checked { background: var(--accent); border-color: var(--accent); }
-.section-sentences li .check-box.checked::after { content: "✓"; color: #1e1e2e; font-size: 13px; font-weight: 700; }
+.section-sentences li .check-box.checked::after { content: "✓"; color: #1e1e2e; font-size: 10px; font-weight: 700; }
 .section-sentences li .check-box.partial { background: var(--bg3); border-color: var(--fg-dim); }
-.section-sentences li .check-box.partial::after { content: "–"; color: var(--fg-dim); font-size: 14px; font-weight: 700; }
+.section-sentences li .check-box.partial::after { content: "–"; color: var(--fg-dim); font-size: 11px; font-weight: 700; }
 .section-sentences li .sentence-text { flex: 1; }
 .section-sentences li .sentence-text.partial { color: var(--fg-dim); font-style: italic; }
 .section-sentences li .remove-btn {
-  min-width: 24px; height: 24px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
+  min-width: 20px; height: 20px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
   background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
   display: grid; place-items: center; flex-shrink: 0; padding: 0;
-  font-size: 18px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
+  font-size: 14px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
   opacity: 0.9; transition: all 0.15s ease;
 }
 .section-sentences li .remove-btn:hover {
@@ -323,13 +346,13 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 
 /* Section headers */
 .section-header {
-  padding: 5px 10px; display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; display: flex; align-items: center; gap: 5px;
   background: var(--bg3); cursor: grab; user-select: none;
   border-bottom: 1px solid var(--border);
-  font-size: 12px; font-weight: 600; color: var(--accent);
+  font-size: 11px; font-weight: 600; color: var(--accent);
 }
 .section-header:hover { background: rgba(137,180,250,0.12); }
-.section-header .drag-handle { color: var(--fg-dim); font-size: 14px; cursor: grab; }
+.section-header .drag-handle { color: var(--fg-dim); font-size: 12px; cursor: grab; }
 .section-header .section-name {
   flex: 1; cursor: text; padding: 1px 4px; border-radius: 3px; min-width: 30px;
 }
@@ -338,10 +361,10 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   outline: none; background: var(--bg); border: 1px solid var(--accent);
 }
 .section-header .section-remove-btn {
-  min-width: 22px; height: 22px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
+  min-width: 18px; height: 18px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
   background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
   display: grid; place-items: center; padding: 0; flex-shrink: 0;
-  font-size: 16px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
+  font-size: 13px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
   transition: all 0.15s ease;
 }
 .section-header .section-remove-btn:hover {
@@ -357,19 +380,19 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 
 /* Section add-caption row */
 .section-add-row {
-  display: flex; gap: 6px; padding: 4px 10px 6px;
+  display: flex; gap: 5px; padding: 3px 8px 5px;
 }
 .section-add-row input {
-  flex: 1; padding: 4px 8px; background: var(--bg); color: var(--fg);
+  flex: 1; padding: 3px 7px; background: var(--bg); color: var(--fg);
   border: 1px solid var(--border); border-radius: 3px; outline: none;
-  font-size: 13px;
+  font-size: 12px;
 }
 .section-add-row input:focus { border-color: var(--accent); }
 .section-add-row input::placeholder { color: var(--fg-dim); }
 .section-add-row button {
-  padding: 4px 10px; background: var(--accent2); color: #1e1e2e;
+  padding: 3px 8px; background: var(--accent2); color: #1e1e2e;
   border: 1px solid rgba(166,227,161,0.35); border-radius: 3px; cursor: pointer;
-  font-weight: 700; font-size: 13px; line-height: 1;
+  font-weight: 700; font-size: 12px; line-height: 1;
 }
 .section-add-row button:hover { filter: brightness(1.08); border-color: var(--accent2); }
 
@@ -517,6 +540,10 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
         <button id="crop-apply-btn" type="button">Apply</button>
         <button id="crop-cancel-btn" type="button">Cancel</button>
         <button id="crop-remove-btn" type="button">Remove Crop</button>
+        <div id="rotate-controls">
+          <button id="rotate-left-btn" class="rotate-btn" type="button" title="Rotate left" aria-label="Rotate left">↶</button>
+          <button id="rotate-right-btn" class="rotate-btn" type="button" title="Rotate right" aria-label="Rotate right">↷</button>
+        </div>
       </div>
       <div id="preview-placeholder">Select an image to preview</div>
       <div id="preview-info"></div>
@@ -665,6 +692,9 @@ const cropLabel = cropBox.querySelector(".crop-label");
 const cropApplyBtn = $("#crop-apply-btn");
 const cropCancelBtn = $("#crop-cancel-btn");
 const cropRemoveBtn = $("#crop-remove-btn");
+const rotateControls = $("#rotate-controls");
+const rotateLeftBtn = $("#rotate-left-btn");
+const rotateRightBtn = $("#rotate-right-btn");
 const previewPlaceholder = $("#preview-placeholder");
 const previewInfo = $("#preview-info");
 const sectionContainer = $("#section-container");
@@ -969,6 +999,7 @@ function updateCropButtons() {
   cropRemoveBtn.classList.toggle("visible", editable && !hasDraft && hasAppliedCrop());
   cropCancelBtn.classList.toggle("visible", editable && hasDraft);
   cropApplyBtn.classList.toggle("visible", editable && hasDraft && state.cropDirty);
+  rotateControls.classList.toggle("visible", editable && !hasDraft);
 }
 
 function renderCropOverlay() {
@@ -1237,6 +1268,35 @@ function cancelCropEdit() {
   if (!state.cropDraft && !state.cropInteraction) return;
   clearCropDraft();
   statusBar.textContent = "Crop edit cancelled";
+}
+
+async function rotatePreviewImage(direction) {
+  if (!state.previewPath) return;
+  const path = state.previewPath;
+  statusBar.textContent = direction === "left" ? "Rotating left..." : "Rotating right...";
+  try {
+    const resp = await fetch("/api/rotate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_path: path, direction }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "Failed to rotate image");
+    state.imageCrops[path] = data.crop || null;
+    updateImageDimensions(path, data.crop);
+    clearCropDraft();
+    bumpImageVersion(path);
+    invalidateImageCaches(path);
+    renderGrid();
+    userHasZoomed = false;
+    zoomLevel = 1;
+    panX = 0;
+    panY = 0;
+    await showPreview(path);
+    statusBar.textContent = direction === "left" ? "Rotated left" : "Rotated right";
+  } catch (err) {
+    statusBar.textContent = `Rotate error: ${err.message}`;
+  }
 }
 
 async function removeCrop() {
@@ -1874,6 +1934,8 @@ cropBox.querySelectorAll("[data-handle]").forEach(handleEl => {
 cropApplyBtn.addEventListener("click", applyCropDraft);
 cropCancelBtn.addEventListener("click", cancelCropEdit);
 cropRemoveBtn.addEventListener("click", removeCrop);
+rotateLeftBtn.addEventListener("click", () => rotatePreviewImage("left"));
+rotateRightBtn.addEventListener("click", () => rotatePreviewImage("right"));
 
 // ===== CAPTION DATA =====
 async function loadCaptionData(path) {
