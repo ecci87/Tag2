@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Image Captioning Tool</title>
+<style>
+/* ===== RESET & BASE ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #1e1e2e;
+  --bg2: #262637;
+  --bg3: #2e2e42;
+  --fg: #cdd6f4;
+  --fg-dim: #888;
+  --accent: #89b4fa;
+  --accent2: #a6e3a1;
+  --accent-warn: #f9e2af;
+  --border: #45475a;
+  --selected: rgba(137,180,250,0.18);
+  --selected-border: #89b4fa;
+  --hover: rgba(137,180,250,0.08);
+  --thumb-size: 160px;
+  --gap: 6px;
+}
+html, body { height: 100%; background: var(--bg); color: var(--fg); font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 14px; overflow: hidden; }
+input, textarea, button { font-family: inherit; font-size: inherit; }
+
+/* ===== LAYOUT ===== */
+#app { display: flex; flex-direction: column; height: 100vh; }
+#toolbar {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0; min-height: 44px;
+}
+#toolbar label { font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
+#folder-input { flex: 1; max-width: 500px; padding: 6px 10px; background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; outline: none; }
+#folder-input:focus { border-color: var(--accent); }
+#load-btn { padding: 6px 16px; background: var(--accent); color: #1e1e2e; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
+#load-btn:hover { filter: brightness(1.1); }
+#thumb-size-slider { width: 120px; accent-color: var(--accent); }
+#status-bar { font-size: 11px; color: var(--fg-dim); margin-left: auto; white-space: nowrap; }
+
+#main { display: flex; flex: 1; overflow: hidden; }
+
+/* LEFT PANEL: file browser */
+#left-panel {
+  width: 300px; min-width: 200px; max-width: 50vw;
+  display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg2);
+  position: relative;
+}
+#left-panel .panel-header {
+  padding: 6px 10px; font-size: 12px; color: var(--fg-dim); border-bottom: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+}
+#file-grid-container { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--gap); }
+#file-grid {
+  display: flex; flex-wrap: wrap; gap: var(--gap); align-content: flex-start;
+}
+.thumb-cell {
+  width: var(--thumb-size); height: var(--thumb-size);
+  border-radius: 4px; overflow: hidden; cursor: pointer; position: relative;
+  border: 2px solid transparent; transition: border-color 0.1s;
+  background: var(--bg3); flex-shrink: 0;
+}
+.thumb-cell:hover { border-color: rgba(137,180,250,0.4); }
+.thumb-cell.selected { border-color: var(--selected-border); background: var(--selected); }
+.thumb-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb-cell .thumb-name {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  padding: 2px 4px; font-size: 10px; color: #fff;
+  background: rgba(0,0,0,0.65); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.thumb-cell .caption-dot {
+  position: absolute; top: 4px; right: 4px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--accent2);
+}
+.thumb-cell.has-caption {
+  border-left: 3px solid var(--accent2);
+}
+.thumb-cell.has-caption.selected {
+  border-left: 3px solid var(--accent2);
+}
+
+/* Resize handle */
+#left-resize {
+  width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0;
+  position: relative; z-index: 5;
+}
+#left-resize:hover, #left-resize.active { background: var(--accent); }
+
+/* CENTER PANEL: image preview */
+#center-panel {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: var(--bg); overflow: hidden; position: relative; min-width: 200px;
+  cursor: grab;
+}
+#center-panel.dragging { cursor: grabbing; }
+#preview-img {
+  position: absolute;
+  top: 0; left: 0;
+  transform-origin: 0 0;
+  display: none;
+  user-select: none; -webkit-user-drag: none;
+  pointer-events: none;
+}
+#preview-placeholder {
+  color: var(--fg-dim); font-size: 16px; text-align: center; padding: 20px;
+}
+#preview-info {
+  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,0.7); color: #fff; padding: 4px 12px; border-radius: 12px;
+  font-size: 11px; display: none; white-space: nowrap;
+}
+
+/* RIGHT RESIZE */
+#right-resize {
+  width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0; z-index: 5;
+}
+#right-resize:hover, #right-resize.active { background: var(--accent); }
+
+/* RIGHT PANEL: captions */
+#right-panel {
+  width: 340px; min-width: 220px; max-width: 50vw;
+  display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--bg2);
+}
+#right-panel .panel-header {
+  padding: 6px 10px; font-size: 12px; color: var(--fg-dim); border-bottom: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+}
+#sentences-section { flex-shrink: 0; border-bottom: 1px solid var(--border); max-height: 50%; overflow-y: auto; }
+#sentence-list { list-style: none; }
+#sentence-list li {
+  padding: 7px 10px; cursor: pointer; display: flex; align-items: center; gap: 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.04); user-select: none;
+  transition: background 0.1s;
+}
+#sentence-list li:hover { background: var(--hover); }
+#sentence-list li .check-box {
+  width: 18px; height: 18px; border: 2px solid var(--border); border-radius: 3px;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  transition: all 0.15s;
+}
+#sentence-list li .check-box.checked { background: var(--accent); border-color: var(--accent); }
+#sentence-list li .check-box.checked::after { content: "✓"; color: #1e1e2e; font-size: 13px; font-weight: 700; }
+#sentence-list li .check-box.partial { background: var(--bg3); border-color: var(--fg-dim); }
+#sentence-list li .check-box.partial::after { content: "–"; color: var(--fg-dim); font-size: 14px; font-weight: 700; }
+#sentence-list li .sentence-text { flex: 1; }
+#sentence-list li .sentence-text.partial { color: var(--fg-dim); font-style: italic; }
+
+/* Sentence editor */
+#sentence-editor {
+  display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+#new-sentence-input { flex: 1; padding: 5px 8px; background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: 3px; outline: none; }
+#new-sentence-input:focus { border-color: var(--accent); }
+#add-sentence-btn { padding: 5px 12px; background: var(--accent2); color: #1e1e2e; border: none; border-radius: 3px; cursor: pointer; font-weight: 600; }
+#remove-sentence-btn { padding: 5px 10px; background: #f38ba8; color: #1e1e2e; border: none; border-radius: 3px; cursor: pointer; font-weight: 600; font-size: 13px; }
+
+/* Free text */
+#freetext-section { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#freetext-section .panel-header { flex-shrink: 0; }
+#free-text {
+  flex: 1; width: 100%; padding: 10px; background: var(--bg); color: var(--fg);
+  border: none; outline: none; resize: none; font-family: 'Consolas', 'Fira Code', monospace; font-size: 13px;
+  line-height: 1.5;
+}
+#free-text:disabled { opacity: 0.4; }
+
+/* Multi-select info banner */
+#multi-info {
+  padding: 6px 10px; background: rgba(137,180,250,0.12); color: var(--accent);
+  font-size: 12px; border-bottom: 1px solid var(--border); display: none; flex-shrink: 0;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--fg-dim); }
+
+/* Loading spinner */
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Context menu for sentences */
+.ctx-menu {
+  position: fixed; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 0; z-index: 1000; box-shadow: 0 4px 16px rgba(0,0,0,0.4); min-width: 140px;
+}
+.ctx-menu div {
+  padding: 6px 14px; cursor: pointer; font-size: 13px;
+}
+.ctx-menu div:hover { background: var(--hover); }
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- TOOLBAR -->
+  <div id="toolbar">
+    <label>Folder:</label>
+    <input type="text" id="folder-input" placeholder="/path/to/images" spellcheck="false">
+    <button id="load-btn">Load</button>
+    <label style="margin-left:12px">Size:</label>
+    <input type="range" id="thumb-size-slider" min="60" max="400" value="160">
+    <span id="status-bar"></span>
+  </div>
+
+  <!-- MAIN PANELS -->
+  <div id="main">
+    <!-- LEFT: file grid -->
+    <div id="left-panel">
+      <div class="panel-header">
+        <span id="file-count">No images</span>
+      </div>
+      <div id="file-grid-container">
+        <div id="file-grid"></div>
+      </div>
+    </div>
+
+    <div id="left-resize"></div>
+
+    <!-- CENTER: image preview -->
+    <div id="center-panel">
+      <img id="preview-img" alt="Preview">
+      <div id="preview-placeholder">Select an image to preview</div>
+      <div id="preview-info"></div>
+    </div>
+
+    <div id="right-resize"></div>
+
+    <!-- RIGHT: captions -->
+    <div id="right-panel">
+      <!-- Sentence definition -->
+      <div id="sentence-editor">
+        <input type="text" id="new-sentence-input" placeholder="Add a sentence..." spellcheck="false">
+        <button id="add-sentence-btn">+</button>
+        <button id="remove-sentence-btn" title="Remove selected sentence">−</button>
+      </div>
+      <!-- Multi-select info -->
+      <div id="multi-info"></div>
+      <!-- Sentence toggles -->
+      <div id="sentences-section">
+        <ul id="sentence-list"></ul>
+      </div>
+      <!-- Free text -->
+      <div id="freetext-section">
+        <div class="panel-header"><span>Free Text</span></div>
+        <textarea id="free-text" placeholder="Additional caption text..." disabled></textarea>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== STATE =====
+const state = {
+  folder: "",
+  images: [],            // [{name, path, size, mtime}, ...]
+  selectedPaths: new Set(),
+  lastClickedIndex: -1,
+  predefinedSentences: [],
+  // Per-image caption cache: path -> {enabled_sentences: [...], free_text: ""}
+  captionCache: {},
+  previewPath: null,
+  saving: false,
+  thumbSize: 160,
+};
+
+// ===== DOM REFS =====
+const $ = (s) => document.querySelector(s);
+const folderInput = $("#folder-input");
+const loadBtn = $("#load-btn");
+const thumbSlider = $("#thumb-size-slider");
+const statusBar = $("#status-bar");
+const fileCount = $("#file-count");
+const fileGrid = $("#file-grid");
+const fileGridContainer = $("#file-grid-container");
+const previewImg = $("#preview-img");
+const previewPlaceholder = $("#preview-placeholder");
+const previewInfo = $("#preview-info");
+const sentenceList = $("#sentence-list");
+const newSentenceInput = $("#new-sentence-input");
+const addSentenceBtn = $("#add-sentence-btn");
+const removeSentenceBtn = $("#remove-sentence-btn");
+const freeText = $("#free-text");
+const multiInfo = $("#multi-info");
+
+// ===== THUMBNAIL PRELOADING =====
+const thumbBlobCache = new Map();  // path -> blob URL
+const thumbLoadQueue = [];
+let thumbLoadingCount = 0;
+const MAX_CONCURRENT_THUMB_LOADS = 12;
+
+function queueThumbLoad(path, size, priority = false) {
+  if (thumbBlobCache.has(path + ":" + size)) return;
+  const item = { path, size };
+  if (priority) {
+    thumbLoadQueue.unshift(item);
+  } else {
+    thumbLoadQueue.push(item);
+  }
+  processThumbQueue();
+}
+
+async function processThumbQueue() {
+  while (thumbLoadingCount < MAX_CONCURRENT_THUMB_LOADS && thumbLoadQueue.length > 0) {
+    const { path, size } = thumbLoadQueue.shift();
+    const key = path + ":" + size;
+    if (thumbBlobCache.has(key)) continue;
+    thumbLoadingCount++;
+    fetch(`/api/thumbnail?path=${encodeURIComponent(path)}&size=${size}`)
+      .then(r => r.ok ? r.blob() : null)
+      .then(blob => {
+        if (blob) {
+          const url = URL.createObjectURL(blob);
+          thumbBlobCache.set(key, url);
+          // Update any visible img with this path
+          const imgs = fileGrid.querySelectorAll(`img[data-path="${CSS.escape(path)}"]`);
+          imgs.forEach(img => { img.src = url; });
+        }
+      })
+      .catch(() => {})
+      .finally(() => { thumbLoadingCount--; processThumbQueue(); });
+  }
+}
+
+// Preview image preload cache (screen-quality, not full-res)
+const previewCache = new Map(); // path -> blob URL
+let previewLoadingSet = new Set(); // paths currently being fetched
+
+function preloadPreview(path) {
+  if (previewCache.has(path) || previewLoadingSet.has(path)) return;
+  previewLoadingSet.add(path);
+  fetch(`/api/preview?path=${encodeURIComponent(path)}`)
+    .then(r => r.ok ? r.blob() : null)
+    .then(blob => {
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        previewCache.set(path, url);
+        // If currently selected, swap in the higher-quality preview
+        if (state.previewPath === path) {
+          const oldNatW = imgNatW;
+          const oldNatH = imgNatH;
+          const oldZoom = zoomLevel;
+          const oldPanX = panX;
+          const oldPanY = panY;
+          const wasUserZoomed = userHasZoomed;
+          previewImg.onload = () => {
+            imgNatW = previewImg.naturalWidth;
+            imgNatH = previewImg.naturalHeight;
+            if (wasUserZoomed && oldNatW > 0 && oldNatH > 0) {
+              // Preserve user's zoom/pan relative to old dimensions
+              const scaleRatio = oldNatW / imgNatW;
+              zoomLevel = oldZoom * scaleRatio;
+              // Adjust pan: the image center that was on screen should stay there
+              const panel = $("#center-panel");
+              const pw = panel.clientWidth;
+              const ph = panel.clientHeight;
+              // The point at the center of the panel in old image coords:
+              const cx = pw / 2;
+              const cy = ph / 2;
+              // Map: panelPoint = pan + imgPoint * zoom
+              // oldImgPoint = (cx - oldPanX) / oldZoom
+              // newPan = cx - oldImgPoint * (oldZoom * scaleRatio) / scaleRatio  -- simplifies to same
+              // Actually: old image coord = (panelPt - oldPan) / oldZoom
+              // new image coord = oldImgCoord * (newNatW / oldNatW) = oldImgCoord / scaleRatio
+              // new pan = panelPt - newImgCoord * newZoom
+              const oldImgX = (cx - oldPanX) / oldZoom;
+              const oldImgY = (cy - oldPanY) / oldZoom;
+              const newImgX = oldImgX / scaleRatio;
+              const newImgY = oldImgY / scaleRatio;
+              panX = cx - newImgX * zoomLevel;
+              panY = cy - newImgY * zoomLevel;
+              userHasZoomed = true;
+              applyTransform();
+            } else {
+              resetZoomPan();
+            }
+            previewImg.style.display = "block";
+          };
+          previewImg.src = url;
+        }
+      }
+    })
+    .catch(() => {})
+    .finally(() => previewLoadingSet.delete(path));
+}
+
+// ===== FOLDER LOADING =====
+async function loadFolder() {
+  const folder = folderInput.value.trim();
+  if (!folder) return;
+  state.folder = folder;
+  state.selectedPaths.clear();
+  state.lastClickedIndex = -1;
+  state.previewPath = null;
+  state.captionCache = {};
+  statusBar.textContent = "Loading...";
+
+  try {
+    const resp = await fetch(`/api/list-images?folder=${encodeURIComponent(folder)}`);
+    if (!resp.ok) { const e = await resp.json(); throw new Error(e.detail); }
+    const data = await resp.json();
+    state.images = data.images;
+    state.folder = data.folder;
+    folderInput.value = data.folder;
+    fileCount.textContent = `${state.images.length} images`;
+    statusBar.textContent = `Loaded ${state.images.length} images`;
+
+    // Save last_folder and load per-folder sentences
+    fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ last_folder: state.folder }),
+    }).catch(() => {});
+
+    const settingsResp = await fetch(`/api/settings?folder=${encodeURIComponent(state.folder)}`);
+    if (settingsResp.ok) {
+      const settings = await settingsResp.json();
+      state.predefinedSentences = settings.sentences || [];
+    }
+
+    renderGrid();
+    hidePreview();
+    renderSentences();
+    freeText.value = "";
+    freeText.disabled = true;
+
+    // Preload all thumbnails
+    const thumbSize = getThumbLoadSize();
+    for (const img of state.images) {
+      queueThumbLoad(img.path, thumbSize);
+    }
+  } catch (err) {
+    statusBar.textContent = `Error: ${err.message}`;
+  }
+}
+
+function getThumbLoadSize() {
+  const s = state.thumbSize;
+  if (s <= 80) return 128;
+  if (s <= 180) return 256;
+  return 400;
+}
+
+// ===== GRID RENDERING =====
+function renderGrid() {
+  fileGrid.innerHTML = "";
+  const size = state.thumbSize;
+  const thumbLoadSize = getThumbLoadSize();
+
+  for (let i = 0; i < state.images.length; i++) {
+    const img = state.images[i];
+    const cell = document.createElement("div");
+    let cls = "thumb-cell";
+    if (state.selectedPaths.has(img.path)) cls += " selected";
+    if (img.has_caption) cls += " has-caption";
+    cell.className = cls;
+    cell.style.width = size + "px";
+    cell.style.height = size + "px";
+    cell.dataset.index = i;
+    cell.dataset.path = img.path;
+
+    const imgEl = document.createElement("img");
+    imgEl.dataset.path = img.path;
+    imgEl.loading = "lazy";
+    const cachedUrl = thumbBlobCache.get(img.path + ":" + thumbLoadSize);
+    if (cachedUrl) {
+      imgEl.src = cachedUrl;
+    } else {
+      imgEl.src = `/api/thumbnail?path=${encodeURIComponent(img.path)}&size=${thumbLoadSize}`;
+    }
+    cell.appendChild(imgEl);
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "thumb-name";
+    nameEl.textContent = img.name;
+    nameEl.title = img.name;
+    cell.appendChild(nameEl);
+
+    // Caption dot indicator (visible if has_caption)
+    const dot = document.createElement("div");
+    dot.className = "caption-dot";
+    dot.style.display = img.has_caption ? "block" : "none";
+    dot.dataset.captionDot = img.path;
+    cell.appendChild(dot);
+
+    cell.addEventListener("click", (e) => handleThumbClick(i, e));
+    fileGrid.appendChild(cell);
+  }
+}
+
+function markCaptionIndicator(path, hasCaption) {
+  // Update the has_caption flag on the image object
+  const img = state.images.find(i => i.path === path);
+  if (img) img.has_caption = hasCaption;
+  // Update DOM
+  const cell = fileGrid.querySelector(`[data-path="${CSS.escape(path)}"]`);
+  if (cell) {
+    cell.classList.toggle("has-caption", hasCaption);
+    const dot = cell.querySelector(".caption-dot");
+    if (dot) dot.style.display = hasCaption ? "block" : "none";
+  }
+}
+
+function updateGridSelection() {
+  const cells = fileGrid.querySelectorAll(".thumb-cell");
+  cells.forEach(cell => {
+    const path = cell.dataset.path;
+    cell.classList.toggle("selected", state.selectedPaths.has(path));
+  });
+}
+
+// ===== SELECTION HANDLING =====
+function handleThumbClick(index, event) {
+  const img = state.images[index];
+
+  if (event.ctrlKey || event.metaKey) {
+    // Toggle individual selection
+    if (state.selectedPaths.has(img.path)) {
+      state.selectedPaths.delete(img.path);
+    } else {
+      state.selectedPaths.add(img.path);
+    }
+    state.lastClickedIndex = index;
+  } else if (event.shiftKey && state.lastClickedIndex >= 0) {
+    // Range select
+    const start = Math.min(state.lastClickedIndex, index);
+    const end = Math.max(state.lastClickedIndex, index);
+    if (!event.ctrlKey) state.selectedPaths.clear();
+    for (let i = start; i <= end; i++) {
+      state.selectedPaths.add(state.images[i].path);
+    }
+  } else {
+    // Single select
+    state.selectedPaths.clear();
+    state.selectedPaths.add(img.path);
+    state.lastClickedIndex = index;
+  }
+
+  updateGridSelection();
+
+  // Show preview of last clicked (or first selected)
+  if (state.selectedPaths.size === 1) {
+    const path = [...state.selectedPaths][0];
+    showPreview(path);
+    loadCaptionData(path);
+    freeText.disabled = false;
+  } else if (state.selectedPaths.size > 1) {
+    // Show preview of clicked image
+    showPreview(img.path);
+    freeText.disabled = true;
+    freeText.value = "(Multiple images selected)";
+    loadMultiCaptionState();
+  } else {
+    hidePreview();
+    freeText.disabled = true;
+    freeText.value = "";
+  }
+
+  updateMultiInfo();
+  renderSentences();
+
+  // Preload adjacent images
+  preloadAdjacent(index);
+}
+
+function preloadAdjacent(index) {
+  for (let d = -3; d <= 3; d++) {
+    const i = index + d;
+    if (i >= 0 && i < state.images.length) {
+      preloadPreview(state.images[i].path);
+    }
+  }
+}
+
+// ===== PREVIEW =====
+// Zoom/pan state
+let zoomLevel = 1;
+let panX = 0, panY = 0;
+let imgNatW = 0, imgNatH = 0;
+let userHasZoomed = false; // tracks if user manually zoomed/panned
+
+function resetZoomPan() {
+  userHasZoomed = false;
+  fitImageToPanel();
+}
+
+function fitImageToPanel() {
+  if (!imgNatW || !imgNatH) return;
+  const panel = $("#center-panel");
+  const pw = panel.clientWidth;
+  const ph = panel.clientHeight;
+  const scale = Math.min(pw / imgNatW, ph / imgNatH);
+  zoomLevel = scale;
+  panX = (pw - imgNatW * scale) / 2;
+  panY = (ph - imgNatH * scale) / 2;
+  applyTransform();
+}
+
+function applyTransform() {
+  previewImg.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
+  previewImg.style.width = imgNatW + "px";
+  previewImg.style.height = imgNatH + "px";
+}
+
+function showPreview(path) {
+  state.previewPath = path;
+
+  const loadSrc = (src) => {
+    // If the image element already has this src loaded and fitted, skip
+    if (previewImg.src === src && imgNatW) {
+      return;
+    }
+    // Hide until loaded & positioned to prevent flash in wrong spot
+    previewImg.style.display = "none";
+    previewImg.onload = () => {
+      imgNatW = previewImg.naturalWidth;
+      imgNatH = previewImg.naturalHeight;
+      resetZoomPan();
+      previewImg.style.display = "block";
+    };
+    previewImg.src = src;
+  };
+
+  // 1) If we have a preview-quality cached version, show it immediately
+  const cachedPreview = previewCache.get(path);
+  if (cachedPreview) {
+    loadSrc(cachedPreview);
+  } else {
+    // 2) Show the thumbnail instantly as a blurry placeholder
+    const thumbLoadSize = getThumbLoadSize();
+    const cachedThumb = thumbBlobCache.get(path + ":" + thumbLoadSize);
+    if (cachedThumb) {
+      loadSrc(cachedThumb);
+    } else {
+      // 3) Nothing cached at all — load preview URL directly
+      loadSrc(`/api/preview?path=${encodeURIComponent(path)}`);
+    }
+    // Start loading the preview-quality version in background
+    preloadPreview(path);
+  }
+
+  previewPlaceholder.style.display = "none";
+  const img = state.images.find(i => i.path === path);
+  if (img) {
+    previewInfo.textContent = img.name;
+    previewInfo.style.display = "block";
+  }
+}
+
+function hidePreview() {
+  state.previewPath = null;
+  previewImg.style.display = "none";
+  previewPlaceholder.style.display = "block";
+  previewInfo.style.display = "none";
+  imgNatW = 0;
+  imgNatH = 0;
+}
+
+// ===== ZOOM & PAN =====
+{
+  const panel = document.getElementById("center-panel");
+
+  // Mouse wheel zoom — zooms toward cursor position
+  panel.addEventListener("wheel", (e) => {
+    if (!imgNatW) return;
+    e.preventDefault();
+    userHasZoomed = true;
+    const rect = panel.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    const oldZoom = zoomLevel;
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    zoomLevel *= factor;
+    // Clamp zoom
+    const panelW = panel.clientWidth;
+    const panelH = panel.clientHeight;
+    const minZoom = Math.min(panelW / imgNatW, panelH / imgNatH, 1) * 0.5;
+    zoomLevel = Math.max(minZoom, Math.min(zoomLevel, 30));
+
+    // Adjust pan so the point under the cursor stays fixed
+    const realFactor = zoomLevel / oldZoom;
+    panX = mx - realFactor * (mx - panX);
+    panY = my - realFactor * (my - panY);
+    applyTransform();
+  }, { passive: false });
+
+  // Drag to pan
+  let isDragging = false;
+  let dragStartX, dragStartY, dragPanStartX, dragPanStartY;
+
+  panel.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    isDragging = true;
+    userHasZoomed = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    dragPanStartX = panX;
+    dragPanStartY = panY;
+    panel.classList.add("dragging");
+    e.preventDefault();
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!isDragging) return;
+    panX = dragPanStartX + (e.clientX - dragStartX);
+    panY = dragPanStartY + (e.clientY - dragStartY);
+    applyTransform();
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (isDragging) {
+      isDragging = false;
+      panel.classList.remove("dragging");
+    }
+  });
+
+  // Double-click to reset zoom
+  panel.addEventListener("dblclick", (e) => {
+    if (!imgNatW) return;
+    e.preventDefault();
+    userHasZoomed = false;
+    resetZoomPan();
+  });
+
+  // Re-fit on window resize
+  window.addEventListener("resize", () => {
+    if (imgNatW && zoomLevel) {
+      // Only reset if at fit-zoom (not manually zoomed)
+      const panelW = panel.clientWidth;
+      const panelH = panel.clientHeight;
+      const fitScale = Math.min(panelW / imgNatW, panelH / imgNatH, 1);
+      if (Math.abs(zoomLevel - fitScale) < 0.01 || zoomLevel < fitScale) {
+        fitImageToPanel();
+      }
+    }
+  });
+}
+
+// ===== CAPTION DATA =====
+async function loadCaptionData(path) {
+  const sentencesJson = JSON.stringify(state.predefinedSentences);
+  try {
+    const resp = await fetch(`/api/caption?path=${encodeURIComponent(path)}&sentences=${encodeURIComponent(sentencesJson)}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      state.captionCache[path] = data;
+      // Update UI if still selected
+      if (state.selectedPaths.size === 1 && state.selectedPaths.has(path)) {
+        freeText.value = data.free_text || "";
+        renderSentences();
+      }
+    }
+  } catch (err) {
+    console.error("Failed to load caption:", err);
+  }
+}
+
+async function loadMultiCaptionState() {
+  const paths = [...state.selectedPaths];
+  const sentencesJson = JSON.stringify(state.predefinedSentences);
+
+  // Batch load captions
+  try {
+    const resp = await fetch(`/api/captions/bulk?paths=${encodeURIComponent(JSON.stringify(paths))}&sentences=${encodeURIComponent(sentencesJson)}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      for (const [path, caption] of Object.entries(data)) {
+        state.captionCache[path] = caption;
+      }
+      renderSentences();
+    }
+  } catch (err) {
+    console.error("Failed to load bulk captions:", err);
+  }
+}
+
+function updateMultiInfo() {
+  if (state.selectedPaths.size > 1) {
+    multiInfo.style.display = "block";
+    multiInfo.textContent = `${state.selectedPaths.size} images selected — toggling sentences applies to all`;
+  } else {
+    multiInfo.style.display = "none";
+  }
+}
+
+// ===== SENTENCES =====
+let _saveSentencesTimeout = null;
+function saveSentencesToStorage() {
+  // Debounce saves to avoid hammering the server during rapid edits
+  if (_saveSentencesTimeout) clearTimeout(_saveSentencesTimeout);
+  _saveSentencesTimeout = setTimeout(() => {
+    if (!state.folder) return;
+    fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sentences: state.predefinedSentences, folder: state.folder }),
+    }).catch(err => console.error("Failed to save sentences:", err));
+  }, 300);
+}
+
+function addSentence() {
+  const text = newSentenceInput.value.trim();
+  if (!text || state.predefinedSentences.includes(text)) return;
+  state.predefinedSentences.push(text);
+  saveSentencesToStorage();
+  newSentenceInput.value = "";
+  renderSentences();
+}
+
+function removeSentence(sentence) {
+  state.predefinedSentences = state.predefinedSentences.filter(s => s !== sentence);
+  saveSentencesToStorage();
+  renderSentences();
+}
+
+function renderSentences() {
+  sentenceList.innerHTML = "";
+  const selectedPaths = [...state.selectedPaths];
+
+  for (const sentence of state.predefinedSentences) {
+    const li = document.createElement("li");
+
+    // Determine state across all selected images
+    let enabledCount = 0;
+    let totalCount = selectedPaths.length;
+    for (const path of selectedPaths) {
+      const cap = state.captionCache[path];
+      if (cap && cap.enabled_sentences && cap.enabled_sentences.includes(sentence)) {
+        enabledCount++;
+      }
+    }
+
+    const isChecked = totalCount > 0 && enabledCount === totalCount;
+    const isPartial = totalCount > 0 && enabledCount > 0 && enabledCount < totalCount;
+    const isUnchecked = enabledCount === 0;
+
+    const checkBox = document.createElement("div");
+    checkBox.className = "check-box";
+    if (isChecked) checkBox.classList.add("checked");
+    else if (isPartial) checkBox.classList.add("partial");
+
+    const textSpan = document.createElement("span");
+    textSpan.className = "sentence-text";
+    if (isPartial) textSpan.classList.add("partial");
+    textSpan.textContent = sentence;
+
+    li.appendChild(checkBox);
+    li.appendChild(textSpan);
+
+    li.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleSentence(sentence, isChecked, isPartial);
+    });
+
+    li.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      showSentenceContextMenu(e, sentence);
+    });
+
+    sentenceList.appendChild(li);
+  }
+}
+
+async function toggleSentence(sentence, wasChecked, wasPartial) {
+  const selectedPaths = [...state.selectedPaths];
+  if (selectedPaths.length === 0) return;
+
+  // If checked or partial -> disable for all. If unchecked -> enable for all.
+  const shouldEnable = !wasChecked;
+
+  statusBar.textContent = "Saving...";
+
+  try {
+    const resp = await fetch("/api/caption/batch-toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_paths: selectedPaths,
+        sentence: sentence,
+        enabled: shouldEnable,
+      }),
+    });
+    if (resp.ok) {
+      // Update local cache
+      for (const path of selectedPaths) {
+        if (!state.captionCache[path]) {
+          state.captionCache[path] = { enabled_sentences: [], free_text: "" };
+        }
+        const cap = state.captionCache[path];
+        if (shouldEnable) {
+          if (!cap.enabled_sentences.includes(sentence)) {
+            cap.enabled_sentences.unshift(sentence);
+          }
+        } else {
+          cap.enabled_sentences = cap.enabled_sentences.filter(s => s !== sentence);
+        }
+      }
+      renderSentences();
+      // Update caption indicators on thumbnails
+      for (const path of selectedPaths) {
+        const cap = state.captionCache[path];
+        const hasContent = cap && (cap.enabled_sentences.length > 0 || (cap.free_text && cap.free_text.trim()));
+        markCaptionIndicator(path, hasContent);
+      }
+      // If single selection, reload to get accurate free text
+      if (selectedPaths.length === 1) {
+        await loadCaptionData(selectedPaths[0]);
+      }
+      statusBar.textContent = "Saved";
+    }
+  } catch (err) {
+    statusBar.textContent = `Error: ${err.message}`;
+  }
+}
+
+function showSentenceContextMenu(event, sentence) {
+  // Remove existing
+  document.querySelectorAll(".ctx-menu").forEach(m => m.remove());
+
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  menu.style.left = event.clientX + "px";
+  menu.style.top = event.clientY + "px";
+
+  const removeItem = document.createElement("div");
+  removeItem.textContent = "Remove sentence";
+  removeItem.addEventListener("click", () => { removeSentence(sentence); menu.remove(); });
+  menu.appendChild(removeItem);
+
+  document.body.appendChild(menu);
+  setTimeout(() => {
+    document.addEventListener("click", () => menu.remove(), { once: true });
+  }, 10);
+}
+
+// ===== FREE TEXT =====
+let freeTextSaveTimeout = null;
+freeText.addEventListener("input", () => {
+  if (state.selectedPaths.size !== 1) return;
+  const path = [...state.selectedPaths][0];
+
+  // Update cache
+  if (!state.captionCache[path]) {
+    state.captionCache[path] = { enabled_sentences: [], free_text: "" };
+  }
+  state.captionCache[path].free_text = freeText.value;
+
+  // Debounced save
+  if (freeTextSaveTimeout) clearTimeout(freeTextSaveTimeout);
+  freeTextSaveTimeout = setTimeout(() => saveFreeText(path), 400);
+});
+
+async function saveFreeText(path) {
+  const cap = state.captionCache[path];
+  if (!cap) return;
+  statusBar.textContent = "Saving...";
+  try {
+    await fetch("/api/caption/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_path: path,
+        enabled_sentences: cap.enabled_sentences || [],
+        free_text: cap.free_text || "",
+      }),
+    });
+    statusBar.textContent = "Saved";
+    // Update caption indicator
+    const hasContent = (cap.enabled_sentences && cap.enabled_sentences.length > 0) || (cap.free_text && cap.free_text.trim());
+    markCaptionIndicator(path, !!hasContent);
+  } catch (err) {
+    statusBar.textContent = `Error saving: ${err.message}`;
+  }
+}
+
+// ===== THUMBNAIL SIZE SLIDER =====
+thumbSlider.addEventListener("input", () => {
+  state.thumbSize = parseInt(thumbSlider.value);
+  document.documentElement.style.setProperty("--thumb-size", state.thumbSize + "px");
+
+  // Re-render with new size
+  const cells = fileGrid.querySelectorAll(".thumb-cell");
+  cells.forEach(cell => {
+    cell.style.width = state.thumbSize + "px";
+    cell.style.height = state.thumbSize + "px";
+  });
+});
+
+// When slider released, reload thumbnails at appropriate resolution
+thumbSlider.addEventListener("change", () => {
+  const thumbLoadSize = getThumbLoadSize();
+  for (const img of state.images) {
+    const key = img.path + ":" + thumbLoadSize;
+    if (!thumbBlobCache.has(key)) {
+      queueThumbLoad(img.path, thumbLoadSize);
+    }
+  }
+});
+
+// ===== RESIZE HANDLES =====
+function setupResize(handleEl, panelEl, side) {
+  let startX, startW;
+  handleEl.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    startX = e.clientX;
+    startW = panelEl.offsetWidth;
+    handleEl.classList.add("active");
+    const onMove = (e2) => {
+      const dx = side === "left" ? (e2.clientX - startX) : (startX - e2.clientX);
+      const newW = Math.max(200, Math.min(window.innerWidth * 0.5, startW + dx));
+      panelEl.style.width = newW + "px";
+    };
+    const onUp = () => {
+      handleEl.classList.remove("active");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+setupResize($("#left-resize"), $("#left-panel"), "left");
+setupResize($("#right-resize"), $("#right-panel"), "right");
+
+// ===== EVENT LISTENERS =====
+loadBtn.addEventListener("click", loadFolder);
+folderInput.addEventListener("keydown", (e) => { if (e.key === "Enter") loadFolder(); });
+addSentenceBtn.addEventListener("click", addSentence);
+newSentenceInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addSentence(); });
+removeSentenceBtn.addEventListener("click", () => {
+  // Remove last sentence or open context menu logic
+  if (state.predefinedSentences.length > 0) {
+    const sentence = state.predefinedSentences[state.predefinedSentences.length - 1];
+    if (confirm(`Remove sentence: "${sentence}"?`)) {
+      removeSentence(sentence);
+    }
+  }
+});
+
+// Keyboard shortcuts
+document.addEventListener("keydown", (e) => {
+  // Ctrl+A to select all (when not in text input)
+  if ((e.ctrlKey || e.metaKey) && e.key === "a" && document.activeElement !== freeText && document.activeElement !== newSentenceInput && document.activeElement !== folderInput) {
+    e.preventDefault();
+    state.selectedPaths.clear();
+    state.images.forEach(img => state.selectedPaths.add(img.path));
+    updateGridSelection();
+    updateMultiInfo();
+    loadMultiCaptionState();
+  }
+
+  // Arrow keys for navigation
+  if (e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "ArrowDown") {
+    if (document.activeElement === freeText || document.activeElement === newSentenceInput || document.activeElement === folderInput) return;
+    e.preventDefault();
+    const dir = (e.key === "ArrowRight" || e.key === "ArrowDown") ? 1 : -1;
+    let newIdx = state.lastClickedIndex + dir;
+    if (newIdx < 0) newIdx = 0;
+    if (newIdx >= state.images.length) newIdx = state.images.length - 1;
+    if (newIdx >= 0 && newIdx < state.images.length) {
+      handleThumbClick(newIdx, e);
+      // Scroll into view
+      const cell = fileGrid.querySelector(`[data-index="${newIdx}"]`);
+      if (cell) cell.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }
+});
+
+// Load settings from server on startup
+async function initFromSettings() {
+  try {
+    const resp = await fetch("/api/settings");
+    if (resp.ok) {
+      const settings = await resp.json();
+      if (settings.last_folder) {
+        folderInput.value = settings.last_folder;
+      }
+    }
+  } catch (err) {
+    console.error("Failed to load settings:", err);
+  }
+}
+initFromSettings();
+
+// Initial render of sentences
+renderSentences();
+</script>
+</body>
+</html>
