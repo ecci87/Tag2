@@ -325,6 +325,46 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   background: rgba(0,0,0,0.7); color: #fff; padding: 4px 12px; border-radius: 12px;
   font-size: 11px; display: none; white-space: nowrap;
 }
+  #preview-caption-overlay {
+    position: absolute;
+    display: none;
+    top: 8px;
+    left: 8px;
+    max-width: min(420px, calc(100% - 16px));
+    padding: 2px 0;
+    background: transparent;
+    pointer-events: auto;
+    z-index: 3;
+  }
+  #preview-caption-overlay.visible { display: block; }
+  #preview-caption-list {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    max-height: min(40vh, 320px);
+    overflow: auto;
+  }
+  .preview-caption-link {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--fg);
+    font-size: 12px;
+    line-height: 1.3;
+    text-align: left;
+    cursor: pointer;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    transition: color 0.12s ease, opacity 0.12s ease;
+  }
+  .preview-caption-link:hover {
+    color: var(--accent);
+    opacity: 1;
+  }
+  .preview-caption-link:focus-visible {
+    outline: 2px solid rgba(137,180,250,0.55);
+    outline-offset: 2px;
+  }
 
 /* RIGHT RESIZE */
 #right-resize {
@@ -380,6 +420,49 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   transition: background 0.1s; font-size: 12px;
 }
 .section-sentences li:hover { background: var(--hover); }
+  .section-sentences li.drag-over {
+    box-shadow: inset 0 2px 0 var(--accent);
+    background: rgba(137,180,250,0.12);
+  }
+  .section-sentences li.dragging-item {
+    opacity: 0.5;
+  }
+  .section-sentences li.jump-highlight {
+    background: rgba(166,227,161,0.16);
+    box-shadow: inset 0 0 0 1px rgba(166,227,161,0.28);
+  }
+.section-sentences.drag-over-end {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.section-sentences > li.group-item-wrap {
+  display: block;
+  padding: 0;
+  cursor: default;
+}
+.section-sentences > li.group-item-wrap:hover {
+  background: transparent;
+}
+.section-sentences > li.group-item-wrap.drag-over {
+  box-shadow: inset 0 2px 0 var(--accent);
+  background: rgba(137,180,250,0.08);
+}
+.section-sentences > li.group-item-wrap.dragging-item {
+  opacity: 0.5;
+}
+.section-sentences li .drag-handle {
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.section-sentences li .drag-handle:hover,
+.group-header .drag-handle:hover,
+.section-header .drag-handle:hover {
+  color: var(--accent);
+}
 .section-sentences li .check-box {
   width: 14px; height: 14px; border: 2px solid var(--border); border-radius: 3px;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
@@ -455,25 +538,49 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 #add-section-bar {
   display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
-#add-section-btn {
-  flex: 1; padding: 5px 12px; background: var(--accent2); color: #1e1e2e; border: none;
-  border-radius: 3px; cursor: pointer; font-weight: 600;
+#add-section-bar .toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  user-select: none;
+  white-space: nowrap;
 }
-#add-section-btn:hover { filter: brightness(1.1); }
+#add-section-bar .toggle-label input {
+  accent-color: var(--accent2);
+}
 
 #model-log-panel {
   display: none; flex-direction: column; border-bottom: 1px solid var(--border); background: var(--bg);
   flex-shrink: 0;
 }
 #model-log-panel.visible { display: flex; }
+#model-log-panel.collapsed #model-log {
+  display: none;
+}
 #model-log-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--fg-dim); font-size: 12px;
 }
+#model-log-panel.collapsed #model-log-header {
+  border-bottom: none;
+}
+#model-log-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#model-log-toggle-btn,
 #model-log-clear-btn {
   background: transparent; color: var(--fg-dim); border: 1px solid var(--border); border-radius: 6px;
   padding: 2px 8px; cursor: pointer; font-size: 12px;
 }
+#model-log-toggle-btn {
+  width: 26px;
+  padding: 2px 0;
+}
+#model-log-toggle-btn:hover,
 #model-log-clear-btn:hover { color: var(--fg); border-color: var(--accent); }
 #model-log {
   max-height: 170px; overflow: auto; padding: 8px 10px; margin: 0;
@@ -494,6 +601,9 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 .group-body {
   display: flex;
   flex-direction: column;
+}
+.section-body {
+  padding-left: 14px;
 }
 .section-body.collapsed,
 .group-body.collapsed {
@@ -516,6 +626,8 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   cursor: pointer;
   padding: 0;
   flex-shrink: 0;
+  font-size: 15px;
+  line-height: 1;
 }
 .section-header .drag-handle {
   color: var(--fg-dim);
@@ -594,6 +706,17 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   font-weight: 600;
 }
 .group-header:hover { background: rgba(249,226,175,0.08); }
+.group-header .drag-handle {
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+.group-header.drag-over { border-bottom: 2px solid var(--accent-warn); }
+.group-header.dragging-group { opacity: 0.5; }
 .group-header .group-name {
   flex: 1;
   cursor: text;
@@ -628,6 +751,26 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   font-weight: 700; font-size: 14px; line-height: 1;
 }
 .section-add-row button:hover { filter: brightness(1.08); border-color: var(--accent2); }
+.section-add-row .section-add-group-btn {
+  background: rgba(249,226,175,0.14);
+  color: var(--accent-warn);
+  border: 1px solid rgba(166,227,161,0.35);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+.section-add-row .section-add-group-btn:hover {
+  background: var(--accent-warn);
+  color: #1e1e2e;
+  border-color: var(--accent-warn);
+}
+.section-add-section-row {
+  padding: 8px;
+}
+.section-add-section-row button {
+  width: 100%;
+  height: 28px;
+  border-radius: 8px;
+}
 
 /* Free text */
 #freetext-section { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -729,9 +872,52 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 #settings-cancel-btn { background: var(--bg3); color: var(--fg); }
 #settings-save-btn { background: var(--accent2); color: #1e1e2e; border-color: rgba(166,227,161,0.35); }
 #settings-cancel-btn:hover, #settings-save-btn:hover { filter: brightness(1.08); }
+#error-toast {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 1000;
+  display: none;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(460px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border: 1px solid rgba(243,139,168,0.4);
+  border-radius: 10px;
+  background: rgba(90, 18, 36, 0.96);
+  color: #ffd7df;
+  box-shadow: 0 14px 34px rgba(0,0,0,0.35);
+}
+#error-toast.visible { display: flex; }
+#error-toast-message {
+  flex: 1;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#error-toast-close {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+#error-toast-close:hover {
+  background: rgba(255,255,255,0.08);
+}
 </style>
 </head>
 <body>
+<div id="error-toast" role="alert" aria-live="assertive">
+  <div id="error-toast-message"></div>
+  <button id="error-toast-close" type="button" aria-label="Dismiss error">×</button>
+</div>
 <div id="app">
   <!-- TOOLBAR -->
   <div id="toolbar">
@@ -761,6 +947,9 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <!-- CENTER: image preview -->
     <div id="center-panel">
       <img id="preview-img" alt="Preview">
+      <div id="preview-caption-overlay" aria-live="polite">
+        <div id="preview-caption-list"></div>
+      </div>
       <div id="crop-overlay">
         <div id="crop-guide-v" class="crop-guide"></div>
         <div id="crop-guide-h" class="crop-guide"></div>
@@ -791,15 +980,21 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 
     <!-- RIGHT: captions -->
     <div id="right-panel">
-      <!-- Add section button -->
+      <!-- Captions toolbar -->
       <div id="add-section-bar">
         <button id="auto-caption-btn" class="generate-btn generate-btn-toolbar" title="Use Ollama to verify captions for the selected image(s)"><span class="btn-content"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">Auto Caption</span></span></button>
-        <button id="add-section-btn" title="Add new section">+ Add Section</button>
+        <label class="toggle-label" title="Hide add controls for sections and groups">
+          <input type="checkbox" id="hide-add-buttons-checkbox">
+          <span>Hide Add Buttons</span>
+        </label>
       </div>
       <div id="model-log-panel">
         <div id="model-log-header">
           <span>Model Log</span>
-          <button id="model-log-clear-btn" type="button">Clear</button>
+          <div id="model-log-header-actions">
+            <button id="model-log-toggle-btn" type="button" aria-label="Collapse model log" title="Collapse model log">▾</button>
+            <button id="model-log-clear-btn" type="button">Clear</button>
+          </div>
         </div>
         <pre id="model-log"></pre>
       </div>
@@ -811,11 +1006,11 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
       <!-- Free text -->
       <div id="freetext-section">
         <div class="panel-header">
-          <span>Free Text</span>
+          <span></span>
           <div class="panel-actions">
             <label class="toggle-label" title="Ask Ollama for additional free-text details after checking structured captions">
               <input type="checkbox" id="auto-free-text-checkbox" checked>
-              <span>Auto Add Extra Details</span>
+              <span>Auto Caption</span>
             </label>
             <button id="add-free-text-now-btn" class="generate-btn generate-btn-compact generate-btn-icon" type="button" title="Ask Ollama to add only free-text details for the selected image(s)" aria-label="Ask Ollama to add only free-text details for the selected image(s)"><span class="btn-icon" aria-hidden="true"></span></button>
           </div>
@@ -920,6 +1115,8 @@ const state = {
   ollamaEnableFreeText: true,
   ollamaFreeTextPromptTemplate: "You are improving an image caption file. The caption text below already covers known details and must not be repeated. Look at the image and return only notable, important visual details that are still missing. Return either NONE or one short line per missing detail, with no bullets or numbering.\n\nCurrent caption text:\n{caption_text}\n\nAnswer:",
   modelLogLines: [],
+  modelLogCollapsed: false,
+  hideAddButtons: false,
   thumbSize: 160,
 };
 
@@ -947,18 +1144,24 @@ const rotateLeftBtn = $("#rotate-left-btn");
 const rotateRightBtn = $("#rotate-right-btn");
 const previewPlaceholder = $("#preview-placeholder");
 const previewInfo = $("#preview-info");
+const previewCaptionOverlay = $("#preview-caption-overlay");
+const previewCaptionList = $("#preview-caption-list");
 const sectionContainer = $("#section-container");
 const sentencesSection = $("#sentences-section");
 const rightHorizontalResize = $("#right-horizontal-resize");
 const autoCaptionBtn = $("#auto-caption-btn");
 const autoFreeTextCheckbox = $("#auto-free-text-checkbox");
 const addFreeTextNowBtn = $("#add-free-text-now-btn");
-const addSectionBtn = $("#add-section-btn");
+const hideAddButtonsCheckbox = $("#hide-add-buttons-checkbox");
 const freeText = $("#free-text");
 const multiInfo = $("#multi-info");
 const modelLogPanel = $("#model-log-panel");
 const modelLog = $("#model-log");
+const modelLogToggleBtn = $("#model-log-toggle-btn");
 const modelLogClearBtn = $("#model-log-clear-btn");
+const errorToast = $("#error-toast");
+const errorToastMessage = $("#error-toast-message");
+const errorToastClose = $("#error-toast-close");
 const settingsModal = $("#settings-modal");
 const settingsForm = $("#settings-form");
 const settingsCloseBtn = $("#settings-close-btn");
@@ -973,6 +1176,44 @@ const settingsPromptInput = $("#settings-ollama-prompt");
 const settingsGroupPromptInput = $("#settings-ollama-group-prompt");
 const settingsAutoFreeTextEnabled = $("#settings-auto-free-text-enabled");
 const settingsFreeTextPromptInput = $("#settings-ollama-free-text-prompt");
+const sentenceListElements = new Map();
+let errorToastTimer = null;
+
+function hideErrorToast() {
+  if (errorToastTimer) {
+    clearTimeout(errorToastTimer);
+    errorToastTimer = null;
+  }
+  errorToast.classList.remove("visible");
+}
+
+function showErrorToast(message, options = {}) {
+  const text = String(message || "Unexpected error").trim();
+  if (!text) return;
+  const { autoHideMs = 0 } = options;
+  errorToastMessage.textContent = text;
+  errorToast.classList.add("visible");
+  if (errorToastTimer) clearTimeout(errorToastTimer);
+  if (autoHideMs > 0) {
+    errorToastTimer = window.setTimeout(() => {
+      errorToast.classList.remove("visible");
+      errorToastTimer = null;
+    }, autoHideMs);
+  }
+}
+
+errorToastClose.addEventListener("click", hideErrorToast);
+
+window.addEventListener("error", (event) => {
+  const message = event?.error?.message || event?.message || "Unexpected error";
+  showErrorToast(message);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event?.reason;
+  const message = reason?.message || (typeof reason === "string" ? reason : "Unexpected async error");
+  showErrorToast(message);
+});
 
 function makeUiId(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
@@ -1039,11 +1280,97 @@ function setGenerateButtonContent(button, label, options = {}) {
 }
 
 function createEmptyGroup(name = "") {
-  return { name, sentences: [], hidden_sentences: [], _uiId: makeUiId("group") };
+  const id = makeUiId("group");
+  return { id, name, sentences: [], hidden_sentences: [], _uiId: id };
 }
 
 function createEmptySection(name = "") {
-  return { name, sentences: [], groups: [], _uiId: makeUiId("section") };
+  return { name, sentences: [], groups: [], item_order: [], _uiId: makeUiId("section") };
+}
+
+function createSentenceOrderItem(sentence) {
+  return { type: "sentence", sentence };
+}
+
+function createGroupOrderItem(groupId) {
+  return { type: "group", group_id: groupId };
+}
+
+function getSectionOrderItemKey(item) {
+  if (!item || typeof item !== "object") return "";
+  if (item.type === "sentence") return `sentence:${item.sentence || ""}`;
+  if (item.type === "group") return `group:${item.group_id || ""}`;
+  return "";
+}
+
+function getNormalizedSectionItemOrder(section, sentences, groups) {
+  const validSentences = new Set(sentences);
+  const validGroupIds = new Set(groups.map(group => group.id).filter(Boolean));
+  const orderedItems = [];
+  const seenKeys = new Set();
+
+  for (const rawItem of (Array.isArray(section?.item_order) ? section.item_order : [])) {
+    if (!rawItem || typeof rawItem !== "object") continue;
+    const type = String(rawItem.type || "").trim().toLowerCase();
+    if (type === "sentence") {
+      const sentence = String(rawItem.sentence || "").trim();
+      const item = createSentenceOrderItem(sentence);
+      const key = getSectionOrderItemKey(item);
+      if (!sentence || !validSentences.has(sentence) || seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      orderedItems.push(item);
+    } else if (type === "group") {
+      const groupId = String(rawItem.group_id || "").trim();
+      const item = createGroupOrderItem(groupId);
+      const key = getSectionOrderItemKey(item);
+      if (!groupId || !validGroupIds.has(groupId) || seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      orderedItems.push(item);
+    }
+  }
+
+  for (const sentence of sentences) {
+    const item = createSentenceOrderItem(sentence);
+    const key = getSectionOrderItemKey(item);
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      orderedItems.push(item);
+    }
+  }
+
+  for (const group of groups) {
+    const item = createGroupOrderItem(group.id);
+    const key = getSectionOrderItemKey(item);
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      orderedItems.push(item);
+    }
+  }
+
+  return orderedItems;
+}
+
+function getOrderedSectionEntries(section) {
+  const groups = Array.isArray(section?.groups) ? section.groups : [];
+  const groupsById = new Map(groups.map((group, groupIdx) => [group.id, { group, groupIdx }]));
+  const entries = [];
+
+  for (const item of getNormalizedSectionItemOrder(section, section.sentences || [], groups)) {
+    if (item.type === "sentence") {
+      entries.push({ type: "sentence", sentence: item.sentence });
+      continue;
+    }
+    const groupEntry = groupsById.get(item.group_id);
+    if (!groupEntry) continue;
+    entries.push({
+      type: "group",
+      groupId: item.group_id,
+      group: groupEntry.group,
+      groupIdx: groupEntry.groupIdx,
+    });
+  }
+
+  return entries;
 }
 
 function normalizeGroupData(group) {
@@ -1064,6 +1391,7 @@ function normalizeGroupData(group) {
     hiddenSentences.push(text);
   }
   return {
+    id: String(group?.id || group?._uiId || makeUiId("group")).trim(),
     name: String(group?.name || "").trim(),
     sentences,
     hidden_sentences: hiddenSentences,
@@ -1080,10 +1408,12 @@ function normalizeSectionData(section) {
     seen.add(text);
     sentences.push(text);
   }
+  const groups = (Array.isArray(section?.groups) ? section.groups : []).map(normalizeGroupData);
   return {
     name: String(section?.name || "").trim(),
     sentences,
-    groups: (Array.isArray(section?.groups) ? section.groups : []).map(normalizeGroupData),
+    groups,
+    item_order: getNormalizedSectionItemOrder(section, sentences, groups),
     _uiId: section?._uiId || makeUiId("section"),
   };
 }
@@ -1098,10 +1428,14 @@ function serializeSectionsForSave() {
     name: section.name,
     sentences: [...section.sentences],
     groups: section.groups.map(group => ({
+      id: group.id,
       name: group.name,
       sentences: [...group.sentences],
       hidden_sentences: [...(group.hidden_sentences || [])],
     })),
+    item_order: (section.item_order || []).map(item => item.type === "sentence"
+      ? createSentenceOrderItem(item.sentence)
+      : createGroupOrderItem(item.group_id)),
   }));
 }
 
@@ -1168,6 +1502,12 @@ function ensureCaptionCache(path) {
   return state.captionCache[path];
 }
 
+function getPreviewEnabledSentences(path = state.previewPath) {
+  if (!path) return [];
+  const enabledSentences = state.captionCache[path]?.enabled_sentences;
+  return [...new Set((Array.isArray(enabledSentences) ? enabledSentences : []).filter(Boolean))];
+}
+
 function setSectionCollapsed(section, collapsed) {
   state.collapsedSections[section._uiId] = !!collapsed;
 }
@@ -1182,6 +1522,77 @@ function setGroupCollapsed(group, collapsed) {
 
 function isGroupCollapsed(group) {
   return !!state.collapsedGroups[group._uiId];
+}
+
+function findSentenceLocation(sentence) {
+  for (const [sectionIndex, section] of state.sections.entries()) {
+    if ((section.sentences || []).includes(sentence)) {
+      return { sectionIndex, groupIndex: null, section, group: null };
+    }
+    for (const [groupIndex, group] of (section.groups || []).entries()) {
+      if ((group.sentences || []).includes(sentence)) {
+        return { sectionIndex, groupIndex, section, group };
+      }
+    }
+  }
+  return null;
+}
+
+function jumpToSentenceInList(sentence) {
+  const location = findSentenceLocation(sentence);
+  if (!location) return;
+
+  let rerendered = false;
+  if (location.section && isSectionCollapsed(location.section)) {
+    setSectionCollapsed(location.section, false);
+    rerendered = true;
+  }
+  if (location.group && isGroupCollapsed(location.group)) {
+    setGroupCollapsed(location.group, false);
+    rerendered = true;
+  }
+  if (rerendered) {
+    renderSentences();
+  }
+
+  const target = sentenceListElements.get(sentence);
+  if (!target) return;
+
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.remove("jump-highlight");
+  void target.offsetWidth;
+  target.classList.add("jump-highlight");
+  window.setTimeout(() => target.classList.remove("jump-highlight"), 1200);
+}
+
+function renderPreviewCaptionOverlay() {
+  previewCaptionList.innerHTML = "";
+  previewCaptionOverlay.classList.remove("visible");
+
+  const sentences = getPreviewEnabledSentences();
+  if (!state.previewPath || !imgNatW || !imgNatH || previewImg.style.display === "none" || sentences.length === 0) {
+    return;
+  }
+
+  const panel = $("#center-panel");
+  const maxWidth = Math.max(180, Math.min(420, panel.clientWidth - 16));
+
+  previewCaptionOverlay.style.maxWidth = `${maxWidth}px`;
+
+  for (const sentence of sentences) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "preview-caption-link";
+    button.textContent = sentence;
+    button.setAttribute("aria-label", `Jump to caption: ${sentence}`);
+    button.addEventListener("click", (e) => {
+      e.stopPropagation();
+      jumpToSentenceInList(sentence);
+    });
+    previewCaptionList.appendChild(button);
+  }
+
+  previewCaptionOverlay.classList.add("visible");
 }
 
 // ===== THUMBNAIL PRELOADING =====
@@ -1822,12 +2233,28 @@ function renderModelLog() {
     return;
   }
   modelLogPanel.classList.add("visible");
+  modelLogPanel.classList.toggle("collapsed", !!state.modelLogCollapsed);
+  modelLogToggleBtn.textContent = state.modelLogCollapsed ? "▸" : "▾";
+  modelLogToggleBtn.setAttribute("aria-label", state.modelLogCollapsed ? "Expand model log" : "Collapse model log");
+  modelLogToggleBtn.title = state.modelLogCollapsed ? "Expand model log" : "Collapse model log";
   modelLog.innerHTML = state.modelLogLines.join("\n");
-  modelLog.scrollTop = modelLog.scrollHeight;
+  if (!state.modelLogCollapsed) {
+    modelLog.scrollTop = modelLog.scrollHeight;
+  }
+}
+
+function renderAddButtonsVisibility() {
+  hideAddButtonsCheckbox.checked = !!state.hideAddButtons;
 }
 
 function clearModelLog() {
   state.modelLogLines = [];
+  renderModelLog();
+}
+
+function toggleModelLogCollapsed() {
+  if (state.modelLogLines.length === 0) return;
+  state.modelLogCollapsed = !state.modelLogCollapsed;
   renderModelLog();
 }
 
@@ -2209,6 +2636,7 @@ function applyTransform() {
   previewImg.style.width = imgNatW + "px";
   previewImg.style.height = imgNatH + "px";
   renderCropOverlay();
+  renderPreviewCaptionOverlay();
 }
 
 async function showPreview(path) {
@@ -2263,6 +2691,7 @@ async function showPreview(path) {
     previewInfo.textContent = hasAppliedCrop() ? `${img.name} • cropped` : img.name;
     previewInfo.style.display = "block";
   }
+  renderPreviewCaptionOverlay();
 }
 
 function hidePreview() {
@@ -2272,6 +2701,7 @@ function hidePreview() {
   previewInfo.style.display = "none";
   imgNatW = 0;
   imgNatH = 0;
+  renderPreviewCaptionOverlay();
   clearCropDraft();
 }
 
@@ -2434,6 +2864,9 @@ async function loadCaptionData(path) {
         freeText.value = data.free_text || "";
         renderSentences();
       }
+      if (state.previewPath === path) {
+        renderPreviewCaptionOverlay();
+      }
     }
   } catch (err) {
     console.error("Failed to load caption:", err);
@@ -2454,6 +2887,7 @@ async function loadMultiCaptionState() {
         state.captionCache[path] = caption;
       }
       renderSentences();
+      renderPreviewCaptionOverlay();
     }
   } catch (err) {
     console.error("Failed to load bulk captions:", err);
@@ -2484,6 +2918,119 @@ function saveSectionsToStorage() {
   }, 300);
 }
 
+const SECTION_DRAG_TYPE = "application/x-tag2-section";
+const GROUP_DRAG_TYPE = "application/x-tag2-group";
+const SENTENCE_DRAG_TYPE = "application/x-tag2-sentence";
+const SECTION_ITEM_DRAG_TYPE = "application/x-tag2-section-item";
+
+function setDragPayload(event, type, payload) {
+  if (!event.dataTransfer) return;
+  event.dataTransfer.setData(type, JSON.stringify(payload));
+  event.dataTransfer.effectAllowed = "move";
+}
+
+function getDragPayload(event, type) {
+  const raw = event.dataTransfer?.getData(type);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeGroupIndex(groupIdx) {
+  return Number.isInteger(groupIdx) && groupIdx >= 0 ? groupIdx : null;
+}
+
+function getSentenceContainer(secIdx, groupIdx = null) {
+  const section = state.sections[secIdx];
+  if (!section) return null;
+  if (groupIdx === null) return section.sentences;
+  return section.groups?.[groupIdx]?.sentences || null;
+}
+
+function reorderList(list, fromIdx, toIdx) {
+  if (!Array.isArray(list)) return false;
+  if (fromIdx < 0 || toIdx < 0 || fromIdx >= list.length || toIdx >= list.length || fromIdx === toIdx) {
+    return false;
+  }
+  const [moved] = list.splice(fromIdx, 1);
+  list.splice(toIdx, 0, moved);
+  return true;
+}
+
+function moveSentenceWithinContainer(secIdx, groupIdx, fromIdx, toIdx) {
+  const sentences = getSentenceContainer(secIdx, groupIdx);
+  if (!reorderList(sentences, fromIdx, toIdx)) return;
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function createTopLevelSentenceDragRef(sentence) {
+  return { type: "sentence", sentence };
+}
+
+function createTopLevelGroupDragRef(groupId) {
+  return { type: "group", group_id: groupId };
+}
+
+function isValidTopLevelDragRef(ref) {
+  return !!ref && typeof ref === "object" && (
+    (ref.type === "sentence" && !!ref.sentence) ||
+    (ref.type === "group" && !!ref.group_id)
+  );
+}
+
+function moveTopLevelSectionItem(secIdx, fromRef, toRef) {
+  const section = state.sections[secIdx];
+  if (!section || !isValidTopLevelDragRef(fromRef) || !isValidTopLevelDragRef(toRef)) return;
+  const nextOrder = [...(section.item_order || [])];
+  const fromKey = getSectionOrderItemKey(fromRef);
+  const toKey = getSectionOrderItemKey(toRef);
+  const fromIdx = nextOrder.findIndex(item => getSectionOrderItemKey(item) === fromKey);
+  const toIdx = nextOrder.findIndex(item => getSectionOrderItemKey(item) === toKey);
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+  const [moved] = nextOrder.splice(fromIdx, 1);
+  nextOrder.splice(toIdx, 0, moved);
+  section.item_order = nextOrder;
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function moveTopLevelSectionItemToEnd(secIdx, fromRef) {
+  const section = state.sections[secIdx];
+  if (!section || !isValidTopLevelDragRef(fromRef)) return;
+  const nextOrder = [...(section.item_order || [])];
+  const fromKey = getSectionOrderItemKey(fromRef);
+  const fromIdx = nextOrder.findIndex(item => getSectionOrderItemKey(item) === fromKey);
+  if (fromIdx < 0 || fromIdx === nextOrder.length - 1) return;
+  const [moved] = nextOrder.splice(fromIdx, 1);
+  nextOrder.push(moved);
+  section.item_order = nextOrder;
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function moveTopLevelSentenceIntoGroup(secIdx, sentence, groupIdx, targetIdx = null) {
+  const section = state.sections[secIdx];
+  const group = section?.groups?.[groupIdx];
+  if (!section || !group || !sentence) return;
+  const sourceIdx = (section.sentences || []).indexOf(sentence);
+  if (sourceIdx < 0) return;
+
+  section.sentences.splice(sourceIdx, 1);
+  section.item_order = (section.item_order || []).filter(item => !(item?.type === "sentence" && item.sentence === sentence));
+
+  const insertAt = Number.isInteger(targetIdx)
+    ? Math.max(0, Math.min(targetIdx, group.sentences.length))
+    : group.sentences.length;
+  group.sentences.splice(insertAt, 0, sentence);
+
+  saveSectionsToStorage();
+  renderSentences();
+}
+
 function addSentenceToSection(secIdx, text, groupIdx = null) {
   if (!text) return;
   const allSentences = getAllConfiguredSentences();
@@ -2491,6 +3038,10 @@ function addSentenceToSection(secIdx, text, groupIdx = null) {
   if (secIdx >= 0 && secIdx < state.sections.length) {
     if (groupIdx === null) {
       state.sections[secIdx].sentences.push(text);
+      state.sections[secIdx].item_order = [
+        ...(state.sections[secIdx].item_order || []),
+        createSentenceOrderItem(text),
+      ];
     } else if (groupIdx >= 0 && groupIdx < (state.sections[secIdx].groups || []).length) {
       state.sections[secIdx].groups[groupIdx].sentences.push(text);
     }
@@ -2502,6 +3053,7 @@ function addSentenceToSection(secIdx, text, groupIdx = null) {
 function removeSentence(sentence) {
   for (const sec of state.sections) {
     sec.sentences = sec.sentences.filter(s => s !== sentence);
+    sec.item_order = (sec.item_order || []).filter(item => !(item?.type === "sentence" && item.sentence === sentence));
     for (const group of sec.groups || []) {
       group.sentences = group.sentences.filter(s => s !== sentence);
       group.hidden_sentences = (group.hidden_sentences || []).filter(s => s !== sentence);
@@ -2579,6 +3131,10 @@ async function renameSentence(oldSentence, newSentence) {
 
 function addSection() {
   const name = prompt("Section name:");
+  addSectionWithName(name);
+}
+
+function addSectionWithName(name) {
   if (!name || !name.trim()) return;
   state.sections.push(createEmptySection(name.trim()));
   saveSectionsToStorage();
@@ -2587,9 +3143,18 @@ function addSection() {
 
 function addGroup(secIdx) {
   const name = prompt("Group name:");
+  addGroupWithName(secIdx, name);
+}
+
+function addGroupWithName(secIdx, name) {
   if (!name || !name.trim()) return;
   if (secIdx < 0 || secIdx >= state.sections.length) return;
-  state.sections[secIdx].groups.push(createEmptyGroup(name.trim()));
+  const group = createEmptyGroup(name.trim());
+  state.sections[secIdx].groups.push(group);
+  state.sections[secIdx].item_order = [
+    ...(state.sections[secIdx].item_order || []),
+    createGroupOrderItem(group.id),
+  ];
   saveSectionsToStorage();
   renderSentences();
 }
@@ -2612,6 +3177,7 @@ function deleteGroup(secIdx, groupIdx) {
   const label = group.name || "(Group)";
   if (!confirm(`Delete group "${label}" and its ${(group.sentences || []).length} caption(s)?`)) return;
   state.sections[secIdx].groups.splice(groupIdx, 1);
+  state.sections[secIdx].item_order = (state.sections[secIdx].item_order || []).filter(item => !(item?.type === "group" && item.group_id === group.id));
   saveSectionsToStorage();
   renderSentences();
 }
@@ -2692,8 +3258,41 @@ function getSentenceSelectionState(sentence, selectedPaths) {
 
 function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const { isExclusive = false, allowSuppressToggle = false } = options;
+  const secIdx = Number.isInteger(options.secIdx) ? options.secIdx : -1;
+  const groupIdx = normalizeGroupIndex(options.groupIdx);
+  const sentenceIdx = Number.isInteger(options.sentenceIdx) ? options.sentenceIdx : -1;
+  const topLevelMix = !!options.topLevelMix;
   const { isChecked, isPartial } = getSentenceSelectionState(sentence, selectedPaths);
   const li = document.createElement("li");
+  li.dataset.sentence = sentence;
+  sentenceListElements.set(sentence, li);
+  const topLevelRef = topLevelMix ? createTopLevelSentenceDragRef(sentence) : null;
+
+  const dragHandle = document.createElement("span");
+  dragHandle.className = "drag-handle";
+  dragHandle.textContent = "⋮⋮";
+  dragHandle.title = "Drag to reorder caption";
+  dragHandle.draggable = true;
+  dragHandle.addEventListener("click", (e) => e.stopPropagation());
+  dragHandle.addEventListener("mousedown", (e) => e.stopPropagation());
+  dragHandle.addEventListener("dragstart", (e) => {
+    e.stopPropagation();
+    if (topLevelMix) {
+      setDragPayload(e, SECTION_ITEM_DRAG_TYPE, { secIdx, item: topLevelRef });
+    } else {
+      setDragPayload(e, SENTENCE_DRAG_TYPE, {
+        secIdx,
+        groupIdx: groupIdx ?? -1,
+        sentenceIdx,
+      });
+    }
+    li.classList.add("dragging-item");
+  });
+  dragHandle.addEventListener("dragend", () => {
+    li.classList.remove("dragging-item");
+    document.querySelectorAll(".section-sentences li.drag-over").forEach(item => item.classList.remove("drag-over"));
+    document.querySelectorAll(".section-sentences.drag-over-end").forEach(list => list.classList.remove("drag-over-end"));
+  });
 
   const checkBox = document.createElement("div");
   checkBox.className = `check-box${isExclusive ? " radio" : ""}`;
@@ -2736,15 +3335,81 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
       e.stopPropagation();
       toggleSentenceHiddenOnExport(sentence);
     });
+    li.appendChild(dragHandle);
     li.appendChild(checkBox);
     li.appendChild(textSpan);
     li.appendChild(exportToggleBtn);
     li.appendChild(rmBtn);
   } else {
+    li.appendChild(dragHandle);
     li.appendChild(checkBox);
     li.appendChild(textSpan);
     li.appendChild(rmBtn);
   }
+  li.addEventListener("dragover", (e) => {
+    if (topLevelMix) {
+      const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+      if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
+      if (getSectionOrderItemKey(payload.item) === getSectionOrderItemKey(topLevelRef)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      li.classList.add("drag-over");
+      return;
+    }
+    const topLevelPayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+    if (
+      topLevelPayload
+      && topLevelPayload.secIdx === secIdx
+      && topLevelPayload.item?.type === "sentence"
+      && groupIdx !== null
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      li.classList.add("drag-over");
+      return;
+    }
+    const payload = getDragPayload(e, SENTENCE_DRAG_TYPE);
+    if (!payload) return;
+    if (payload.secIdx !== secIdx || normalizeGroupIndex(payload.groupIdx) !== groupIdx) return;
+    if (payload.sentenceIdx === sentenceIdx) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    li.classList.add("drag-over");
+  });
+  li.addEventListener("dragleave", () => {
+    li.classList.remove("drag-over");
+  });
+  li.addEventListener("drop", (e) => {
+    if (topLevelMix) {
+      const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+      if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
+      e.preventDefault();
+      li.classList.remove("drag-over");
+      moveTopLevelSectionItem(secIdx, payload.item, topLevelRef);
+      return;
+    }
+    const topLevelPayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+    if (
+      topLevelPayload
+      && topLevelPayload.secIdx === secIdx
+      && topLevelPayload.item?.type === "sentence"
+      && groupIdx !== null
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      li.classList.remove("drag-over");
+      moveTopLevelSentenceIntoGroup(secIdx, topLevelPayload.item.sentence, groupIdx, sentenceIdx);
+      return;
+    }
+    const payload = getDragPayload(e, SENTENCE_DRAG_TYPE);
+    if (!payload) return;
+    const payloadGroupIdx = normalizeGroupIndex(payload.groupIdx);
+    if (payload.secIdx !== secIdx || payloadGroupIdx !== groupIdx) return;
+    e.preventDefault();
+    li.classList.remove("drag-over");
+    moveSentenceWithinContainer(secIdx, groupIdx, payload.sentenceIdx, sentenceIdx);
+  });
   li.addEventListener("click", (e) => {
     e.stopPropagation();
     toggleSentence(sentence, isChecked, isPartial);
@@ -2752,7 +3417,194 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   return li;
 }
 
+function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
+  const wrapper = document.createElement("li");
+  wrapper.className = "group-item-wrap";
+  const topLevelRef = createTopLevelGroupDragRef(group.id);
+
+  const groupBlock = document.createElement("div");
+  groupBlock.className = "group-block";
+
+  const groupHeader = document.createElement("div");
+  groupHeader.className = "group-header";
+
+  const groupDragHandle = document.createElement("span");
+  groupDragHandle.className = "drag-handle";
+  groupDragHandle.textContent = "⋮⋮";
+  groupDragHandle.title = "Drag to reorder group";
+  groupDragHandle.draggable = true;
+  groupDragHandle.addEventListener("click", (e) => e.stopPropagation());
+  groupDragHandle.addEventListener("mousedown", (e) => e.stopPropagation());
+  groupDragHandle.addEventListener("dragstart", (e) => {
+    e.stopPropagation();
+    setDragPayload(e, SECTION_ITEM_DRAG_TYPE, { secIdx, item: topLevelRef });
+    wrapper.classList.add("dragging-item");
+  });
+  groupDragHandle.addEventListener("dragend", () => {
+    wrapper.classList.remove("dragging-item");
+    document.querySelectorAll(".section-sentences li.drag-over").forEach(item => item.classList.remove("drag-over"));
+    document.querySelectorAll(".section-sentences.drag-over-end").forEach(list => list.classList.remove("drag-over-end"));
+  });
+  groupHeader.appendChild(groupDragHandle);
+
+  const groupCollapseBtn = document.createElement("button");
+  groupCollapseBtn.type = "button";
+  groupCollapseBtn.className = "collapse-btn";
+  groupCollapseBtn.textContent = isGroupCollapsed(group) ? "▸" : "▾";
+  groupCollapseBtn.title = isGroupCollapsed(group) ? "Expand group" : "Collapse group";
+  groupCollapseBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setGroupCollapsed(group, !isGroupCollapsed(group));
+    renderSentences();
+  });
+  groupHeader.appendChild(groupCollapseBtn);
+
+  const groupName = document.createElement("span");
+  groupName.className = "group-name";
+  groupName.draggable = false;
+  groupName.textContent = group.name || "(Group)";
+  groupName.addEventListener("click", (e) => {
+    e.stopPropagation();
+    beginEditableRename(groupName, group.name || "", (newName) => {
+      group.name = newName;
+      saveSectionsToStorage();
+      renderSentences();
+    }, "var(--accent-warn)");
+  });
+  groupHeader.appendChild(groupName);
+
+  const groupRefreshBtn = document.createElement("button");
+  groupRefreshBtn.type = "button";
+  groupRefreshBtn.className = "group-refresh-btn generate-btn generate-btn-icon";
+  groupRefreshBtn.title = "Refresh this group with auto captioning";
+  setGenerateButtonContent(groupRefreshBtn, "Refresh this group with auto captioning", { iconOnly: true });
+  groupRefreshBtn.disabled = state.autoCaptioning || state.selectedPaths.size === 0 || !state.ollamaModel.trim();
+  groupRefreshBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    refreshGroupCaptions(secIdx, groupIdx);
+  });
+  groupHeader.appendChild(groupRefreshBtn);
+
+  const groupRemoveBtn = document.createElement("button");
+  groupRemoveBtn.type = "button";
+  groupRemoveBtn.className = "group-remove-btn";
+  groupRemoveBtn.textContent = "\u00D7";
+  groupRemoveBtn.title = "Delete group";
+  groupRemoveBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    deleteGroup(secIdx, groupIdx);
+  });
+  groupHeader.appendChild(groupRemoveBtn);
+
+  groupHeader.addEventListener("dragover", (e) => {
+    const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+    if (!payload || payload.secIdx !== secIdx || payload.item?.type !== "sentence") return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    groupHeader.classList.add("drag-over");
+  });
+  groupHeader.addEventListener("dragleave", () => {
+    groupHeader.classList.remove("drag-over");
+  });
+  groupHeader.addEventListener("drop", (e) => {
+    const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+    if (!payload || payload.secIdx !== secIdx || payload.item?.type !== "sentence") return;
+    e.preventDefault();
+    e.stopPropagation();
+    groupHeader.classList.remove("drag-over");
+    moveTopLevelSentenceIntoGroup(secIdx, payload.item.sentence, groupIdx);
+  });
+
+  groupBlock.appendChild(groupHeader);
+
+  const groupBody = document.createElement("div");
+  groupBody.className = `group-body${isGroupCollapsed(group) ? " collapsed" : ""}`;
+  const groupSentences = document.createElement("ul");
+  groupSentences.className = "section-sentences group-sentences";
+  groupSentences.addEventListener("dragover", (e) => {
+    const topLevelPayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+    if (topLevelPayload && topLevelPayload.secIdx === secIdx && topLevelPayload.item?.type === "sentence") {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      if (e.target === groupSentences) {
+        groupSentences.classList.add("drag-over-end");
+      }
+      return;
+    }
+    const payload = getDragPayload(e, SENTENCE_DRAG_TYPE);
+    if (!payload) return;
+    if (payload.secIdx !== secIdx || normalizeGroupIndex(payload.groupIdx) !== groupIdx) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (e.target === groupSentences) {
+      groupSentences.classList.add("drag-over-end");
+    }
+  });
+  groupSentences.addEventListener("dragleave", (e) => {
+    if (!groupSentences.contains(e.relatedTarget)) {
+      groupSentences.classList.remove("drag-over-end");
+    }
+  });
+  groupSentences.addEventListener("drop", (e) => {
+    const topLevelPayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+    if (topLevelPayload && topLevelPayload.secIdx === secIdx && topLevelPayload.item?.type === "sentence") {
+      if (e.target !== groupSentences) return;
+      e.preventDefault();
+      e.stopPropagation();
+      groupSentences.classList.remove("drag-over-end");
+      moveTopLevelSentenceIntoGroup(secIdx, topLevelPayload.item.sentence, groupIdx);
+      return;
+    }
+    const payload = getDragPayload(e, SENTENCE_DRAG_TYPE);
+    if (!payload) return;
+    if (payload.secIdx !== secIdx || normalizeGroupIndex(payload.groupIdx) !== groupIdx) return;
+    if (e.target !== groupSentences) return;
+    e.preventDefault();
+    groupSentences.classList.remove("drag-over-end");
+    const sentences = getSentenceContainer(secIdx, groupIdx) || [];
+    const targetIdx = Math.max(0, sentences.length - 1);
+    moveSentenceWithinContainer(secIdx, groupIdx, payload.sentenceIdx, targetIdx);
+  });
+  for (const [sentenceIdx, sentence] of (group.sentences || []).entries()) {
+    groupSentences.appendChild(createSentenceListItem(sentence, selectedPaths, {
+      isExclusive: true,
+      allowSuppressToggle: true,
+      secIdx,
+      groupIdx,
+      sentenceIdx,
+    }));
+  }
+  groupBody.appendChild(groupSentences);
+  groupBody.appendChild(createAddSentenceRow(secIdx, groupIdx, "Add caption to group..."));
+  groupBlock.appendChild(groupBody);
+  wrapper.appendChild(groupBlock);
+
+  wrapper.addEventListener("dragover", (e) => {
+    const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+    if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
+    if (getSectionOrderItemKey(payload.item) === getSectionOrderItemKey(topLevelRef)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    wrapper.classList.add("drag-over");
+  });
+  wrapper.addEventListener("dragleave", () => {
+    wrapper.classList.remove("drag-over");
+  });
+  wrapper.addEventListener("drop", (e) => {
+    const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+    if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
+    e.preventDefault();
+    wrapper.classList.remove("drag-over");
+    moveTopLevelSectionItem(secIdx, payload.item, topLevelRef);
+  });
+
+  return wrapper;
+}
+
 function createAddSentenceRow(secIdx, groupIdx = null, placeholder = "Add caption...") {
+  if (state.hideAddButtons) return document.createComment("add-row-hidden");
   const addRow = document.createElement("div");
   addRow.className = `section-add-row${groupIdx === null ? "" : " group-add-row"}`;
   const addInput = document.createElement("input");
@@ -2773,11 +3625,53 @@ function createAddSentenceRow(secIdx, groupIdx = null, placeholder = "Add captio
   });
   addRow.appendChild(addInput);
   addRow.appendChild(addBtn);
+  if (groupIdx === null) {
+    const addGroupBtn = document.createElement("button");
+    addGroupBtn.type = "button";
+    addGroupBtn.className = "section-add-group-btn";
+    addGroupBtn.textContent = "+G";
+    addGroupBtn.title = "Create group from this text";
+    addGroupBtn.addEventListener("click", () => {
+      const text = addInput.value.trim();
+      if (!text) return;
+      addGroupWithName(secIdx, text);
+      addInput.value = "";
+    });
+    addRow.appendChild(addGroupBtn);
+  }
+  return addRow;
+}
+
+function createAddSectionRow() {
+  if (state.hideAddButtons) return document.createComment("add-section-row-hidden");
+  const addRow = document.createElement("div");
+  addRow.className = "section-add-row section-add-section-row";
+  const addInput = document.createElement("input");
+  addInput.type = "text";
+  addInput.placeholder = "Section name...";
+  addInput.spellcheck = false;
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.textContent = "+ Section";
+  addBtn.title = "Add new section";
+  const submit = () => {
+    const text = addInput.value.trim();
+    if (!text) return;
+    addSectionWithName(text);
+    addInput.value = "";
+  };
+  addBtn.addEventListener("click", submit);
+  addInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submit();
+  });
+  addRow.appendChild(addInput);
+  addRow.appendChild(addBtn);
   return addRow;
 }
 
 function renderSentences() {
   sectionContainer.innerHTML = "";
+  sentenceListElements.clear();
   const selectedPaths = [...state.selectedPaths];
 
   state.sections = normalizeSectionsData(state.sections);
@@ -2791,6 +3685,12 @@ function renderSentences() {
     header.className = "section-header";
     header.draggable = true;
 
+    const dragHandle = document.createElement("span");
+    dragHandle.className = "drag-handle";
+    dragHandle.textContent = "⋮⋮";
+    dragHandle.title = "Drag to reorder section";
+    header.appendChild(dragHandle);
+
     const collapseBtn = document.createElement("button");
     collapseBtn.type = "button";
     collapseBtn.className = "collapse-btn";
@@ -2802,12 +3702,6 @@ function renderSentences() {
       renderSentences();
     });
     header.appendChild(collapseBtn);
-
-    const dragHandle = document.createElement("span");
-    dragHandle.className = "drag-handle";
-    dragHandle.textContent = "⇅";
-    dragHandle.title = "Drag to reorder section";
-    header.appendChild(dragHandle);
 
     const nameSpan = document.createElement("span");
     nameSpan.className = "section-name";
@@ -2826,17 +3720,6 @@ function renderSentences() {
     });
     header.appendChild(nameSpan);
 
-    const addGroupBtn = document.createElement("button");
-    addGroupBtn.type = "button";
-    addGroupBtn.className = "section-add-group-btn";
-    addGroupBtn.textContent = "+G";
-    addGroupBtn.title = "Add group";
-    addGroupBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      addGroup(secIdx);
-    });
-    header.appendChild(addGroupBtn);
-
     const removeBtn = document.createElement("button");
     removeBtn.className = "section-remove-btn";
     removeBtn.textContent = "\u00D7";
@@ -2849,8 +3732,7 @@ function renderSentences() {
 
     header.addEventListener("dragstart", (e) => {
       if (nameSpan.contentEditable === "true") { e.preventDefault(); return; }
-      e.dataTransfer.setData("text/plain", String(secIdx));
-      e.dataTransfer.effectAllowed = "move";
+      setDragPayload(e, SECTION_DRAG_TYPE, { secIdx });
       header.classList.add("dragging-section");
     });
     header.addEventListener("dragend", () => {
@@ -2858,6 +3740,8 @@ function renderSentences() {
       document.querySelectorAll(".section-header.drag-over").forEach(h => h.classList.remove("drag-over"));
     });
     header.addEventListener("dragover", (e) => {
+      const payload = getDragPayload(e, SECTION_DRAG_TYPE);
+      if (!payload) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       header.classList.add("drag-over");
@@ -2866,9 +3750,11 @@ function renderSentences() {
       header.classList.remove("drag-over");
     });
     header.addEventListener("drop", (e) => {
+      const payload = getDragPayload(e, SECTION_DRAG_TYPE);
+      if (!payload) return;
       e.preventDefault();
       header.classList.remove("drag-over");
-      const fromIdx = Number.parseInt(e.dataTransfer.getData("text/plain"), 10);
+      const fromIdx = Number.parseInt(payload.secIdx, 10);
       const toIdx = secIdx;
       if (Number.isNaN(fromIdx) || fromIdx === toIdx) return;
       const [moved] = state.sections.splice(fromIdx, 1);
@@ -2883,89 +3769,51 @@ function renderSentences() {
     body.className = `section-body${isSectionCollapsed(section) ? " collapsed" : ""}`;
 
     const sectionSentences = document.createElement("ul");
-    sectionSentences.className = "section-sentences";
-    for (const sentence of section.sentences || []) {
-      sectionSentences.appendChild(createSentenceListItem(sentence, selectedPaths));
+    sectionSentences.className = "section-sentences section-mixed-list";
+    sectionSentences.addEventListener("dragover", (e) => {
+      const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+      if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      if (e.target === sectionSentences) {
+        sectionSentences.classList.add("drag-over-end");
+      }
+    });
+    sectionSentences.addEventListener("dragleave", (e) => {
+      if (!sectionSentences.contains(e.relatedTarget)) {
+        sectionSentences.classList.remove("drag-over-end");
+      }
+    });
+    sectionSentences.addEventListener("drop", (e) => {
+      const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+      if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
+      if (e.target !== sectionSentences) return;
+      e.preventDefault();
+      sectionSentences.classList.remove("drag-over-end");
+      moveTopLevelSectionItemToEnd(secIdx, payload.item);
+    });
+    for (const entry of getOrderedSectionEntries(section)) {
+      if (entry.type === "sentence") {
+        sectionSentences.appendChild(createSentenceListItem(entry.sentence, selectedPaths, {
+          secIdx,
+          topLevelMix: true,
+        }));
+      } else if (entry.type === "group") {
+        sectionSentences.appendChild(createGroupListItem(section, entry.group, secIdx, entry.groupIdx, selectedPaths));
+      }
     }
     body.appendChild(sectionSentences);
-
-    for (const [groupIdx, group] of (section.groups || []).entries()) {
-      const groupBlock = document.createElement("div");
-      groupBlock.className = "group-block";
-
-      const groupHeader = document.createElement("div");
-      groupHeader.className = "group-header";
-
-      const groupCollapseBtn = document.createElement("button");
-      groupCollapseBtn.type = "button";
-      groupCollapseBtn.className = "collapse-btn";
-      groupCollapseBtn.textContent = isGroupCollapsed(group) ? "▸" : "▾";
-      groupCollapseBtn.title = isGroupCollapsed(group) ? "Expand group" : "Collapse group";
-      groupCollapseBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        setGroupCollapsed(group, !isGroupCollapsed(group));
-        renderSentences();
-      });
-      groupHeader.appendChild(groupCollapseBtn);
-
-      const groupName = document.createElement("span");
-      groupName.className = "group-name";
-      groupName.draggable = false;
-      groupName.textContent = group.name || "(Group)";
-      groupName.addEventListener("click", (e) => {
-        e.stopPropagation();
-        beginEditableRename(groupName, group.name || "", (newName) => {
-          group.name = newName;
-          saveSectionsToStorage();
-          renderSentences();
-        }, "var(--accent-warn)");
-      });
-      groupHeader.appendChild(groupName);
-
-      const groupRefreshBtn = document.createElement("button");
-      groupRefreshBtn.type = "button";
-      groupRefreshBtn.className = "group-refresh-btn generate-btn generate-btn-icon";
-      groupRefreshBtn.title = "Refresh this group with auto captioning";
-      setGenerateButtonContent(groupRefreshBtn, "Refresh this group with auto captioning", { iconOnly: true });
-      groupRefreshBtn.disabled = state.autoCaptioning || state.selectedPaths.size === 0 || !state.ollamaModel.trim();
-      groupRefreshBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        refreshGroupCaptions(secIdx, groupIdx);
-      });
-      groupHeader.appendChild(groupRefreshBtn);
-
-      const groupRemoveBtn = document.createElement("button");
-      groupRemoveBtn.type = "button";
-      groupRemoveBtn.className = "group-remove-btn";
-      groupRemoveBtn.textContent = "\u00D7";
-      groupRemoveBtn.title = "Delete group";
-      groupRemoveBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        deleteGroup(secIdx, groupIdx);
-      });
-      groupHeader.appendChild(groupRemoveBtn);
-
-      groupBlock.appendChild(groupHeader);
-
-      const groupBody = document.createElement("div");
-      groupBody.className = `group-body${isGroupCollapsed(group) ? " collapsed" : ""}`;
-      const groupSentences = document.createElement("ul");
-      groupSentences.className = "section-sentences group-sentences";
-      for (const sentence of group.sentences || []) {
-        groupSentences.appendChild(createSentenceListItem(sentence, selectedPaths, { isExclusive: true, allowSuppressToggle: true }));
-      }
-      groupBody.appendChild(groupSentences);
-      groupBody.appendChild(createAddSentenceRow(secIdx, groupIdx, "Add caption to group..."));
-      groupBlock.appendChild(groupBody);
-      body.appendChild(groupBlock);
-    }
 
     body.appendChild(createAddSentenceRow(secIdx, null, "Add caption to section..."));
     sectionBlock.appendChild(body);
     sectionContainer.appendChild(sectionBlock);
   });
 
+  sectionContainer.appendChild(createAddSectionRow());
+
   updateActionButtons();
+  renderAddButtonsVisibility();
+  renderPreviewCaptionOverlay();
 }
 
 async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex = null, targetGroupIndex = null, enableFreeText = null } = {}) {
@@ -3202,6 +4050,7 @@ async function toggleSentence(sentence, wasChecked, wasPartial) {
         cap.enabled_sentences = applySentenceSelectionToList(cap.enabled_sentences, sentence, shouldEnable);
       }
       renderSentences();
+      renderPreviewCaptionOverlay();
       // Update caption indicators on thumbnails
       for (const path of selectedPaths) {
         const cap = state.captionCache[path];
@@ -3345,6 +4194,10 @@ folderInput.addEventListener("keydown", (e) => { if (e.key === "Enter") loadFold
 settingsBtn.addEventListener("click", openSettingsModal);
 autoCaptionBtn.addEventListener("click", autoCaptionSelected);
 addFreeTextNowBtn.addEventListener("click", addFreeTextNow);
+hideAddButtonsCheckbox.addEventListener("change", () => {
+  state.hideAddButtons = hideAddButtonsCheckbox.checked;
+  renderSentences();
+});
 autoFreeTextCheckbox.addEventListener("change", async () => {
   state.ollamaEnableFreeText = autoFreeTextCheckbox.checked;
   try {
@@ -3357,10 +4210,10 @@ autoFreeTextCheckbox.addEventListener("change", async () => {
     console.error("Failed to save free-text toggle:", err);
   }
 });
-addSectionBtn.addEventListener("click", addSection);
 settingsCloseBtn.addEventListener("click", closeSettingsModal);
 settingsCancelBtn.addEventListener("click", closeSettingsModal);
 settingsSaveBtn.addEventListener("click", saveOllamaSettingsFromForm);
+modelLogToggleBtn.addEventListener("click", toggleModelLogCollapsed);
 modelLogClearBtn.addEventListener("click", clearModelLog);
 settingsForm.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -3369,6 +4222,7 @@ settingsForm.addEventListener("submit", (e) => {
 settingsModal.addEventListener("click", (e) => {
   if (e.target === settingsModal) closeSettingsModal();
 });
+renderAddButtonsVisibility();
 
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {

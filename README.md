@@ -1,6 +1,8 @@
 # Tag2 – Image Captioning Tool
 
-A lightweight, browser-based tool for browsing images and managing text captions. Built with **FastAPI** and a single-page HTML frontend.
+A lightweight, browser-based tool for browsing images and managing text captions for AI datasets. Most useful for LoRA type captioning.
+Supports Ollama auto captioning using a check per user caption approach, instead of letting AI generate a free from text leading to more precise LoRA training friendly results.
+Built with **FastAPI** and a single-page HTML frontend.
 
 ## Features
 
@@ -8,7 +10,7 @@ A lightweight, browser-based tool for browsing images and managing text captions
 - Thumbnail grid with adjustable sizes
 - Zoomable image preview
 - Predefined caption tags (per-folder configurable)
-- Free-text captions
+- Free-text captionsa
 - Batch toggle captions across multiple selected images
 - Auto captioning with Ollama by checking images against the predefined captions
 - Aspect ratio checking in the thumbnail grid against the configured allowed ratios

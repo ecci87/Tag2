@@ -7,19 +7,10 @@ FastAPI-based server for browsing images and managing captions.
 import os
 import sys
 import json
-import re
 import asyncio
-import atexit
-import base64
-import hashlib
-import shutil
 import subprocess
 import platform
-import tempfile
 import warnings
-import urllib.error
-import urllib.request
-from urllib.parse import urlparse
 from pathlib import Path
 from io import BytesIO
 from typing import Optional
@@ -30,12 +21,80 @@ from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from PIL import Image, ImageOps
+from PIL import Image
 
-try:
-    import piexif
-except ImportError:  # pragma: no cover - optional during import
-    piexif = None
+from tag2_captions import (
+    _build_caption_text,
+    _get_caption_path,
+    _read_caption_file,
+    _write_caption_file,
+)
+from tag2_images import (
+    IMAGE_EXTENSIONS,
+    PREVIEW_MAX_SIZE,
+    THUMBNAIL_SIZES,
+    _apply_real_crop,
+    _clear_thumbnail_cache_for_path,
+    _encode_image_for_ollama,
+    _generate_thumbnail,
+    _get_crop_backup_dir,
+    _get_crop_backup_path,
+    _get_display_image_size,
+    _get_image_crop,
+    _get_thumbnail,
+    _load_oriented_image,
+    _normalize_crop_rect,
+    _normalize_exif_bytes,
+    _normalize_image_key,
+    _remove_real_crop,
+    _render_image_bytes,
+    _rotate_image,
+    _rotate_image_file,
+    _save_image_file,
+)
+from tag2_ollama import (
+    _auto_caption_sections as _tag2_auto_caption_sections,
+    _auto_caption_sentences as _tag2_auto_caption_sentences,
+    _compose_ollama_host,
+    _extract_free_text_lines,
+    _get_ollama_enable_free_text,
+    _get_ollama_free_text_prompt_template,
+    _get_ollama_group_prompt_template,
+    _get_ollama_host,
+    _get_ollama_model,
+    _get_ollama_port,
+    _get_ollama_prompt_template,
+    _get_ollama_server,
+    _get_ollama_timeout_seconds,
+    _merge_free_text,
+    _normalize_caption_line,
+    _ollama_generate,
+    _ollama_prompt_for_free_text,
+    _ollama_prompt_for_group,
+    _ollama_prompt_for_sentence,
+    _parse_ollama_selection,
+    _parse_ollama_yes_no,
+    _split_ollama_host,
+    _suggest_free_text as _tag2_suggest_free_text,
+)
+from tag2_sections import (
+    _all_headers_from_sections,
+    _all_sentences_from_sections,
+    _apply_sentence_selection,
+    _find_group_for_sentence,
+    _get_crop_aspect_ratios,
+    _get_folder_sections,
+    _get_group_target,
+    _group_hidden_sentences,
+    _is_general_section_name,
+    _is_hidden_group_sentence,
+    _iter_caption_targets,
+    _iter_caption_targets_with_indices,
+    _normalize_enabled_sentences,
+    _ordered_sections_for_output,
+    _rename_sentence_in_sections,
+    _set_folder_sections,
+)
 
 app = FastAPI(title="Image Captioning Tool")
 
@@ -54,12 +113,7 @@ app.add_middleware(
 # Thread pool for IO-bound thumbnail generation
 executor = ThreadPoolExecutor(max_workers=8)
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
-
-# In-memory thumbnail cache: (path, mtime) -> bytes
-thumbnail_cache: dict[tuple[str, float], bytes] = {}
-THUMBNAIL_SIZES = [64, 128, 256, 400]
-PREVIEW_MAX_SIZE = 2048  # Max edge for preview images
+# In-memory thumbnail cache lives in `tag2_images`.
 
 # ===== CONFIG FILE =====
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -93,15 +147,6 @@ DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE = (
 )
 
 
-RUNTIME_CROP_BACKUP_DIR = tempfile.mkdtemp(prefix="tag2-crop-")
-
-
-@atexit.register
-def _cleanup_runtime_crop_backups():
-    """Delete temporary crop backups when the server process exits."""
-    shutil.rmtree(RUNTIME_CROP_BACKUP_DIR, ignore_errors=True)
-
-
 def _load_config() -> dict:
     """Load config from disk. Returns default structure if file missing."""
     default = {
@@ -130,13 +175,17 @@ def _load_config() -> dict:
                 data = json.load(f)
             if "ollama_server" not in data or "ollama_port" not in data:
                 parsed_server, parsed_port = _split_ollama_host(
-                    str(data.get("ollama_host") or default["ollama_host"])
+                    str(data.get("ollama_host") or default["ollama_host"]),
+                    DEFAULT_OLLAMA_SERVER,
+                    DEFAULT_OLLAMA_PORT,
                 )
                 data.setdefault("ollama_server", parsed_server)
                 data.setdefault("ollama_port", parsed_port)
             data["ollama_host"] = _compose_ollama_host(
                 data.get("ollama_server"),
                 data.get("ollama_port"),
+                DEFAULT_OLLAMA_SERVER,
+                DEFAULT_OLLAMA_PORT,
             )
             # Merge with defaults so new keys are always present
             for k, v in default.items():
@@ -153,904 +202,69 @@ def _save_config(cfg: dict):
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
-def _get_folder_sections(cfg: dict, folder: str) -> list[dict]:
-    """Get sections for a folder, falling back to default_sections.
-    Returns list of dicts: [{"name": "SectionName", "sentences": [...], "groups": [...]}, ...]
-    The unnamed section (name='') holds sentences without a section header.
-    """
-    def _normalize_sentences(sentences) -> list[str]:
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for raw in sentences or []:
-            text = str(raw).strip()
-            if not text or text in seen:
-                continue
-            seen.add(text)
-            cleaned.append(text)
-        return cleaned
-
-    def _normalize_group(group: dict | None) -> dict:
-        group = dict(group or {})
-        sentences = _normalize_sentences(group.get("sentences", []))
-        hidden_sentences = [
-            sentence for sentence in _normalize_sentences(group.get("hidden_sentences", []))
-            if sentence in sentences
-        ]
-        return {
-            "name": str(group.get("name") or "").strip(),
-            "sentences": sentences,
-            "hidden_sentences": hidden_sentences,
-        }
-
-    def _normalize_section(section: dict | None) -> dict:
-        section = dict(section or {})
-        groups = []
-        for group in section.get("groups", []) or []:
-            normalized_group = _normalize_group(group)
-            if normalized_group["name"] or normalized_group["sentences"]:
-                groups.append(normalized_group)
-        return {
-            "name": str(section.get("name") or "").strip(),
-            "sentences": _normalize_sentences(section.get("sentences", [])),
-            "groups": groups,
-        }
-
-    folder_key = os.path.normpath(folder)
-    folder_cfg = cfg.get("folders", {}).get(folder_key, None)
-    if folder_cfg is not None:
-        if "sections" in folder_cfg:
-            return [_normalize_section(s) for s in folder_cfg["sections"]]
-        # Migration: old flat sentences list -> single unnamed section
-        if "sentences" in folder_cfg:
-            return [_normalize_section({"name": "", "sentences": list(folder_cfg["sentences"]), "groups": []})]
-    # Try default_sections
-    default_sections = cfg.get("default_sections", [])
-    if default_sections:
-        return [_normalize_section(s) for s in default_sections]
-    # Migration from old default_sentences
-    default_sentences = cfg.get("default_sentences", [])
-    if default_sentences:
-        return [_normalize_section({"name": "", "sentences": list(default_sentences), "groups": []})]
-    return [_normalize_section({"name": "", "sentences": [], "groups": []})]
-
-
-def _set_folder_sections(cfg: dict, folder: str, sections: list[dict]):
-    """Set sections for a specific folder."""
-    folder_key = os.path.normpath(folder)
-    if "folders" not in cfg:
-        cfg["folders"] = {}
-    if folder_key not in cfg["folders"]:
-        cfg["folders"][folder_key] = {}
-    cfg["folders"][folder_key]["sections"] = _get_folder_sections({
-        "folders": {folder_key: {"sections": sections}}
-    }, folder_key)
-    # Remove legacy key if present
-    cfg["folders"][folder_key].pop("sentences", None)
-
-
-def _all_sentences_from_sections(sections: list[dict]) -> list[str]:
-    """Flatten sections into a single list of all predefined sentences."""
-    result = []
-    for sec in sections:
-        result.extend(sec.get("sentences", []))
-        for group in sec.get("groups", []) or []:
-            result.extend(group.get("sentences", []))
-    return result
-
-
-def _group_hidden_sentences(group: dict | None) -> list[str]:
-    return [sentence for sentence in (group or {}).get("hidden_sentences", []) or [] if sentence]
-
-
-def _is_hidden_group_sentence(sections: list[dict], sentence: str) -> bool:
-    for section in sections:
-        for group in section.get("groups", []) or []:
-            if sentence in _group_hidden_sentences(group):
-                return True
-    return False
-
-
-def _is_general_section_name(name: str | None) -> bool:
-    normalized = str(name or "").strip()
-    if not normalized:
-        return True
-    normalized = normalized.lstrip("#").strip().lower()
-    return normalized == "general"
-
-
-def _ordered_sections_for_output(sections: list[dict]) -> list[dict]:
-    """Keep section order stable while pinning the general section to the top."""
-    indexed_sections = list(enumerate(sections))
-    indexed_sections.sort(key=lambda item: (0 if _is_general_section_name(item[1].get("name")) else 1, item[0]))
-    return [section for _, section in indexed_sections]
-
-
-def _all_headers_from_sections(sections: list[dict]) -> list[str]:
-    """Collect structured section header lines used in caption files."""
-    headers: list[str] = []
-    seen: set[str] = set()
-    for section in _ordered_sections_for_output(sections):
-        section_name = str(section.get("name") or "").strip()
-        aliases = [section_name] if section_name else []
-        if _is_general_section_name(section_name):
-            aliases.extend(["(General)", "## General"])
-        for alias in aliases:
-            if not alias or alias in seen:
-                continue
-            seen.add(alias)
-            headers.append(alias)
-    return headers
-
-
-def _iter_caption_targets(sections: list[dict]):
-    """Yield caption targets in display order."""
-    for section in sections:
-        for sentence in section.get("sentences", []):
-            yield {
-                "type": "sentence",
-                "section_name": section.get("name", ""),
-                "sentence": sentence,
-            }
-        for group in section.get("groups", []) or []:
-            group_sentences = list(group.get("sentences", []))
-            if not group_sentences:
-                continue
-            yield {
-                "type": "group",
-                "section_index": None,
-                "group_index": None,
-                "section_name": section.get("name", ""),
-                "group_name": group.get("name", ""),
-                "sentences": group_sentences,
-            }
-
-
-def _iter_caption_targets_with_indices(sections: list[dict]):
-    """Yield caption targets in display order together with stable section/group indices."""
-    for section_index, section in enumerate(sections):
-        for sentence in section.get("sentences", []):
-            yield {
-                "type": "sentence",
-                "section_index": section_index,
-                "group_index": None,
-                "section_name": section.get("name", ""),
-                "sentence": sentence,
-            }
-        for group_index, group in enumerate(section.get("groups", []) or []):
-            group_sentences = list(group.get("sentences", []))
-            if not group_sentences:
-                continue
-            yield {
-                "type": "group",
-                "section_index": section_index,
-                "group_index": group_index,
-                "section_name": section.get("name", ""),
-                "group_name": group.get("name", ""),
-                "sentences": group_sentences,
-            }
-
-
-def _get_group_target(sections: list[dict], section_index: int | None, group_index: int | None) -> dict | None:
-    """Return a specific group target by section/group indices."""
-    if section_index is None or group_index is None:
-        return None
-    if section_index < 0 or section_index >= len(sections):
-        return None
-    groups = sections[section_index].get("groups", []) or []
-    if group_index < 0 or group_index >= len(groups):
-        return None
-    group = groups[group_index]
-    group_sentences = list(group.get("sentences", []))
-    if not group_sentences:
-        return None
-    return {
-        "type": "group",
-        "section_index": section_index,
-        "group_index": group_index,
-        "section_name": sections[section_index].get("name", ""),
-        "group_name": group.get("name", ""),
-        "sentences": group_sentences,
-    }
-
-
-def _find_group_for_sentence(sections: list[dict], sentence: str) -> dict | None:
-    """Return the group containing a sentence, if any."""
-    for section in sections:
-        for group in section.get("groups", []) or []:
-            if sentence in group.get("sentences", []):
-                return group
-    return None
-
-
-def _apply_sentence_selection(enabled_sentences: list[str], sentence: str,
-                              sections: list[dict], should_enable: bool) -> list[str]:
-    """Apply a sentence toggle while enforcing group exclusivity."""
-    updated = [item for item in enabled_sentences if item != sentence]
-    if should_enable:
-        group = _find_group_for_sentence(sections, sentence)
-        if group:
-            group_sentences = set(group.get("sentences", []))
-            updated = [item for item in updated if item not in group_sentences]
-        updated.append(sentence)
-    return updated
-
-
-def _normalize_enabled_sentences(enabled_sentences: list[str], sections: list[dict]) -> list[str]:
-    """Normalize enabled sentences against known captions and group exclusivity."""
-    known = set(_all_sentences_from_sections(sections))
-    normalized: list[str] = []
-    for sentence in enabled_sentences:
-        if sentence not in known:
-            continue
-        normalized = _apply_sentence_selection(normalized, sentence, sections, True)
-    return normalized
-
-
-def _rename_sentence_in_sections(sections: list[dict], old_sentence: str, new_sentence: str) -> bool:
-    """Rename a configured sentence inside sections/groups."""
-    renamed = False
-    for section in sections:
-        section_sentences = list(section.get("sentences", []))
-        if old_sentence in section_sentences:
-            renamed = True
-        section["sentences"] = [new_sentence if sentence == old_sentence else sentence for sentence in section_sentences]
-        for group in section.get("groups", []) or []:
-            group_sentences = list(group.get("sentences", []))
-            if old_sentence in group_sentences:
-                renamed = True
-            group["sentences"] = [new_sentence if sentence == old_sentence else sentence for sentence in group_sentences]
-            group_hidden_sentences = _group_hidden_sentences(group)
-            group["hidden_sentences"] = [
-                new_sentence if sentence == old_sentence else sentence
-                for sentence in group_hidden_sentences
-                if (new_sentence if sentence == old_sentence else sentence) in group["sentences"]
-            ]
-    return renamed
-
-
-def _get_crop_aspect_ratios(cfg: dict) -> list[str]:
-    """Get the configured list of allowed crop aspect ratios."""
-    ratios = cfg.get("crop_aspect_ratios", DEFAULT_CROP_ASPECT_RATIOS)
-    if not isinstance(ratios, list):
-        return list(DEFAULT_CROP_ASPECT_RATIOS)
-    cleaned = [str(r).strip() for r in ratios if str(r).strip()]
-    return cleaned or list(DEFAULT_CROP_ASPECT_RATIOS)
-
-
-def _normalize_image_key(image_path: str) -> str:
-    """Normalize an image path for use as a config key."""
-    return os.path.normcase(os.path.abspath(os.path.normpath(image_path)))
-
-
-def _get_crop_backup_dir() -> str:
-    """Return the folder used for reversible crop backups."""
-    return RUNTIME_CROP_BACKUP_DIR
-
-
-def _get_crop_backup_path(image_path: str) -> str:
-    """Build a unique backup file path for a cropped image."""
-    normalized = _normalize_image_key(image_path)
-    digest = hashlib.sha256(normalized.encode("utf-8", errors="surrogatepass")).hexdigest()[:16]
-    image = Path(image_path)
-    stem = image.stem or "image"
-    suffix = image.suffix or ".img"
-    return os.path.join(_get_crop_backup_dir(), f"{stem}.{digest}{suffix}")
-
-
-def _clear_thumbnail_cache_for_path(image_path: str):
-    """Drop cached thumbnails/previews for a specific image."""
-    normalized = _normalize_image_key(image_path)
-    for key in [k for k in thumbnail_cache if _normalize_image_key(k[0]) == normalized]:
-        thumbnail_cache.pop(key, None)
-
-
-def _normalize_crop_rect(crop: dict, image_size: tuple[int, int]) -> dict:
-    """Clamp and normalize a crop rectangle to fit the source image."""
-    img_w, img_h = image_size
-    x = int(round(float(crop.get("x", 0))))
-    y = int(round(float(crop.get("y", 0))))
-    w = int(round(float(crop.get("w", 0))))
-    h = int(round(float(crop.get("h", 0))))
-    ratio = str(crop.get("ratio", "")).strip()
-
-    x = max(0, min(x, max(0, img_w - 1)))
-    y = max(0, min(y, max(0, img_h - 1)))
-    w = max(1, min(w, img_w - x))
-    h = max(1, min(h, img_h - y))
-
-    result = {"x": x, "y": y, "w": w, "h": h}
-    if ratio:
-        result["ratio"] = ratio
-    return result
-
-
-def _normalize_exif_bytes(exif_bytes: bytes | None) -> bytes | None:
-    """Normalize EXIF orientation so served images are not rotated twice."""
-    if not exif_bytes:
-        return None
-    if piexif is None:
-        return None
-    try:
-        exif_dict = piexif.load(exif_bytes)
-        exif_dict.setdefault("0th", {})
-        exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
-        return piexif.dump(exif_dict)
-    except Exception:
-        return None
-
-
-def _load_oriented_image(filepath: str) -> tuple[Image.Image, str, bytes | None, bytes | None]:
-    """Load an image with EXIF orientation applied."""
-    with Image.open(filepath) as source:
-        original_format = (source.format or Path(filepath).suffix.lstrip(".") or "PNG").upper()
-        exif_bytes = _normalize_exif_bytes(source.info.get("exif"))
-        icc_profile = source.info.get("icc_profile")
-        image = ImageOps.exif_transpose(source)
-        image.load()
-    return image, original_format, exif_bytes, icc_profile
-
-
-def _get_display_image_size(filepath: str) -> tuple[int, int]:
-    """Return the image size as displayed after EXIF transforms are applied."""
-    with Image.open(filepath) as source:
-        return ImageOps.exif_transpose(source).size
-
-
-def _save_image_file(filepath: str, image: Image.Image, original_format: str,
-                     exif_bytes: bytes | None = None, icc_profile: bytes | None = None):
-    """Save an image while preserving useful metadata where possible."""
-    fmt = "JPEG" if original_format in {"JPG", "JPEG"} else ("PNG" if original_format == "PNG" else original_format)
-    save_kwargs: dict = {}
-    if exif_bytes:
-        save_kwargs["exif"] = exif_bytes
-    if icc_profile:
-        save_kwargs["icc_profile"] = icc_profile
-
-    output = image
-    if fmt == "JPEG":
-        if output.mode not in ("RGB", "L"):
-            output = output.convert("RGB")
-        output.save(filepath, format=fmt, quality=95, optimize=True, **save_kwargs)
-        return
-
-    output.save(filepath, format=fmt, **save_kwargs)
-
-
-def _get_image_crop(image_path: str) -> dict:
-    """Return current/original display dimensions and crop state for an image."""
-    backup_path = _get_crop_backup_path(image_path)
-    try:
-        current_w, current_h = _get_display_image_size(image_path)
-    except Exception:
-        return {"applied": os.path.isfile(backup_path)}
-
-    original_w = current_w
-    original_h = current_h
-    applied = False
-    if os.path.isfile(backup_path):
-        applied = True
-        try:
-            original_w, original_h = _get_display_image_size(backup_path)
-        except Exception:
-            original_w, original_h = current_w, current_h
-
-    return {
-        "applied": applied,
-        "current_width": current_w,
-        "current_height": current_h,
-        "original_width": original_w,
-        "original_height": original_h,
-    }
-
-
-def _apply_real_crop(image_path: str, crop: dict) -> dict:
-    """Crop the actual image file while keeping a reversible backup."""
-    os.makedirs(_get_crop_backup_dir(), exist_ok=True)
-    backup_path = _get_crop_backup_path(image_path)
-    if not os.path.isfile(backup_path):
-        shutil.copy2(image_path, backup_path)
-
-    image, original_format, exif_bytes, icc_profile = _load_oriented_image(image_path)
-    try:
-        normalized = _normalize_crop_rect(crop, image.size)
-        cropped = image.crop((
-            normalized["x"],
-            normalized["y"],
-            normalized["x"] + normalized["w"],
-            normalized["y"] + normalized["h"],
-        ))
-        _save_image_file(image_path, cropped, original_format, exif_bytes, icc_profile)
-    finally:
-        image.close()
-
-    _clear_thumbnail_cache_for_path(image_path)
-    return normalized
-
-
-def _remove_real_crop(image_path: str) -> bool:
-    """Restore the original image file if a crop backup exists."""
-    backup_path = _get_crop_backup_path(image_path)
-    if not os.path.isfile(backup_path):
-        return False
-    shutil.copy2(backup_path, image_path)
-    os.remove(backup_path)
-    _clear_thumbnail_cache_for_path(image_path)
-    return True
-
-def _rotate_image_file(filepath: str, clockwise: bool):
-    """Rotate an image file by 90 degrees while preserving metadata."""
-    image, original_format, exif_bytes, icc_profile = _load_oriented_image(filepath)
-    try:
-        rotated = image.transpose(Image.Transpose.ROTATE_270 if clockwise else Image.Transpose.ROTATE_90)
-        _save_image_file(filepath, rotated, original_format, exif_bytes, icc_profile)
-    finally:
-        image.close()
-
-def _rotate_image(image_path: str, direction: str) -> dict:
-    """Rotate the actual image file and any active crop backup by 90 degrees."""
-    normalized_direction = str(direction or "").strip().lower()
-    if normalized_direction not in {"left", "right"}:
-        raise ValueError("direction must be 'left' or 'right'")
-
-    clockwise = normalized_direction == "right"
-    _rotate_image_file(image_path, clockwise)
-
-    backup_path = _get_crop_backup_path(image_path)
-    if os.path.isfile(backup_path):
-        _rotate_image_file(backup_path, clockwise)
-
-    _clear_thumbnail_cache_for_path(image_path)
-    return _get_image_crop(image_path)
-
-
-def _get_ollama_host(cfg: dict) -> str:
-    """Get the configured Ollama host."""
-    server = cfg.get("ollama_server")
-    port = cfg.get("ollama_port")
-    if server is not None or port is not None:
-        return _compose_ollama_host(server, port)
-    return str(cfg.get("ollama_host") or f"http://{DEFAULT_OLLAMA_SERVER}:{DEFAULT_OLLAMA_PORT}").rstrip("/")
-
-
-def _split_ollama_host(host: str) -> tuple[str, int]:
-    """Split a full Ollama host URL into server and port."""
-    raw = (host or "").strip()
-    if not raw:
-        return DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT
-    if "://" not in raw:
-        raw = f"http://{raw}"
-    parsed = urlparse(raw)
-    server = parsed.hostname or DEFAULT_OLLAMA_SERVER
-    port = parsed.port or DEFAULT_OLLAMA_PORT
-    return server, port
-
-
-def _compose_ollama_host(server: str | None, port: int | str | None) -> str:
-    """Compose a normalized Ollama host URL from server and port."""
-    host_server = str(server or DEFAULT_OLLAMA_SERVER).strip() or DEFAULT_OLLAMA_SERVER
-    try:
-        host_port = int(port if port is not None else DEFAULT_OLLAMA_PORT)
-    except (TypeError, ValueError):
-        host_port = DEFAULT_OLLAMA_PORT
-    return f"http://{host_server}:{host_port}"
-
-
-def _get_ollama_server(cfg: dict) -> str:
-    """Get configured Ollama server hostname."""
-    server = str(cfg.get("ollama_server") or "").strip()
-    if server:
-        return server
-    return _split_ollama_host(_get_ollama_host(cfg))[0]
-
-
-def _get_ollama_port(cfg: dict) -> int:
-    """Get configured Ollama server port."""
-    port = cfg.get("ollama_port")
-    try:
-        if port is not None:
-            return int(port)
-    except (TypeError, ValueError):
-        pass
-    return _split_ollama_host(_get_ollama_host(cfg))[1]
-
-
-def _get_ollama_model(cfg: dict) -> str:
-    """Get the configured Ollama model name."""
-    return str(cfg.get("ollama_model") or DEFAULT_OLLAMA_MODEL).strip()
-
-
-def _get_ollama_timeout_seconds(cfg: dict) -> int:
-    """Get the configured Ollama request timeout."""
-    try:
-        timeout = int(cfg.get("ollama_timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS))
-    except (TypeError, ValueError):
-        timeout = DEFAULT_OLLAMA_TIMEOUT_SECONDS
-    return max(1, timeout)
-
-
-def _get_ollama_prompt_template(cfg: dict) -> str:
-    """Get the configured Ollama prompt template."""
-    return str(cfg.get("ollama_prompt_template") or DEFAULT_OLLAMA_PROMPT_TEMPLATE)
-
-
-def _get_ollama_group_prompt_template(cfg: dict) -> str:
-    """Get the configured grouped-caption prompt template."""
-    return str(cfg.get("ollama_group_prompt_template") or DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE)
-
-
-def _get_ollama_enable_free_text(cfg: dict) -> bool:
-    """Get whether the free-text enhancement step is enabled."""
-    return bool(cfg.get("ollama_enable_free_text", True))
-
-
-def _get_ollama_free_text_prompt_template(cfg: dict) -> str:
-    """Get the configured free-text prompt template."""
-    return str(cfg.get("ollama_free_text_prompt_template") or DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE)
-
-
-def _generate_thumbnail(filepath: str, size: int, crop: dict | None = None) -> bytes:
-    """Generate a JPEG thumbnail of the given size (longest edge)."""
-    try:
-        img, _, _, _ = _load_oriented_image(filepath)
-        try:
-            if crop:
-                img = img.crop((crop["x"], crop["y"], crop["x"] + crop["w"], crop["y"] + crop["h"]))
-            img.thumbnail((size, size), Image.LANCZOS)
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-            buf = BytesIO()
-            quality = 85 if size >= 1024 else 80
-            img.save(buf, format="JPEG", quality=quality, optimize=True)
-            return buf.getvalue()
-        finally:
-            img.close()
-    except Exception:
-        return b""
-
-
-def _get_thumbnail(filepath: str, size: int, crop: dict | None = None) -> bytes:
-    """Get thumbnail from cache or generate it."""
-    mtime = os.path.getmtime(filepath)
-    crop_key = None if not crop else (crop.get("x"), crop.get("y"), crop.get("w"), crop.get("h"), crop.get("ratio"))
-    key = (filepath, mtime, size, crop_key)
-    if key not in thumbnail_cache:
-        thumbnail_cache[key] = _generate_thumbnail(filepath, size, crop)
-    return thumbnail_cache[key]
-
-
-def _render_image_bytes(filepath: str, crop: dict | None = None,
-                        max_size: int | None = None, force_jpeg: bool = False) -> tuple[bytes, str]:
-    """Render an image variant for serving through the API."""
-    img, original_format, exif_bytes, icc_profile = _load_oriented_image(filepath)
-    try:
-        save_kwargs: dict = {}
-
-        if crop:
-            img = img.crop((crop["x"], crop["y"], crop["x"] + crop["w"], crop["y"] + crop["h"]))
-        if max_size:
-            img.thumbnail((max_size, max_size), Image.LANCZOS)
-
-        if force_jpeg or original_format in {"JPG", "JPEG"}:
-            media_type = "image/jpeg"
-            fmt = "JPEG"
-            if img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
-            if exif_bytes:
-                save_kwargs["exif"] = exif_bytes
-        else:
-            fmt = "PNG" if original_format == "PNG" else original_format
-            media_type = Image.MIME.get(fmt, "application/octet-stream")
-            if exif_bytes:
-                save_kwargs["exif"] = exif_bytes
-
-        if icc_profile:
-            save_kwargs["icc_profile"] = icc_profile
-
-        buf = BytesIO()
-        if fmt == "JPEG":
-            img.save(buf, format=fmt, quality=90, optimize=True, **save_kwargs)
-        else:
-            img.save(buf, format=fmt, **save_kwargs)
-        return buf.getvalue(), media_type
-    finally:
-        img.close()
-
-
-def _encode_image_for_ollama(filepath: str) -> str:
-    """Encode an image as base64 JPEG for Ollama vision models."""
-    data = _get_thumbnail(filepath, PREVIEW_MAX_SIZE)
-    if not data:
-        data = Path(filepath).read_bytes()
-    return base64.b64encode(data).decode("ascii")
-
-
-def _ollama_prompt_for_sentence(sentence: str, template: str | None = None) -> str:
-    """Build a strict yes/no prompt for one candidate caption."""
-    prompt_template = template or DEFAULT_OLLAMA_PROMPT_TEMPLATE
-    return prompt_template.replace("{caption}", sentence).replace("{sentence}", sentence)
-
-
-def _ollama_prompt_for_group(group_name: str, sentences: list[str], template: str | None = None) -> str:
-    """Build a numbered-choice prompt for a mutually-exclusive caption group."""
-    prompt_template = template or DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE
-    options = "\n".join(f"{index}. {sentence}" for index, sentence in enumerate(sentences, start=1))
-    resolved_group_name = (group_name or "Caption group").strip() or "Caption group"
-    return (
-        prompt_template
-        .replace("{group_name}", resolved_group_name)
-        .replace("{group}", resolved_group_name)
-        .replace("{options}", options)
-        .replace("{captions}", options)
-        .replace("{choices}", options)
-        .replace("{count}", str(len(sentences)))
+def _auto_caption_sentences(
+    host: str,
+    model: str,
+    image_path: str,
+    sentences: list[str],
+    prompt_template: str | None = None,
+    timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+) -> tuple[list[str], list[dict]]:
+    """Compatibility adapter for sentence-level auto captioning."""
+    return _tag2_auto_caption_sentences(
+        host,
+        model,
+        image_path,
+        sentences,
+        encode_image_func=_encode_image_for_ollama,
+        generate_func=_ollama_generate,
+        prompt_template=prompt_template or DEFAULT_OLLAMA_PROMPT_TEMPLATE,
+        timeout=timeout,
     )
 
 
-def _ollama_prompt_for_free_text(caption_text: str, template: str | None = None) -> str:
-    """Build a prompt asking for additional important image details."""
-    prompt_template = template or DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE
-    return (
-        prompt_template
-        .replace("{caption_text}", caption_text)
-        .replace("{current_caption}", caption_text)
-        .replace("{caption}", caption_text)
+def _auto_caption_sections(
+    host: str,
+    model: str,
+    image_path: str,
+    sections: list[dict],
+    prompt_template: str | None = None,
+    group_prompt_template: str | None = None,
+    timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+) -> tuple[list[str], list[dict]]:
+    """Compatibility adapter for section-aware auto captioning."""
+    return _tag2_auto_caption_sections(
+        host,
+        model,
+        image_path,
+        sections,
+        encode_image_func=_encode_image_for_ollama,
+        generate_func=_ollama_generate,
+        prompt_template=prompt_template or DEFAULT_OLLAMA_PROMPT_TEMPLATE,
+        group_prompt_template=group_prompt_template or DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE,
+        timeout=timeout,
     )
 
 
-def _ollama_generate(host: str, payload: dict, timeout: int = 120) -> dict:
-    """Call the local Ollama generate API."""
-    url = f"{host.rstrip('/')}/api/generate"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+def _suggest_free_text(
+    host: str,
+    model: str,
+    image_path: str,
+    caption_text: str,
+    prompt_template: str | None = None,
+    timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+) -> str:
+    """Compatibility adapter for Ollama free-text suggestions."""
+    return _tag2_suggest_free_text(
+        host,
+        model,
+        image_path,
+        caption_text,
+        encode_image_func=_encode_image_for_ollama,
+        generate_func=_ollama_generate,
+        prompt_template=prompt_template or DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
+        timeout=timeout,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(detail or str(e)) from e
-    except TimeoutError as e:
-        raise RuntimeError(f"request timed out after {timeout} seconds") from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(str(e.reason or e)) from e
-
-
-def _parse_ollama_yes_no(response_text: str) -> bool:
-    """Parse a yes/no response from Ollama conservatively."""
-    text = (response_text or "").strip().upper()
-    if text.startswith("YES"):
-        return True
-    if text.startswith("NO"):
-        return False
-    tokens = [t.strip(" .,!?:;()[]{}\"'") for t in text.split()]
-    if "YES" in tokens:
-        return True
-    if "NO" in tokens:
-        return False
-    return False
-
-
-def _parse_ollama_selection(response_text: str, sentences: list[str]) -> int | None:
-    """Parse a 1-based choice from an Ollama response."""
-    text = (response_text or "").strip()
-    if not text:
-        return None
-
-    for match in re.findall(r"\d+", text):
-        value = int(match)
-        if 1 <= value <= len(sentences):
-            return value
-
-    normalized = _normalize_caption_line(text)
-    for index, sentence in enumerate(sentences, start=1):
-        sentence_normalized = _normalize_caption_line(sentence)
-        if normalized == sentence_normalized:
-            return index
-    for index, sentence in enumerate(sentences, start=1):
-        sentence_normalized = _normalize_caption_line(sentence)
-        if sentence_normalized and sentence_normalized in normalized:
-            return index
-    return None
-
-
-def _normalize_caption_line(text: str) -> str:
-    """Normalize a caption/free-text line for duplicate detection."""
-    stripped = (text or "").strip()
-    stripped = re.sub(r"^[\-•*\d\.)\s]+", "", stripped)
-    stripped = re.sub(r"\s+", " ", stripped)
-    return stripped.casefold()
-
-
-def _extract_free_text_lines(response_text: str) -> list[str]:
-    """Extract meaningful suggestion lines from an Ollama free-text response."""
-    text = (response_text or "").strip()
-    if not text or text.upper() == "NONE":
-        return []
-
-    lines = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line.upper() == "NONE":
-            continue
-        line = re.sub(r"^[\-•*\d\.)\s]+", "", line).strip()
-        if line:
-            lines.append(line)
-    return lines
-
-
-def _merge_free_text(existing_free_text: str, suggested_text: str,
-                     enabled_sentences: list[str]) -> tuple[str, list[str]]:
-    """Merge new free-text suggestions while avoiding duplicates."""
-    existing_text = existing_free_text or ""
-    existing_lines = [line.rstrip() for line in existing_text.splitlines() if line.strip()]
-    known = {_normalize_caption_line(line) for line in existing_lines}
-    known.update(_normalize_caption_line(sentence) for sentence in enabled_sentences)
-
-    added_lines = []
-    for line in _extract_free_text_lines(suggested_text):
-        normalized = _normalize_caption_line(line)
-        if not normalized or normalized in known:
-            continue
-        known.add(normalized)
-        added_lines.append(line)
-
-    merged_lines = list(existing_lines)
-    merged_lines.extend(added_lines)
-    return "\n".join(merged_lines), added_lines
-
-
-def _build_caption_text(enabled_sentences: list[str], free_text: str,
-                        sections: list[dict] | None = None) -> str:
-    """Build the final caption text in the same format as the caption file."""
-    if sections:
-        enabled_sentences = _normalize_enabled_sentences(enabled_sentences, sections)
-        enabled_set = {sentence for sentence in enabled_sentences if not _is_hidden_group_sentence(sections, sentence)}
-        blocks = []
-        for section in _ordered_sections_for_output(sections):
-            sec_name = section.get("name", "")
-            sec_sentences = [s for s in section.get("sentences", []) if s in enabled_set]
-            grouped_sentences = []
-            for group in section.get("groups", []) or []:
-                grouped_sentences.extend([s for s in group.get("sentences", []) if s in enabled_set])
-
-            visible_sentences = sec_sentences + grouped_sentences
-            if not visible_sentences:
-                continue
-
-            lines = []
-            if sec_name:
-                lines.append(sec_name)
-            lines.extend(visible_sentences)
-            blocks.append("\n".join(lines))
-
-        parts = []
-        if blocks:
-            parts.append("\n\n".join(blocks))
-        if free_text and free_text.strip():
-            parts.append(free_text.strip())
-        return "\n\n".join(parts)
-
-    parts = []
-    if enabled_sentences:
-        parts.append("\n".join(enabled_sentences))
-    if free_text and free_text.strip():
-        parts.append(free_text.strip())
-    return "\n\n".join(parts)
-
-
-def _auto_caption_sentences(host: str, model: str, image_path: str,
-                            sentences: list[str], prompt_template: str | None = None,
-                            timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> tuple[list[str], list[dict]]:
-    """Ask Ollama about each caption candidate and return enabled sentences."""
-    image_b64 = _encode_image_for_ollama(image_path)
-    enabled = []
-    results = []
-
-    for sentence in sentences:
-        payload = {
-            "model": model,
-            "prompt": _ollama_prompt_for_sentence(sentence, prompt_template),
-            "images": [image_b64],
-            "stream": False,
-            "options": {
-                "temperature": 0,
-            },
-        }
-        response = _ollama_generate(host, payload, timeout=timeout)
-        raw_answer = str(response.get("response") or "").strip()
-        is_match = _parse_ollama_yes_no(raw_answer)
-        results.append({
-            "sentence": sentence,
-            "enabled": is_match,
-            "answer": raw_answer,
-        })
-        if is_match:
-            enabled.append(sentence)
-
-    return enabled, results
-
-
-def _auto_caption_sections(host: str, model: str, image_path: str,
-                           sections: list[dict], prompt_template: str | None = None,
-                           group_prompt_template: str | None = None,
-                           timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> tuple[list[str], list[dict]]:
-    """Ask Ollama about configured captions, including exclusive groups."""
-    image_b64 = _encode_image_for_ollama(image_path)
-    enabled: list[str] = []
-    results: list[dict] = []
-
-    for target in _iter_caption_targets(sections):
-        if target["type"] == "sentence":
-            sentence = target["sentence"]
-            payload = {
-                "model": model,
-                "prompt": _ollama_prompt_for_sentence(sentence, prompt_template),
-                "images": [image_b64],
-                "stream": False,
-                "options": {"temperature": 0},
-            }
-            response = _ollama_generate(host, payload, timeout=timeout)
-            raw_answer = str(response.get("response") or "").strip()
-            is_match = _parse_ollama_yes_no(raw_answer)
-            enabled = _apply_sentence_selection(enabled, sentence, sections, is_match)
-            results.append({
-                "type": "sentence",
-                "sentence": sentence,
-                "enabled": is_match,
-                "answer": raw_answer,
-            })
-            continue
-
-        group_sentences = target["sentences"]
-        payload = {
-            "model": model,
-            "prompt": _ollama_prompt_for_group(target.get("group_name", ""), group_sentences, group_prompt_template),
-            "images": [image_b64],
-            "stream": False,
-            "options": {"temperature": 0},
-        }
-        response = _ollama_generate(host, payload, timeout=timeout)
-        raw_answer = str(response.get("response") or "").strip()
-        selection_index = _parse_ollama_selection(raw_answer, group_sentences)
-        selected_sentence = group_sentences[selection_index - 1] if selection_index else None
-        selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
-        enabled = [sentence for sentence in enabled if sentence not in group_sentences]
-        if selected_sentence:
-            enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
-        results.append({
-            "type": "group",
-            "group_name": target.get("group_name", ""),
-            "sentences": group_sentences,
-            "selected_sentence": selected_sentence,
-            "selected_hidden": selected_hidden,
-            "selection_index": selection_index,
-            "answer": raw_answer,
-        })
-
-    return enabled, results
-
-
-def _suggest_free_text(host: str, model: str, image_path: str, caption_text: str,
-                       prompt_template: str | None = None,
-                       timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> str:
-    """Ask Ollama for additional free-text image details."""
-    image_b64 = _encode_image_for_ollama(image_path)
-    payload = {
-        "model": model,
-        "prompt": _ollama_prompt_for_free_text(caption_text, prompt_template),
-        "images": [image_b64],
-        "stream": False,
-        "options": {
-            "temperature": 0,
-        },
-    }
-    response = _ollama_generate(host, payload, timeout=timeout)
-    return str(response.get("response") or "").strip()
 
 
 @app.get("/api/list-images")
@@ -1154,12 +368,6 @@ class RotateUpdate(BaseModel):
     direction: str
 
 
-def _get_caption_path(image_path: str) -> Path:
-    """Get the corresponding .txt path for an image."""
-    p = Path(image_path)
-    return p.with_suffix(".txt")
-
-
 @app.get("/api/crop")
 async def get_crop(path: str = Query(...)):
     """Get whether an image currently has a reversible real crop applied."""
@@ -1207,75 +415,6 @@ async def rotate_image(data: RotateUpdate):
         "ok": True,
         "crop": crop_state,
     }
-
-
-def _read_caption_file(image_path: str, predefined_sentences: list[str],
-                       section_headers: list[str] | None = None) -> dict:
-    """Read caption file and separate predefined sentences from free text.
-    section_headers is the list of known section header lines (freeform text).
-    Handles both old flat format and new sectioned format with '- ' prefixes.
-    """
-    caption_path = _get_caption_path(image_path)
-    enabled_sentences = []
-    free_lines = []
-    header_set = set(section_headers or [])
-
-    if caption_path.exists():
-        try:
-            content = caption_path.read_text(encoding="utf-8")
-            pred_set = set(predefined_sentences)
-            in_structured = True
-
-            for line in content.split("\n"):
-                stripped = line.strip()
-
-                if not stripped:
-                    if not in_structured:
-                        free_lines.append(line)
-                    continue
-
-                # Known section header - consume it (part of structured section)
-                if in_structured and stripped in header_set:
-                    continue
-
-                # Sentence with "- " prefix (new format)
-                if in_structured and stripped.startswith("- "):
-                    sentence_text = stripped[2:]
-                    if sentence_text in pred_set:
-                        enabled_sentences.append(sentence_text)
-                        continue
-
-                # Backward compat: sentence without "- " prefix (old format)
-                if in_structured and stripped in pred_set:
-                    enabled_sentences.append(stripped)
-                    continue
-
-                # Not a predefined sentence - everything from here is free text
-                in_structured = False
-                free_lines.append(line)
-        except Exception:
-            pass
-
-    return {
-        "enabled_sentences": enabled_sentences,
-        "free_text": "\n".join(free_lines),
-    }
-
-
-def _write_caption_file(image_path: str, enabled_sentences: list[str], free_text: str,
-                         sections: list[dict] | None = None):
-    """Write caption file with sectioned format.
-    Section names are written as-is (freeform headers like '## Lighting', '**Shape**', etc.).
-    Sentences get '- ' prefixed. The unnamed section (name='') has no header line.
-    Free text goes at the end.
-    """
-    caption_path = _get_caption_path(image_path)
-    content = _build_caption_text(enabled_sentences, free_text, sections)
-
-    if content:
-        caption_path.write_text(content + "\n", encoding="utf-8")
-    elif caption_path.exists():
-        caption_path.write_text("", encoding="utf-8")
 
 
 @app.get("/api/caption")
@@ -1431,14 +570,14 @@ async def auto_caption(data: AutoCaptionRequest):
         raise HTTPException(status_code=404, detail="Image not found")
 
     cfg = _load_config()
-    model = (data.model or _get_ollama_model(cfg)).strip()
-    host = _get_ollama_host(cfg)
-    prompt_template = data.prompt_template or _get_ollama_prompt_template(cfg)
-    group_prompt_template = data.group_prompt_template or _get_ollama_group_prompt_template(cfg)
+    model = (data.model or _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL)).strip()
+    host = _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
+    prompt_template = data.prompt_template or _get_ollama_prompt_template(cfg, DEFAULT_OLLAMA_PROMPT_TEMPLATE)
+    group_prompt_template = data.group_prompt_template or _get_ollama_group_prompt_template(cfg, DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE)
     enable_free_text = _get_ollama_enable_free_text(cfg) if data.enable_free_text is None else data.enable_free_text
     free_text_only = bool(data.free_text_only)
-    free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg)
-    timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg)
+    free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE)
+    timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS)
 
     if not model:
         raise HTTPException(status_code=400, detail="No Ollama model configured")
@@ -1554,14 +693,14 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
         raise HTTPException(status_code=400, detail="No images provided")
 
     cfg = _load_config()
-    model = (data.model or _get_ollama_model(cfg)).strip()
-    host = _get_ollama_host(cfg)
-    prompt_template = data.prompt_template or _get_ollama_prompt_template(cfg)
-    group_prompt_template = data.group_prompt_template or _get_ollama_group_prompt_template(cfg)
+    model = (data.model or _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL)).strip()
+    host = _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
+    prompt_template = data.prompt_template or _get_ollama_prompt_template(cfg, DEFAULT_OLLAMA_PROMPT_TEMPLATE)
+    group_prompt_template = data.group_prompt_template or _get_ollama_group_prompt_template(cfg, DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE)
     enable_free_text = _get_ollama_enable_free_text(cfg) if data.enable_free_text is None else data.enable_free_text
     free_text_only = bool(data.free_text_only)
-    free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg)
-    timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg)
+    free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE)
+    timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS)
 
     if not model:
         raise HTTPException(status_code=400, detail="No Ollama model configured")
@@ -1813,16 +952,16 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
     cfg = _load_config()
     result = {
         "last_folder": cfg.get("last_folder", ""),
-        "crop_aspect_ratios": _get_crop_aspect_ratios(cfg),
-        "ollama_host": _get_ollama_host(cfg),
-        "ollama_server": _get_ollama_server(cfg),
-        "ollama_port": _get_ollama_port(cfg),
-        "ollama_timeout_seconds": _get_ollama_timeout_seconds(cfg),
-        "ollama_model": _get_ollama_model(cfg),
-        "ollama_prompt_template": _get_ollama_prompt_template(cfg),
-        "ollama_group_prompt_template": _get_ollama_group_prompt_template(cfg),
+        "crop_aspect_ratios": _get_crop_aspect_ratios(cfg, DEFAULT_CROP_ASPECT_RATIOS),
+        "ollama_host": _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
+        "ollama_server": _get_ollama_server(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
+        "ollama_port": _get_ollama_port(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
+        "ollama_timeout_seconds": _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS),
+        "ollama_model": _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL),
+        "ollama_prompt_template": _get_ollama_prompt_template(cfg, DEFAULT_OLLAMA_PROMPT_TEMPLATE),
+        "ollama_group_prompt_template": _get_ollama_group_prompt_template(cfg, DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE),
         "ollama_enable_free_text": _get_ollama_enable_free_text(cfg),
-        "ollama_free_text_prompt_template": _get_ollama_free_text_prompt_template(cfg),
+        "ollama_free_text_prompt_template": _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE),
     }
     if folder:
         result["sections"] = _get_folder_sections(cfg, folder)
@@ -1839,10 +978,10 @@ async def update_settings(data: SettingsUpdate):
     if data.crop_aspect_ratios is not None:
         cfg["crop_aspect_ratios"] = [str(r).strip() for r in data.crop_aspect_ratios if str(r).strip()] or list(DEFAULT_CROP_ASPECT_RATIOS)
     if data.ollama_host is not None:
-        server_name, server_port = _split_ollama_host(data.ollama_host)
+        server_name, server_port = _split_ollama_host(data.ollama_host, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
         cfg["ollama_server"] = server_name
         cfg["ollama_port"] = server_port
-        cfg["ollama_host"] = _compose_ollama_host(server_name, server_port)
+        cfg["ollama_host"] = _compose_ollama_host(server_name, server_port, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
     if data.ollama_server is not None:
         cfg["ollama_server"] = data.ollama_server.strip() or DEFAULT_OLLAMA_SERVER
     if data.ollama_port is not None:
@@ -1859,7 +998,7 @@ async def update_settings(data: SettingsUpdate):
         cfg["ollama_enable_free_text"] = bool(data.ollama_enable_free_text)
     if data.ollama_free_text_prompt_template is not None:
         cfg["ollama_free_text_prompt_template"] = data.ollama_free_text_prompt_template or DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE
-    cfg["ollama_host"] = _compose_ollama_host(cfg.get("ollama_server"), cfg.get("ollama_port"))
+    cfg["ollama_host"] = _compose_ollama_host(cfg.get("ollama_server"), cfg.get("ollama_port"), DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
     if data.sections is not None and data.folder:
         _set_folder_sections(cfg, data.folder, data.sections)
     _save_config(cfg)
