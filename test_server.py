@@ -142,7 +142,7 @@ class TestReadCaptionFile:
         img = str(tmp_path / "img.jpg")
         Image.new("RGB", (10, 10)).save(img)
         txt = tmp_path / "img.txt"
-        txt.write_text("- bright\n\n## Object\n- red car\n\nFree text here\n", encoding="utf-8")
+        txt.write_text("bright\n\n## Object\nred car\n\nFree text here\n", encoding="utf-8")
 
         result = server._read_caption_file(
             img, ["bright", "red car"], section_headers=["## Object"]
@@ -176,7 +176,7 @@ class TestReadCaptionFile:
         img = str(tmp_path / "img.jpg")
         Image.new("RGB", (10, 10)).save(img)
         txt = tmp_path / "img.txt"
-        txt.write_text("**Shape**\n- round\n\n## Lighting\n- bright\n", encoding="utf-8")
+        txt.write_text("**Shape**\nround\n\n## Lighting\nbright\n", encoding="utf-8")
 
         result = server._read_caption_file(
             img, ["round", "bright"], section_headers=["**Shape**", "## Lighting"]
@@ -192,7 +192,7 @@ class TestWriteCaptionFile:
 
         server._write_caption_file(img, ["a", "b"], "free stuff")
         txt = (tmp_path / "img.txt").read_text(encoding="utf-8")
-        assert "- a\n- b" in txt
+        assert "a\nb" in txt
         assert "free stuff" in txt
 
     def test_write_with_sections(self, tmp_path):
@@ -207,9 +207,9 @@ class TestWriteCaptionFile:
             img, ["generic", "bright", "round"], "Free text here", sections
         )
         txt = (tmp_path / "img.txt").read_text(encoding="utf-8")
-        assert "- generic" in txt
-        assert "## Lighting\n- bright" in txt
-        assert "**Shape**\n- round" in txt
+        assert "generic" in txt
+        assert "## Lighting\nbright" in txt
+        assert "**Shape**\nround" in txt
         assert "Free text here" in txt
         # "dark" not enabled, should not appear
         assert "dark" not in txt
@@ -223,8 +223,8 @@ class TestWriteCaptionFile:
         server._write_caption_file(img, ["Blue Car"], "", sections)
         txt = (tmp_path / "img.txt").read_text(encoding="utf-8")
         assert "## Vehicle" in txt
-        assert "Car" in txt
-        assert "- Blue Car" in txt
+        assert "\nCar\n" not in txt
+        assert "Blue Car" in txt
         assert "Red Car" not in txt
 
     def test_empty_clears_file(self, tmp_path):
@@ -245,7 +245,7 @@ class TestWriteCaptionFile:
         server._write_caption_file(img, ["yes"], "", sections)
         txt = (tmp_path / "img.txt").read_text(encoding="utf-8")
         assert "## Empty" not in txt
-        assert "## Has\n- yes" in txt
+        assert "## Has\nyes" in txt
 
     def test_roundtrip(self, tmp_path):
         """Write then read should produce the same enabled sentences."""
@@ -393,9 +393,9 @@ class TestCaptionAPI:
         assert data["sections"][0]["sentences"] == ["New Caption"]
 
         caption = (img_dir / "photo1.txt").read_text(encoding="utf-8")
-        assert "- New Caption" in caption
-        assert "- Old Caption" not in caption
-        assert "- Red Car" in caption
+        assert "New Caption" in caption
+        assert "Old Caption" not in caption
+        assert "Red Car" in caption
 
 
 class TestBatchToggle:
@@ -815,9 +815,9 @@ class TestAutoCaptionAPI:
         assert data["added_free_text_lines"] == ["Moon visible", "Night sky"]
 
         caption = (Path(single_image).with_suffix(".txt")).read_text(encoding="utf-8")
-        assert "- Moon" in caption
-        assert "- Night" in caption
-        assert "- Blue Car" in caption
+        assert "Moon" in caption
+        assert "Night" in caption
+        assert "Blue Car" in caption
         assert "Moon visible" in caption
 
     def test_auto_caption_requires_sentences(self, client, single_image):
@@ -871,9 +871,51 @@ class TestAutoCaptionAPI:
         assert data["added_free_text_lines"] == ["Bright stars"]
 
         caption = (Path(single_image).with_suffix(".txt")).read_text(encoding="utf-8")
-        assert "- Moon" in caption
-        assert "Night sky" in caption
+        assert "Moon" in caption
+        assert "Night sky" not in caption
         assert "Bright stars" in caption
+
+    def test_auto_caption_target_group_preserves_other_captions(self, client, single_image, monkeypatch):
+        folder = str(os.path.dirname(single_image))
+        client.post("/api/settings", json={
+            "folder": folder,
+            "sections": [{
+                "name": "",
+                "sentences": ["Moon", "Night"],
+                "groups": [{"name": "Car", "sentences": ["Red Car", "Blue Car"]}],
+            }],
+            "ollama_enable_free_text": True,
+        })
+        client.post("/api/caption/save", json={
+            "image_path": single_image,
+            "enabled_sentences": ["Moon", "Red Car"],
+            "free_text": "Existing notes",
+        })
+
+        def fake_generate(host, payload, timeout=120):
+            assert "Group:" in payload["prompt"] or "1." in payload["prompt"]
+            return {"response": "2"}
+
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption", json={
+            "image_path": single_image,
+            "model": "llava",
+            "target_section_index": 0,
+            "target_group_index": 0,
+            "enable_free_text": False,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled_sentences"] == ["Moon", "Blue Car"]
+        assert data["results"][0]["selected_sentence"] == "Blue Car"
+        assert data["free_text"].strip() == "Existing notes"
+
+        caption = (Path(single_image).with_suffix(".txt")).read_text(encoding="utf-8")
+        assert "Moon" in caption
+        assert "Blue Car" in caption
+        assert "Red Car" not in caption
+        assert "Existing notes" in caption
 
     def test_auto_caption_stream_multiple_images(self, client, img_dir, monkeypatch):
         paths = [str(img_dir / "photo1.jpg"), str(img_dir / "photo2.png")]
@@ -911,10 +953,10 @@ class TestAutoCaptionAPI:
 
         caption1 = (img_dir / "photo1.txt").read_text(encoding="utf-8")
         caption2 = (img_dir / "photo2.txt").read_text(encoding="utf-8")
-        assert "- Moon" in caption1
-        assert "- Blue Car" in caption1
+        assert "Moon" in caption1
+        assert "Blue Car" in caption1
         assert "Bright stars" in caption1
-        assert "- Moon" in caption2
+        assert "Moon" in caption2
 
     def test_auto_caption_stream_free_text_only(self, client, img_dir, monkeypatch):
         image_path = str(img_dir / "photo1.jpg")
@@ -946,10 +988,51 @@ class TestAutoCaptionAPI:
         events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
         assert events[0]["type"] == "start"
         assert events[0]["free_text_only"] is True
-        assert any(e["type"] == "free-text" and e["free_text"] == "Night sky\nBright stars" for e in events)
+        assert any(e["type"] == "free-text" and e["free_text"] == "Bright stars" for e in events)
         assert not any(e["type"] == "caption-check" for e in events)
 
         caption = (img_dir / "photo1.txt").read_text(encoding="utf-8")
-        assert "- Moon" in caption
-        assert "Night sky" in caption
+        assert "Moon" in caption
+        assert "Night sky" not in caption
         assert "Bright stars" in caption
+
+    def test_auto_caption_stream_target_group_preserves_other_captions(self, client, img_dir, monkeypatch):
+        image_path = str(img_dir / "photo1.jpg")
+        client.post("/api/settings", json={
+            "folder": str(img_dir),
+            "sections": [{
+                "name": "",
+                "sentences": ["Moon", "Night"],
+                "groups": [{"name": "Car", "sentences": ["Red Car", "Blue Car"]}],
+            }],
+        })
+        client.post("/api/caption/save", json={
+            "image_path": image_path,
+            "enabled_sentences": ["Night", "Red Car"],
+            "free_text": "Keep this",
+        })
+
+        def fake_generate(host, payload, timeout=120):
+            if "Group:" in payload["prompt"] or "1." in payload["prompt"]:
+                return {"response": "2"}
+            raise AssertionError("only target group should run")
+
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption/stream", json={
+            "image_paths": [image_path],
+            "model": "llava",
+            "target_section_index": 0,
+            "target_group_index": 0,
+            "enable_free_text": False,
+        })
+        assert resp.status_code == 200
+        events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+        assert any(e["type"] == "group-selection" and e["selected_sentence"] == "Blue Car" for e in events)
+        assert not any(e["type"] == "caption-check" for e in events)
+
+        caption = (img_dir / "photo1.txt").read_text(encoding="utf-8")
+        assert "Night" in caption
+        assert "Blue Car" in caption
+        assert "Red Car" not in caption
+        assert "Keep this" in caption

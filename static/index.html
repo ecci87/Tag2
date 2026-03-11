@@ -20,6 +20,10 @@
   --selected: rgba(137,180,250,0.18);
   --selected-border: #89b4fa;
   --hover: rgba(137,180,250,0.08);
+  --gen-grad-a: #9b4dff;
+  --gen-grad-b: #34e1ff;
+  --gen-grad-c: #ff74db;
+  --gen-surface: rgba(12, 12, 18, 0.88);
   --thumb-size: 160px;
   --gap: 6px;
 }
@@ -42,13 +46,106 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   border-radius: 6px; cursor: pointer; font-size: 18px; line-height: 1; flex-shrink: 0;
 }
 #settings-btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(137,180,250,0.10); }
-#auto-caption-btn { flex: 1; padding: 5px 12px; background: var(--accent); color: #1e1e2e; border: none; border-radius: 3px; cursor: pointer; font-weight: 600; }
-#auto-caption-btn:hover { filter: brightness(1.1); }
-#auto-caption-btn.running {
-  background: rgba(243,139,168,0.18); color: #f38ba8; border: 1px solid rgba(243,139,168,0.35);
+.generate-btn {
+  position: relative;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background:
+    linear-gradient(var(--gen-surface), var(--gen-surface)) padding-box,
+    linear-gradient(90deg, var(--gen-grad-a), var(--gen-grad-b), var(--gen-grad-c)) border-box;
+  color: var(--fg);
+  cursor: pointer;
+  font-weight: 700;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.03), 0 10px 24px rgba(0,0,0,0.24), inset 0 0 18px rgba(255,255,255,0.03);
+  transition: box-shadow 0.15s ease, filter 0.15s ease, background 0.15s ease;
 }
-#auto-caption-btn.running:hover { background: #f38ba8; color: #1e1e2e; border-color: #f38ba8; filter: none; }
-#load-btn:disabled, #auto-caption-btn:disabled, #add-section-bar button:disabled, .section-add-row button:disabled {
+.generate-btn:hover {
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 12px 28px rgba(0,0,0,0.3), 0 0 28px rgba(110,110,255,0.18), inset 0 0 20px rgba(255,255,255,0.06);
+  filter: brightness(1.08) saturate(1.08);
+}
+.generate-btn:hover .btn-label {
+  filter: brightness(1.18);
+}
+.generate-btn:hover .btn-icon {
+  filter: drop-shadow(0 0 6px rgba(155, 244, 255, 0.45));
+}
+.generate-btn:focus-visible {
+  outline: 2px solid rgba(137,180,250,0.55);
+  outline-offset: 2px;
+}
+.generate-btn .btn-content {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+.generate-btn .btn-label {
+  background: linear-gradient(90deg, var(--gen-grad-a), var(--gen-grad-b), var(--gen-grad-c));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.generate-btn .btn-icon,
+.generate-btn-icon .btn-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: inline-block;
+}
+.generate-btn .btn-icon:empty::before,
+.generate-btn-icon .btn-icon:empty::before {
+  content: "✦";
+  display: inline-grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font-size: 14px;
+  line-height: 1;
+  color: #9bf4ff;
+  text-shadow: 0 0 10px rgba(155, 244, 255, 0.45), 0 0 14px rgba(216, 177, 255, 0.35);
+}
+.generate-btn .btn-icon svg,
+.generate-btn-icon .btn-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.generate-btn-toolbar {
+  flex: 1;
+  min-height: 34px;
+  padding: 6px 16px;
+}
+.generate-btn-compact {
+  min-height: 30px;
+  padding: 5px 12px;
+  font-size: 12px;
+}
+.generate-btn-icon {
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+}
+#add-free-text-now-btn.generate-btn-icon {
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  height: 24px;
+}
+.generate-btn.running {
+  background:
+    linear-gradient(rgba(70, 15, 30, 0.92), rgba(70, 15, 30, 0.92)) padding-box,
+    linear-gradient(90deg, #ff7eb6, #ff4f8b, #ff9dc1) border-box;
+}
+.generate-btn.running .btn-label {
+  background: linear-gradient(90deg, #ffd7e7, #ff7eb6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.generate-btn.running .btn-icon {
+  filter: saturate(0.7) brightness(1.1);
+}
+#load-btn:disabled, .generate-btn:disabled, #add-section-bar button:disabled, .section-add-row button:disabled {
   opacity: 0.55; cursor: not-allowed; filter: none;
 }
 #thumb-size-slider { width: 120px; accent-color: var(--accent); }
@@ -325,11 +422,11 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 #add-section-bar {
   display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
-#add-section-bar button {
+#add-section-btn {
   flex: 1; padding: 5px 12px; background: var(--accent2); color: #1e1e2e; border: none;
   border-radius: 3px; cursor: pointer; font-weight: 600;
 }
-#add-section-bar button:hover { filter: brightness(1.1); }
+#add-section-btn:hover { filter: brightness(1.1); }
 
 #model-log-panel {
   display: none; flex-direction: column; border-bottom: 1px solid var(--border); background: var(--bg);
@@ -396,7 +493,7 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   outline: none; background: var(--bg); border: 1px solid var(--accent);
 }
 .section-header .section-remove-btn {
-  min-width: 18px; height: 18px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
+  min-width: 22px; height: 22px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
   background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
   display: grid; place-items: center; padding: 0; flex-shrink: 0;
   font-size: 13px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
@@ -411,21 +508,25 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   outline-offset: 1px;
 }
 .section-header .section-add-group-btn {
-  min-width: 26px; height: 22px; border: 1px solid rgba(166,227,161,0.35); border-radius: 6px;
-  background: rgba(166,227,161,0.14); color: var(--accent2); cursor: pointer;
-  display: grid; place-items: center; padding: 0 6px; flex-shrink: 0;
-  font-size: 12px; line-height: 1; font-weight: 700;
+  min-width: 22px; height: 22px; border: 1px solid rgba(166,227,161,0.35); border-radius: 6px;
+  background: rgba(249,226,175,0.14); color: var(--accent-warn); cursor: pointer;
+  display: grid; place-items: center; padding: 0; flex-shrink: 0;
+  font-size: 10px; line-height: 1; font-weight: 700;
+  letter-spacing: 0.02em;
   transition: all 0.15s ease;
 }
 .section-header .section-add-group-btn:hover {
-  background: var(--accent2); color: #1e1e2e; border-color: var(--accent2);
+  background: var(--accent-warn); color: #1e1e2e; border-color: var(--accent-warn);
 }
 .group-header .group-remove-btn {
-  min-width: 18px; height: 18px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
+  min-width: 22px; height: 22px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
   background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
   display: grid; place-items: center; padding: 0; flex-shrink: 0;
   font-size: 13px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
   transition: all 0.15s ease;
+}
+.group-header .group-refresh-btn {
+  flex-shrink: 0;
 }
 .group-header .group-remove-btn:hover {
   background: #f38ba8; color: #1e1e2e; border-color: #f38ba8;
@@ -478,9 +579,10 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 .section-add-row input:focus { border-color: var(--accent); }
 .section-add-row input::placeholder { color: var(--fg-dim); }
 .section-add-row button {
-  padding: 3px 8px; background: var(--accent2); color: #1e1e2e;
-  border: 1px solid rgba(166,227,161,0.35); border-radius: 3px; cursor: pointer;
-  font-weight: 700; font-size: 12px; line-height: 1;
+  min-width: 22px; height: 22px; padding: 0; background: var(--accent2); color: #1e1e2e;
+  border: 1px solid rgba(166,227,161,0.35); border-radius: 6px; cursor: pointer;
+  display: grid; place-items: center;
+  font-weight: 700; font-size: 14px; line-height: 1;
 }
 .section-add-row button:hover { filter: brightness(1.08); border-color: var(--accent2); }
 
@@ -497,21 +599,6 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   color: var(--fg-dim); font-size: 12px; user-select: none; white-space: nowrap;
 }
 #freetext-section .panel-header .toggle-label input { accent-color: var(--accent2); }
-#add-free-text-now-btn {
-  padding: 4px 10px;
-  border: 1px solid rgba(137,180,250,0.35);
-  border-radius: 6px;
-  background: rgba(137,180,250,0.12);
-  color: var(--accent);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-}
-#add-free-text-now-btn:hover { background: rgba(137,180,250,0.2); }
-#add-free-text-now-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
 #free-text {
   flex: 1; width: 100%; padding: 10px; background: var(--bg); color: var(--fg);
   border: none; outline: none; resize: none; font-family: 'Consolas', 'Fira Code', monospace; font-size: 13px;
@@ -663,7 +750,7 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <div id="right-panel">
       <!-- Add section button -->
       <div id="add-section-bar">
-        <button id="auto-caption-btn" title="Use Ollama to verify captions for the selected image(s)">Auto Caption</button>
+        <button id="auto-caption-btn" class="generate-btn generate-btn-toolbar" title="Use Ollama to verify captions for the selected image(s)"><span class="btn-content"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">Auto Caption</span></span></button>
         <button id="add-section-btn" title="Add new section">+ Add Section</button>
       </div>
       <div id="model-log-panel">
@@ -687,7 +774,7 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
               <input type="checkbox" id="auto-free-text-checkbox" checked>
               <span>Auto Add Extra Details</span>
             </label>
-            <button id="add-free-text-now-btn" type="button" title="Ask Ollama to add only free-text details for the selected image(s)">Add Now</button>
+            <button id="add-free-text-now-btn" class="generate-btn generate-btn-compact generate-btn-icon" type="button" title="Ask Ollama to add only free-text details for the selected image(s)" aria-label="Ask Ollama to add only free-text details for the selected image(s)"><span class="btn-icon" aria-hidden="true"></span></button>
           </div>
         </div>
         <textarea id="free-text" placeholder="Additional caption text..." disabled></textarea>
@@ -846,6 +933,66 @@ const settingsFreeTextPromptInput = $("#settings-ollama-free-text-prompt");
 
 function makeUiId(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+}
+
+function createGenerateSparkleIcon() {
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+
+  const star = document.createElementNS(svgNs, "path");
+  star.setAttribute("d", "M12 7.1L12.95 9.75L15.6 10.7L12.95 11.65L12 14.3L11.05 11.65L8.4 10.7L11.05 9.75L12 7.1Z");
+  star.setAttribute("fill", "#d8b1ff");
+  svg.appendChild(star);
+
+  const sparkleA = document.createElementNS(svgNs, "path");
+  sparkleA.setAttribute("d", "M16.7 6.1L17.1 7.25L18.25 7.65L17.1 8.05L16.7 9.2L16.3 8.05L15.15 7.65L16.3 7.25L16.7 6.1Z");
+  sparkleA.setAttribute("fill", "#aff3ff");
+  svg.appendChild(sparkleA);
+
+  const sparkleB = document.createElementNS(svgNs, "path");
+  sparkleB.setAttribute("d", "M8 14.75L8.45 16L9.7 16.45L8.45 16.9L8 18.15L7.55 16.9L6.3 16.45L7.55 16L8 14.75Z");
+  sparkleB.setAttribute("fill", "#ffc4f0");
+  svg.appendChild(sparkleB);
+
+  return svg;
+}
+
+function setGenerateButtonContent(button, label, options = {}) {
+  if (!button) return;
+  const { iconOnly = false } = options;
+  button.replaceChildren();
+
+  if (iconOnly) {
+    const icon = document.createElement("span");
+    icon.className = "btn-icon";
+    icon.appendChild(createGenerateSparkleIcon());
+    button.appendChild(icon);
+  } else {
+    const content = document.createElement("span");
+    content.className = "btn-content";
+
+    const icon = document.createElement("span");
+    icon.className = "btn-icon";
+    icon.appendChild(createGenerateSparkleIcon());
+
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "btn-label";
+    labelSpan.textContent = label || "";
+
+    content.appendChild(icon);
+    content.appendChild(labelSpan);
+    button.appendChild(content);
+  }
+
+  if (iconOnly && label) {
+    button.setAttribute("aria-label", label);
+  } else if (label) {
+    button.removeAttribute("aria-label");
+  }
 }
 
 function createEmptyGroup(name = "") {
@@ -1581,8 +1728,14 @@ function updateActionButtons() {
   addFreeTextNowBtn.disabled = !state.autoCaptioning && !canRunFreeTextOnly;
   autoCaptionBtn.classList.toggle("running", state.autoCaptioning);
   addFreeTextNowBtn.classList.toggle("running", state.autoCaptioning && state.autoCaptionMode === "free-text-only");
-  autoCaptionBtn.textContent = state.autoCaptioning && state.autoCaptionMode === "full" ? "Stop Auto Caption" : "Auto Caption";
-  addFreeTextNowBtn.textContent = state.autoCaptioning && state.autoCaptionMode === "free-text-only" ? "Stop" : "Add Now";
+  setGenerateButtonContent(autoCaptionBtn, state.autoCaptioning && state.autoCaptionMode === "full" ? "Stop Auto Caption" : "Auto Caption");
+  setGenerateButtonContent(
+    addFreeTextNowBtn,
+    state.autoCaptioning && state.autoCaptionMode === "free-text-only"
+      ? "Stop free-text enhancement"
+      : "Ask Ollama to add only free-text details for the selected image(s)",
+    { iconOnly: true }
+  );
   autoCaptionBtn.title = state.autoCaptioning && state.autoCaptionMode === "full"
     ? "Stop the running auto caption operation"
     : "Use Ollama to verify captions for the selected image(s)";
@@ -2631,6 +2784,18 @@ function renderSentences() {
       });
       groupHeader.appendChild(groupName);
 
+      const groupRefreshBtn = document.createElement("button");
+      groupRefreshBtn.type = "button";
+      groupRefreshBtn.className = "group-refresh-btn generate-btn generate-btn-icon";
+      groupRefreshBtn.title = "Refresh this group with auto captioning";
+      setGenerateButtonContent(groupRefreshBtn, "Refresh this group with auto captioning", { iconOnly: true });
+      groupRefreshBtn.disabled = state.autoCaptioning || state.selectedPaths.size === 0 || !state.ollamaModel.trim();
+      groupRefreshBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        refreshGroupCaptions(secIdx, groupIdx);
+      });
+      groupHeader.appendChild(groupRefreshBtn);
+
       const groupRemoveBtn = document.createElement("button");
       groupRemoveBtn.type = "button";
       groupRemoveBtn.className = "group-remove-btn";
@@ -2665,7 +2830,7 @@ function renderSentences() {
   updateActionButtons();
 }
 
-async function runAutoCaptionStream({ freeTextOnly = false } = {}) {
+async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex = null, targetGroupIndex = null, enableFreeText = null } = {}) {
   if (state.autoCaptioning) {
     stopAutoCaption();
     return;
@@ -2682,15 +2847,18 @@ async function runAutoCaptionStream({ freeTextOnly = false } = {}) {
     statusBar.textContent = "No captions configured for this folder";
     return;
   }
+  const isGroupOnly = targetSectionIndex !== null && targetGroupIndex !== null;
 
   state.autoCaptioning = true;
-  state.autoCaptionMode = freeTextOnly ? "free-text-only" : "full";
+  state.autoCaptionMode = freeTextOnly ? "free-text-only" : (isGroupOnly ? "group" : "full");
   state.autoCaptionAbortController = new AbortController();
   updateActionButtons();
   clearModelLog();
   statusBar.textContent = freeTextOnly
     ? `Adding free text for ${paths.length} image${paths.length === 1 ? "" : "s"}...`
-    : `Auto captioning ${paths.length} image${paths.length === 1 ? "" : "s"}...`;
+    : (isGroupOnly
+      ? `Refreshing group for ${paths.length} image${paths.length === 1 ? "" : "s"}...`
+      : `Auto captioning ${paths.length} image${paths.length === 1 ? "" : "s"}...`);
 
   try {
     const resp = await fetch("/api/auto-caption/stream", {
@@ -2702,8 +2870,10 @@ async function runAutoCaptionStream({ freeTextOnly = false } = {}) {
         model,
         prompt_template: state.ollamaPromptTemplate,
         group_prompt_template: state.ollamaGroupPromptTemplate,
-        enable_free_text: state.ollamaEnableFreeText,
+        enable_free_text: enableFreeText ?? state.ollamaEnableFreeText,
         free_text_only: freeTextOnly,
+        target_section_index: targetSectionIndex,
+        target_group_index: targetGroupIndex,
         free_text_prompt_template: state.ollamaFreeTextPromptTemplate,
         timeout_seconds: state.ollamaTimeoutSeconds,
       }),
@@ -2720,7 +2890,9 @@ async function runAutoCaptionStream({ freeTextOnly = false } = {}) {
         appendModelLog(
           event.free_text_only
             ? `Starting free-text enhancement for ${event.count} image(s) using ${event.model} @ ${event.host}`
-            : `Starting auto caption for ${event.count} image(s) using ${event.model} @ ${event.host}`,
+            : (isGroupOnly
+              ? `Starting group refresh for ${event.count} image(s) using ${event.model} @ ${event.host}`
+              : `Starting auto caption for ${event.count} image(s) using ${event.model} @ ${event.host}`),
           "log-dim"
         );
         if (event.enable_free_text || event.free_text_only) {
@@ -2728,7 +2900,7 @@ async function runAutoCaptionStream({ freeTextOnly = false } = {}) {
         }
       } else if (event.type === "image-start") {
         const cache = ensureCaptionCache(event.path);
-        if (!event.free_text_only) {
+        if (!event.free_text_only && !event.target_group) {
           cache.enabled_sentences = [];
         }
         cache.free_text = event.free_text || cache.free_text || "";
@@ -2737,7 +2909,9 @@ async function runAutoCaptionStream({ freeTextOnly = false } = {}) {
         appendModelLog(
           event.free_text_only
             ? `[${getFileLabel(event.path)}] Generating free-text details...`
-            : `[${getFileLabel(event.path)}] Checking ${event.total_targets || event.total_sentences} caption target(s)...`,
+            : (event.target_group
+              ? `[${getFileLabel(event.path)}] Refreshing group ${event.target_group.group_name || "(Group)"}...`
+              : `[${getFileLabel(event.path)}] Checking ${event.total_targets || event.total_sentences} caption target(s)...`),
           "log-dim"
         );
       } else if (event.type === "caption-check") {
@@ -2788,7 +2962,9 @@ async function runAutoCaptionStream({ freeTextOnly = false } = {}) {
         appendModelLog(
           event.free_text_only
             ? `[${getFileLabel(event.path)}] Free-text enhancement complete`
-            : `[${getFileLabel(event.path)}] Completed with ${(event.enabled_sentences || []).length} matched captions`,
+            : (isGroupOnly
+              ? `[${getFileLabel(event.path)}] Group refresh complete`
+              : `[${getFileLabel(event.path)}] Completed with ${(event.enabled_sentences || []).length} matched captions`),
           "log-ok"
         );
         if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
@@ -2797,20 +2973,26 @@ async function runAutoCaptionStream({ freeTextOnly = false } = {}) {
         renderSentences();
         statusBar.textContent = freeTextOnly
           ? `Add Now: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`
-          : `Auto Caption: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`;
+          : (isGroupOnly
+            ? `Group refresh: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`
+            : `Auto Caption: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`);
       } else if (event.type === "error") {
         errors++;
         appendModelLog(`[${getFileLabel(event.path)}] ${event.message}`, "log-err");
         statusBar.textContent = freeTextOnly
           ? `Add Now: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`
-          : `Auto Caption: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`;
+          : (isGroupOnly
+            ? `Group refresh: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`
+            : `Auto Caption: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`);
       } else if (event.type === "done") {
         processed = event.processed ?? processed;
         errors = event.errors ?? errors;
         appendModelLog(`Finished: ${processed}/${event.count} processed, ${errors} error${errors === 1 ? "" : "s"}`, errors ? "log-warn" : "log-ok");
         statusBar.textContent = freeTextOnly
           ? `Add Now finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`
-          : `Auto Caption finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`;
+          : (isGroupOnly
+            ? `Group refresh finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`
+            : `Auto Caption finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`);
       }
     });
 
@@ -2819,11 +3001,11 @@ async function runAutoCaptionStream({ freeTextOnly = false } = {}) {
     }
   } catch (err) {
     if (err.name === "AbortError") {
-      statusBar.textContent = freeTextOnly ? "Add Now stopped" : "Auto Caption stopped";
-      appendModelLog(freeTextOnly ? "Free-text enhancement stopped by user" : "Auto Caption stopped by user", "log-warn");
+      statusBar.textContent = freeTextOnly ? "Add Now stopped" : (isGroupOnly ? "Group refresh stopped" : "Auto Caption stopped");
+      appendModelLog(freeTextOnly ? "Free-text enhancement stopped by user" : (isGroupOnly ? "Group refresh stopped by user" : "Auto Caption stopped by user"), "log-warn");
     } else {
-      statusBar.textContent = `${freeTextOnly ? "Add Now" : "Auto Caption"} failed: ${err.message}`;
-      appendModelLog(`${freeTextOnly ? "Free-text enhancement" : "Auto Caption"} failed: ${err.message}`, "log-err");
+      statusBar.textContent = `${freeTextOnly ? "Add Now" : (isGroupOnly ? "Group refresh" : "Auto Caption")} failed: ${err.message}`;
+      appendModelLog(`${freeTextOnly ? "Free-text enhancement" : (isGroupOnly ? "Group refresh" : "Auto Caption")} failed: ${err.message}`, "log-err");
     }
   } finally {
     state.autoCaptioning = false;
@@ -2839,6 +3021,14 @@ async function autoCaptionSelected() {
 
 async function addFreeTextNow() {
   return runAutoCaptionStream({ freeTextOnly: true });
+}
+
+async function refreshGroupCaptions(sectionIndex, groupIndex) {
+  return runAutoCaptionStream({
+    targetSectionIndex: sectionIndex,
+    targetGroupIndex: groupIndex,
+    enableFreeText: false,
+  });
 }
 
 function stopAutoCaption() {

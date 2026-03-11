@@ -232,15 +232,35 @@ def _all_sentences_from_sections(sections: list[dict]) -> list[str]:
     return result
 
 
+def _is_general_section_name(name: str | None) -> bool:
+    normalized = str(name or "").strip()
+    if not normalized:
+        return True
+    normalized = normalized.lstrip("#").strip().lower()
+    return normalized == "general"
+
+
+def _ordered_sections_for_output(sections: list[dict]) -> list[dict]:
+    """Keep section order stable while pinning the general section to the top."""
+    indexed_sections = list(enumerate(sections))
+    indexed_sections.sort(key=lambda item: (0 if _is_general_section_name(item[1].get("name")) else 1, item[0]))
+    return [section for _, section in indexed_sections]
+
+
 def _all_headers_from_sections(sections: list[dict]) -> list[str]:
-    """Collect all structured header lines from sections and groups."""
+    """Collect structured section header lines used in caption files."""
     headers: list[str] = []
-    for section in sections:
-        if section.get("name"):
-            headers.append(section["name"])
-        for group in section.get("groups", []) or []:
-            if group.get("name"):
-                headers.append(group["name"])
+    seen: set[str] = set()
+    for section in _ordered_sections_for_output(sections):
+        section_name = str(section.get("name") or "").strip()
+        aliases = [section_name] if section_name else []
+        if _is_general_section_name(section_name):
+            aliases.extend(["(General)", "## General"])
+        for alias in aliases:
+            if not alias or alias in seen:
+                continue
+            seen.add(alias)
+            headers.append(alias)
     return headers
 
 
@@ -259,10 +279,60 @@ def _iter_caption_targets(sections: list[dict]):
                 continue
             yield {
                 "type": "group",
+                "section_index": None,
+                "group_index": None,
                 "section_name": section.get("name", ""),
                 "group_name": group.get("name", ""),
                 "sentences": group_sentences,
             }
+
+
+def _iter_caption_targets_with_indices(sections: list[dict]):
+    """Yield caption targets in display order together with stable section/group indices."""
+    for section_index, section in enumerate(sections):
+        for sentence in section.get("sentences", []):
+            yield {
+                "type": "sentence",
+                "section_index": section_index,
+                "group_index": None,
+                "section_name": section.get("name", ""),
+                "sentence": sentence,
+            }
+        for group_index, group in enumerate(section.get("groups", []) or []):
+            group_sentences = list(group.get("sentences", []))
+            if not group_sentences:
+                continue
+            yield {
+                "type": "group",
+                "section_index": section_index,
+                "group_index": group_index,
+                "section_name": section.get("name", ""),
+                "group_name": group.get("name", ""),
+                "sentences": group_sentences,
+            }
+
+
+def _get_group_target(sections: list[dict], section_index: int | None, group_index: int | None) -> dict | None:
+    """Return a specific group target by section/group indices."""
+    if section_index is None or group_index is None:
+        return None
+    if section_index < 0 or section_index >= len(sections):
+        return None
+    groups = sections[section_index].get("groups", []) or []
+    if group_index < 0 or group_index >= len(groups):
+        return None
+    group = groups[group_index]
+    group_sentences = list(group.get("sentences", []))
+    if not group_sentences:
+        return None
+    return {
+        "type": "group",
+        "section_index": section_index,
+        "group_index": group_index,
+        "section_name": sections[section_index].get("name", ""),
+        "group_name": group.get("name", ""),
+        "sentences": group_sentences,
+    }
 
 
 def _find_group_for_sentence(sections: list[dict], sentence: str) -> dict | None:
@@ -817,33 +887,21 @@ def _build_caption_text(enabled_sentences: list[str], free_text: str,
         enabled_sentences = _normalize_enabled_sentences(enabled_sentences, sections)
         enabled_set = set(enabled_sentences)
         blocks = []
-        for section in sections:
+        for section in _ordered_sections_for_output(sections):
             sec_name = section.get("name", "")
             sec_sentences = [s for s in section.get("sentences", []) if s in enabled_set]
-            group_blocks = []
+            grouped_sentences = []
             for group in section.get("groups", []) or []:
-                group_sentences = [s for s in group.get("sentences", []) if s in enabled_set]
-                if not group_sentences:
-                    continue
-                group_lines = []
-                if group.get("name"):
-                    group_lines.append(group["name"])
-                for sentence in group_sentences:
-                    group_lines.append(f"- {sentence}")
-                group_blocks.append("\n".join(group_lines))
+                grouped_sentences.extend([s for s in group.get("sentences", []) if s in enabled_set])
 
-            if not sec_sentences and not group_blocks:
+            visible_sentences = sec_sentences + grouped_sentences
+            if not visible_sentences:
                 continue
 
             lines = []
             if sec_name:
                 lines.append(sec_name)
-            for sentence in sec_sentences:
-                lines.append(f"- {sentence}")
-            if group_blocks:
-                if lines:
-                    lines.append("")
-                lines.append("\n\n".join(group_blocks))
+            lines.extend(visible_sentences)
             blocks.append("\n".join(lines))
 
         parts = []
@@ -855,7 +913,7 @@ def _build_caption_text(enabled_sentences: list[str], free_text: str,
 
     parts = []
     if enabled_sentences:
-        parts.append("\n".join(f"- {s}" for s in enabled_sentences))
+        parts.append("\n".join(enabled_sentences))
     if free_text and free_text.strip():
         parts.append(free_text.strip())
     return "\n\n".join(parts)
@@ -1319,6 +1377,8 @@ class AutoCaptionRequest(BaseModel):
     group_prompt_template: Optional[str] = None
     enable_free_text: Optional[bool] = None
     free_text_only: Optional[bool] = None
+    target_section_index: Optional[int] = None
+    target_group_index: Optional[int] = None
     free_text_prompt_template: Optional[str] = None
     timeout_seconds: Optional[int] = None
 
@@ -1362,32 +1422,64 @@ async def auto_caption(data: AutoCaptionRequest):
     all_sentences = _all_sentences_from_sections(sections)
     if not all_sentences and not free_text_only:
         raise HTTPException(status_code=400, detail="No captions configured for this folder")
+    target_group = _get_group_target(sections, data.target_section_index, data.target_group_index)
+    if data.target_section_index is not None or data.target_group_index is not None:
+        if not target_group:
+            raise HTTPException(status_code=400, detail="Invalid target group")
 
     headers = _all_headers_from_sections(sections)
     existing = _read_caption_file(image_path, all_sentences, headers)
+    existing_free_text = existing.get("free_text", "")
     enabled = list(existing.get("enabled_sentences", []))
     results: list[dict] = []
 
     loop = asyncio.get_event_loop()
     if not free_text_only:
         try:
-            enabled, results = await loop.run_in_executor(
-                executor,
-                _auto_caption_sections,
-                host,
-                model,
-                image_path,
-                sections,
-                prompt_template,
-                group_prompt_template,
-                timeout_seconds,
-            )
+            if target_group:
+                payload = {
+                    "model": model,
+                    "prompt": _ollama_prompt_for_group(target_group.get("group_name", ""), target_group["sentences"], group_prompt_template),
+                    "images": [await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)],
+                    "stream": False,
+                    "options": {"temperature": 0},
+                }
+                response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
+                raw_answer = str(response.get("response") or "").strip()
+                selection_index = _parse_ollama_selection(raw_answer, target_group["sentences"])
+                selected_sentence = target_group["sentences"][selection_index - 1] if selection_index else None
+                enabled = [sentence for sentence in enabled if sentence not in target_group["sentences"]]
+                if selected_sentence:
+                    enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
+                enabled = _normalize_enabled_sentences(enabled, sections)
+                results = [{
+                    "type": "group",
+                    "section_index": target_group["section_index"],
+                    "group_index": target_group["group_index"],
+                    "group_name": target_group.get("group_name", ""),
+                    "sentences": target_group["sentences"],
+                    "selected_sentence": selected_sentence,
+                    "selection_index": selection_index,
+                    "answer": raw_answer,
+                }]
+            else:
+                enabled, results = await loop.run_in_executor(
+                    executor,
+                    _auto_caption_sections,
+                    host,
+                    model,
+                    image_path,
+                    sections,
+                    prompt_template,
+                    group_prompt_template,
+                    timeout_seconds,
+                )
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Auto caption failed: {e}") from e
 
-    free_text = existing.get("free_text", "")
+    free_text = existing_free_text if target_group else ""
     free_text_model_output = ""
     added_free_text_lines: list[str] = []
     if enable_free_text:
@@ -1403,7 +1495,7 @@ async def auto_caption(data: AutoCaptionRequest):
                 free_text_prompt_template,
                 timeout_seconds,
             )
-            free_text, added_free_text_lines = _merge_free_text(free_text, free_text_model_output, enabled)
+            free_text, added_free_text_lines = _merge_free_text("", free_text_model_output, enabled)
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
         except Exception as e:
@@ -1482,26 +1574,39 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 yield _event_bytes({"type": "error", "path": image_path, "message": "No captions configured for this folder"})
                 continue
 
+            target_group = _get_group_target(sections, data.target_section_index, data.target_group_index)
+            if data.target_section_index is not None or data.target_group_index is not None:
+                if not target_group:
+                    total_errors += 1
+                    yield _event_bytes({"type": "error", "path": image_path, "message": "Invalid target group"})
+                    continue
+
             headers = _all_headers_from_sections(sections)
             existing = _read_caption_file(image_path, all_sentences, headers)
-            free_text = existing.get("free_text", "")
+            free_text = existing.get("free_text", "") if target_group else ""
             enabled = list(existing.get("enabled_sentences", []))
             results = []
             image_b64 = await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)
 
-            total_targets = 0 if free_text_only else sum(1 for _ in _iter_caption_targets(sections))
+            total_targets = 0 if free_text_only else (1 if target_group else sum(1 for _ in _iter_caption_targets_with_indices(sections)))
             yield _event_bytes({
                 "type": "image-start",
                 "path": image_path,
                 "total_sentences": len(all_sentences),
                 "total_targets": total_targets,
                 "free_text_only": free_text_only,
+                "target_group": {
+                    "section_index": target_group["section_index"],
+                    "group_index": target_group["group_index"],
+                    "group_name": target_group.get("group_name", ""),
+                } if target_group else None,
                 "free_text": free_text,
             })
 
             try:
                 if not free_text_only:
-                    for index, target in enumerate(_iter_caption_targets(sections), start=1):
+                    targets = [target_group] if target_group else list(_iter_caption_targets_with_indices(sections))
+                    for index, target in enumerate(targets, start=1):
                         if await request.is_disconnected():
                             return
                         if target["type"] == "sentence":
@@ -1548,6 +1653,8 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
                         result = {
                             "type": "group",
+                            "section_index": target.get("section_index"),
+                            "group_index": target.get("group_index"),
                             "group_name": target.get("group_name", ""),
                             "sentences": group_sentences,
                             "selected_sentence": selected_sentence,
@@ -1561,6 +1668,8 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             "path": image_path,
                             "index": index,
                             "total": total_targets,
+                            "section_index": target.get("section_index"),
+                            "group_index": target.get("group_index"),
                             "group_name": target.get("group_name", ""),
                             "sentences": group_sentences,
                             "selected_sentence": selected_sentence,
@@ -1583,7 +1692,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                     }
                     response = await loop.run_in_executor(executor, _ollama_generate, host, free_payload, timeout_seconds)
                     free_text_model_output = str(response.get("response") or "").strip()
-                    free_text, added_free_text_lines = _merge_free_text(free_text, free_text_model_output, enabled)
+                    free_text, added_free_text_lines = _merge_free_text("", free_text_model_output, enabled)
                     _write_caption_file(image_path, enabled, free_text, sections)
                     yield _event_bytes({
                         "type": "free-text",
@@ -1598,6 +1707,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 yield _event_bytes({
                     "type": "image-complete",
                     "path": image_path,
+                    "free_text_only": free_text_only,
                     "enabled_sentences": enabled,
                     "free_text": free_text,
                     "results": results,
