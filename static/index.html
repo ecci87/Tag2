@@ -2663,6 +2663,7 @@ async function showPreview(path) {
       resetZoomPan();
       setCropGuideToCenter();
       previewImg.style.display = "block";
+      renderPreviewCaptionOverlay();
     };
     previewImg.src = src;
   };
