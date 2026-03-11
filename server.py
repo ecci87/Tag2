@@ -76,6 +76,14 @@ DEFAULT_OLLAMA_PROMPT_TEMPLATE = (
     "Caption: {caption}\n"
     "Answer:"
 )
+DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE = (
+    "You are selecting the single best caption for an image from a numbered list. "
+    "Reply with exactly one number from 1 to {count}. "
+    "Pick the most likely correct caption for the image.\n\n"
+    "Group: {group_name}\n"
+    "{options}\n\n"
+    "Answer:"
+)
 DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE = (
     "You are improving an image caption file. The caption text below already covers known details and must not be repeated. "
     "Look at the image and return only notable, important visual details that are still missing. "
@@ -109,6 +117,7 @@ def _load_config() -> dict:
         "ollama_host": f"http://{DEFAULT_OLLAMA_SERVER}:{DEFAULT_OLLAMA_PORT}",
         "ollama_model": DEFAULT_OLLAMA_MODEL,
         "ollama_prompt_template": DEFAULT_OLLAMA_PROMPT_TEMPLATE,
+        "ollama_group_prompt_template": DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE,
         "ollama_enable_free_text": True,
         "ollama_free_text_prompt_template": DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
         # Per-folder sentence lists. Key = absolute folder path.
@@ -146,26 +155,57 @@ def _save_config(cfg: dict):
 
 def _get_folder_sections(cfg: dict, folder: str) -> list[dict]:
     """Get sections for a folder, falling back to default_sections.
-    Returns list of dicts: [{"name": "SectionName", "sentences": [...]}, ...]
+    Returns list of dicts: [{"name": "SectionName", "sentences": [...], "groups": [...]}, ...]
     The unnamed section (name='') holds sentences without a section header.
     """
+    def _normalize_sentences(sentences) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for raw in sentences or []:
+            text = str(raw).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            cleaned.append(text)
+        return cleaned
+
+    def _normalize_group(group: dict | None) -> dict:
+        group = dict(group or {})
+        return {
+            "name": str(group.get("name") or "").strip(),
+            "sentences": _normalize_sentences(group.get("sentences", [])),
+        }
+
+    def _normalize_section(section: dict | None) -> dict:
+        section = dict(section or {})
+        groups = []
+        for group in section.get("groups", []) or []:
+            normalized_group = _normalize_group(group)
+            if normalized_group["name"] or normalized_group["sentences"]:
+                groups.append(normalized_group)
+        return {
+            "name": str(section.get("name") or "").strip(),
+            "sentences": _normalize_sentences(section.get("sentences", [])),
+            "groups": groups,
+        }
+
     folder_key = os.path.normpath(folder)
     folder_cfg = cfg.get("folders", {}).get(folder_key, None)
     if folder_cfg is not None:
         if "sections" in folder_cfg:
-            return [dict(s) for s in folder_cfg["sections"]]
+            return [_normalize_section(s) for s in folder_cfg["sections"]]
         # Migration: old flat sentences list -> single unnamed section
         if "sentences" in folder_cfg:
-            return [{"name": "", "sentences": list(folder_cfg["sentences"])}]
+            return [_normalize_section({"name": "", "sentences": list(folder_cfg["sentences"]), "groups": []})]
     # Try default_sections
     default_sections = cfg.get("default_sections", [])
     if default_sections:
-        return [dict(s) for s in default_sections]
+        return [_normalize_section(s) for s in default_sections]
     # Migration from old default_sentences
     default_sentences = cfg.get("default_sentences", [])
     if default_sentences:
-        return [{"name": "", "sentences": list(default_sentences)}]
-    return [{"name": "", "sentences": []}]
+        return [_normalize_section({"name": "", "sentences": list(default_sentences), "groups": []})]
+    return [_normalize_section({"name": "", "sentences": [], "groups": []})]
 
 
 def _set_folder_sections(cfg: dict, folder: str, sections: list[dict]):
@@ -175,7 +215,9 @@ def _set_folder_sections(cfg: dict, folder: str, sections: list[dict]):
         cfg["folders"] = {}
     if folder_key not in cfg["folders"]:
         cfg["folders"][folder_key] = {}
-    cfg["folders"][folder_key]["sections"] = sections
+    cfg["folders"][folder_key]["sections"] = _get_folder_sections({
+        "folders": {folder_key: {"sections": sections}}
+    }, folder_key)
     # Remove legacy key if present
     cfg["folders"][folder_key].pop("sentences", None)
 
@@ -185,7 +227,91 @@ def _all_sentences_from_sections(sections: list[dict]) -> list[str]:
     result = []
     for sec in sections:
         result.extend(sec.get("sentences", []))
+        for group in sec.get("groups", []) or []:
+            result.extend(group.get("sentences", []))
     return result
+
+
+def _all_headers_from_sections(sections: list[dict]) -> list[str]:
+    """Collect all structured header lines from sections and groups."""
+    headers: list[str] = []
+    for section in sections:
+        if section.get("name"):
+            headers.append(section["name"])
+        for group in section.get("groups", []) or []:
+            if group.get("name"):
+                headers.append(group["name"])
+    return headers
+
+
+def _iter_caption_targets(sections: list[dict]):
+    """Yield caption targets in display order."""
+    for section in sections:
+        for sentence in section.get("sentences", []):
+            yield {
+                "type": "sentence",
+                "section_name": section.get("name", ""),
+                "sentence": sentence,
+            }
+        for group in section.get("groups", []) or []:
+            group_sentences = list(group.get("sentences", []))
+            if not group_sentences:
+                continue
+            yield {
+                "type": "group",
+                "section_name": section.get("name", ""),
+                "group_name": group.get("name", ""),
+                "sentences": group_sentences,
+            }
+
+
+def _find_group_for_sentence(sections: list[dict], sentence: str) -> dict | None:
+    """Return the group containing a sentence, if any."""
+    for section in sections:
+        for group in section.get("groups", []) or []:
+            if sentence in group.get("sentences", []):
+                return group
+    return None
+
+
+def _apply_sentence_selection(enabled_sentences: list[str], sentence: str,
+                              sections: list[dict], should_enable: bool) -> list[str]:
+    """Apply a sentence toggle while enforcing group exclusivity."""
+    updated = [item for item in enabled_sentences if item != sentence]
+    if should_enable:
+        group = _find_group_for_sentence(sections, sentence)
+        if group:
+            group_sentences = set(group.get("sentences", []))
+            updated = [item for item in updated if item not in group_sentences]
+        updated.append(sentence)
+    return updated
+
+
+def _normalize_enabled_sentences(enabled_sentences: list[str], sections: list[dict]) -> list[str]:
+    """Normalize enabled sentences against known captions and group exclusivity."""
+    known = set(_all_sentences_from_sections(sections))
+    normalized: list[str] = []
+    for sentence in enabled_sentences:
+        if sentence not in known:
+            continue
+        normalized = _apply_sentence_selection(normalized, sentence, sections, True)
+    return normalized
+
+
+def _rename_sentence_in_sections(sections: list[dict], old_sentence: str, new_sentence: str) -> bool:
+    """Rename a configured sentence inside sections/groups."""
+    renamed = False
+    for section in sections:
+        section_sentences = list(section.get("sentences", []))
+        if old_sentence in section_sentences:
+            renamed = True
+        section["sentences"] = [new_sentence if sentence == old_sentence else sentence for sentence in section_sentences]
+        for group in section.get("groups", []) or []:
+            group_sentences = list(group.get("sentences", []))
+            if old_sentence in group_sentences:
+                renamed = True
+            group["sentences"] = [new_sentence if sentence == old_sentence else sentence for sentence in group_sentences]
+    return renamed
 
 
 def _get_crop_aspect_ratios(cfg: dict) -> list[str]:
@@ -453,6 +579,11 @@ def _get_ollama_prompt_template(cfg: dict) -> str:
     return str(cfg.get("ollama_prompt_template") or DEFAULT_OLLAMA_PROMPT_TEMPLATE)
 
 
+def _get_ollama_group_prompt_template(cfg: dict) -> str:
+    """Get the configured grouped-caption prompt template."""
+    return str(cfg.get("ollama_group_prompt_template") or DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE)
+
+
 def _get_ollama_enable_free_text(cfg: dict) -> bool:
     """Get whether the free-text enhancement step is enabled."""
     return bool(cfg.get("ollama_enable_free_text", True))
@@ -545,6 +676,22 @@ def _ollama_prompt_for_sentence(sentence: str, template: str | None = None) -> s
     return prompt_template.replace("{caption}", sentence).replace("{sentence}", sentence)
 
 
+def _ollama_prompt_for_group(group_name: str, sentences: list[str], template: str | None = None) -> str:
+    """Build a numbered-choice prompt for a mutually-exclusive caption group."""
+    prompt_template = template or DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE
+    options = "\n".join(f"{index}. {sentence}" for index, sentence in enumerate(sentences, start=1))
+    resolved_group_name = (group_name or "Caption group").strip() or "Caption group"
+    return (
+        prompt_template
+        .replace("{group_name}", resolved_group_name)
+        .replace("{group}", resolved_group_name)
+        .replace("{options}", options)
+        .replace("{captions}", options)
+        .replace("{choices}", options)
+        .replace("{count}", str(len(sentences)))
+    )
+
+
 def _ollama_prompt_for_free_text(caption_text: str, template: str | None = None) -> str:
     """Build a prompt asking for additional important image details."""
     prompt_template = template or DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE
@@ -590,6 +737,29 @@ def _parse_ollama_yes_no(response_text: str) -> bool:
     if "NO" in tokens:
         return False
     return False
+
+
+def _parse_ollama_selection(response_text: str, sentences: list[str]) -> int | None:
+    """Parse a 1-based choice from an Ollama response."""
+    text = (response_text or "").strip()
+    if not text:
+        return None
+
+    for match in re.findall(r"\d+", text):
+        value = int(match)
+        if 1 <= value <= len(sentences):
+            return value
+
+    normalized = _normalize_caption_line(text)
+    for index, sentence in enumerate(sentences, start=1):
+        sentence_normalized = _normalize_caption_line(sentence)
+        if normalized == sentence_normalized:
+            return index
+    for index, sentence in enumerate(sentences, start=1):
+        sentence_normalized = _normalize_caption_line(sentence)
+        if sentence_normalized and sentence_normalized in normalized:
+            return index
+    return None
 
 
 def _normalize_caption_line(text: str) -> str:
@@ -644,12 +814,25 @@ def _build_caption_text(enabled_sentences: list[str], free_text: str,
                         sections: list[dict] | None = None) -> str:
     """Build the final caption text in the same format as the caption file."""
     if sections:
+        enabled_sentences = _normalize_enabled_sentences(enabled_sentences, sections)
         enabled_set = set(enabled_sentences)
         blocks = []
         for section in sections:
             sec_name = section.get("name", "")
             sec_sentences = [s for s in section.get("sentences", []) if s in enabled_set]
-            if not sec_sentences:
+            group_blocks = []
+            for group in section.get("groups", []) or []:
+                group_sentences = [s for s in group.get("sentences", []) if s in enabled_set]
+                if not group_sentences:
+                    continue
+                group_lines = []
+                if group.get("name"):
+                    group_lines.append(group["name"])
+                for sentence in group_sentences:
+                    group_lines.append(f"- {sentence}")
+                group_blocks.append("\n".join(group_lines))
+
+            if not sec_sentences and not group_blocks:
                 continue
 
             lines = []
@@ -657,6 +840,10 @@ def _build_caption_text(enabled_sentences: list[str], free_text: str,
                 lines.append(sec_name)
             for sentence in sec_sentences:
                 lines.append(f"- {sentence}")
+            if group_blocks:
+                if lines:
+                    lines.append("")
+                lines.append("\n\n".join(group_blocks))
             blocks.append("\n".join(lines))
 
         parts = []
@@ -702,6 +889,64 @@ def _auto_caption_sentences(host: str, model: str, image_path: str,
         })
         if is_match:
             enabled.append(sentence)
+
+    return enabled, results
+
+
+def _auto_caption_sections(host: str, model: str, image_path: str,
+                           sections: list[dict], prompt_template: str | None = None,
+                           group_prompt_template: str | None = None,
+                           timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> tuple[list[str], list[dict]]:
+    """Ask Ollama about configured captions, including exclusive groups."""
+    image_b64 = _encode_image_for_ollama(image_path)
+    enabled: list[str] = []
+    results: list[dict] = []
+
+    for target in _iter_caption_targets(sections):
+        if target["type"] == "sentence":
+            sentence = target["sentence"]
+            payload = {
+                "model": model,
+                "prompt": _ollama_prompt_for_sentence(sentence, prompt_template),
+                "images": [image_b64],
+                "stream": False,
+                "options": {"temperature": 0},
+            }
+            response = _ollama_generate(host, payload, timeout=timeout)
+            raw_answer = str(response.get("response") or "").strip()
+            is_match = _parse_ollama_yes_no(raw_answer)
+            enabled = _apply_sentence_selection(enabled, sentence, sections, is_match)
+            results.append({
+                "type": "sentence",
+                "sentence": sentence,
+                "enabled": is_match,
+                "answer": raw_answer,
+            })
+            continue
+
+        group_sentences = target["sentences"]
+        payload = {
+            "model": model,
+            "prompt": _ollama_prompt_for_group(target.get("group_name", ""), group_sentences, group_prompt_template),
+            "images": [image_b64],
+            "stream": False,
+            "options": {"temperature": 0},
+        }
+        response = _ollama_generate(host, payload, timeout=timeout)
+        raw_answer = str(response.get("response") or "").strip()
+        selection_index = _parse_ollama_selection(raw_answer, group_sentences)
+        selected_sentence = group_sentences[selection_index - 1] if selection_index else None
+        enabled = [sentence for sentence in enabled if sentence not in group_sentences]
+        if selected_sentence:
+            enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
+        results.append({
+            "type": "group",
+            "group_name": target.get("group_name", ""),
+            "sentences": group_sentences,
+            "selected_sentence": selected_sentence,
+            "selection_index": selection_index,
+            "answer": raw_answer,
+        })
 
     return enabled, results
 
@@ -808,6 +1053,12 @@ class BatchCaptionUpdate(BaseModel):
 class BatchFreeTextUpdate(BaseModel):
     image_path: str
     free_text: str
+
+
+class RenameCaptionPresetUpdate(BaseModel):
+    folder: str
+    old_sentence: str
+    new_sentence: str
 
 
 class CropUpdate(BaseModel):
@@ -957,7 +1208,7 @@ async def get_caption(path: str = Query(...), sentences: str = Query(default="[]
     cfg = _load_config()
     folder = str(Path(path).parent)
     sections = _get_folder_sections(cfg, folder)
-    headers = [s["name"] for s in sections if s.get("name")]
+    headers = _all_headers_from_sections(sections)
 
     data = _read_caption_file(path, predefined, headers)
     return data
@@ -980,7 +1231,7 @@ async def batch_toggle_sentence(update: BatchCaptionUpdate):
             continue
 
         # Read existing caption data
-        headers = [s["name"] for s in sections if s.get("name")]
+        headers = _all_headers_from_sections(sections)
         data = _read_caption_file(img_path, all_sentences, headers)
         enabled = list(data["enabled_sentences"])
         free_text = data["free_text"]
@@ -995,6 +1246,51 @@ async def batch_toggle_sentence(update: BatchCaptionUpdate):
         results.append({"path": img_path, "ok": True})
 
     return {"results": results}
+
+
+@app.post("/api/caption/rename-preset")
+async def rename_caption_preset(update: RenameCaptionPresetUpdate):
+    """Rename a configured caption preset and migrate existing caption files."""
+    folder = os.path.normpath(update.folder)
+    old_sentence = (update.old_sentence or "").strip()
+    new_sentence = (update.new_sentence or "").strip()
+    if not folder or not os.path.isdir(folder):
+        raise HTTPException(status_code=400, detail="Folder not found")
+    if not old_sentence or not new_sentence:
+        raise HTTPException(status_code=400, detail="Both old and new caption text are required")
+    if old_sentence == new_sentence:
+        cfg = _load_config()
+        return {"ok": True, "sections": _get_folder_sections(cfg, folder)}
+
+    cfg = _load_config()
+    sections = _get_folder_sections(cfg, folder)
+    all_sentences_before = _all_sentences_from_sections(sections)
+    if old_sentence not in all_sentences_before:
+        raise HTTPException(status_code=404, detail="Caption not found")
+    if new_sentence in all_sentences_before:
+        raise HTTPException(status_code=400, detail="A caption with that text already exists")
+
+    renamed = _rename_sentence_in_sections(sections, old_sentence, new_sentence)
+    if not renamed:
+        raise HTTPException(status_code=404, detail="Caption not found")
+
+    _set_folder_sections(cfg, folder, sections)
+    _save_config(cfg)
+
+    headers = _all_headers_from_sections(sections)
+    folder_path = Path(folder)
+    for entry in folder_path.iterdir():
+        if not entry.is_file() or entry.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        caption_path = entry.with_suffix(".txt")
+        if not caption_path.exists():
+            continue
+        data = _read_caption_file(str(entry), all_sentences_before, headers)
+        enabled = [new_sentence if sentence == old_sentence else sentence for sentence in data.get("enabled_sentences", [])]
+        enabled = _normalize_enabled_sentences(enabled, sections)
+        _write_caption_file(str(entry), enabled, data.get("free_text", ""), sections)
+
+    return {"ok": True, "sections": sections}
 
 
 @app.post("/api/caption/save-free-text")
@@ -1020,7 +1316,9 @@ class AutoCaptionRequest(BaseModel):
     image_paths: Optional[list[str]] = None
     model: Optional[str] = None
     prompt_template: Optional[str] = None
+    group_prompt_template: Optional[str] = None
     enable_free_text: Optional[bool] = None
+    free_text_only: Optional[bool] = None
     free_text_prompt_template: Optional[str] = None
     timeout_seconds: Optional[int] = None
 
@@ -1034,7 +1332,8 @@ async def save_caption(data: SaveCaptionFull):
     cfg = _load_config()
     folder = str(Path(data.image_path).parent)
     sections = _get_folder_sections(cfg, folder)
-    _write_caption_file(data.image_path, data.enabled_sentences, data.free_text, sections)
+    enabled_sentences = _normalize_enabled_sentences(data.enabled_sentences, sections)
+    _write_caption_file(data.image_path, enabled_sentences, data.free_text, sections)
     return {"ok": True}
 
 
@@ -1049,7 +1348,9 @@ async def auto_caption(data: AutoCaptionRequest):
     model = (data.model or _get_ollama_model(cfg)).strip()
     host = _get_ollama_host(cfg)
     prompt_template = data.prompt_template or _get_ollama_prompt_template(cfg)
+    group_prompt_template = data.group_prompt_template or _get_ollama_group_prompt_template(cfg)
     enable_free_text = _get_ollama_enable_free_text(cfg) if data.enable_free_text is None else data.enable_free_text
+    free_text_only = bool(data.free_text_only)
     free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg)
     timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg)
 
@@ -1059,28 +1360,32 @@ async def auto_caption(data: AutoCaptionRequest):
     folder = str(Path(image_path).parent)
     sections = _get_folder_sections(cfg, folder)
     all_sentences = _all_sentences_from_sections(sections)
-    if not all_sentences:
+    if not all_sentences and not free_text_only:
         raise HTTPException(status_code=400, detail="No captions configured for this folder")
 
-    headers = [s["name"] for s in sections if s.get("name")]
+    headers = _all_headers_from_sections(sections)
     existing = _read_caption_file(image_path, all_sentences, headers)
+    enabled = list(existing.get("enabled_sentences", []))
+    results: list[dict] = []
 
     loop = asyncio.get_event_loop()
-    try:
-        enabled, results = await loop.run_in_executor(
-            executor,
-            _auto_caption_sentences,
-            host,
-            model,
-            image_path,
-            all_sentences,
-            prompt_template,
-            timeout_seconds,
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Auto caption failed: {e}") from e
+    if not free_text_only:
+        try:
+            enabled, results = await loop.run_in_executor(
+                executor,
+                _auto_caption_sections,
+                host,
+                model,
+                image_path,
+                sections,
+                prompt_template,
+                group_prompt_template,
+                timeout_seconds,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Auto caption failed: {e}") from e
 
     free_text = existing.get("free_text", "")
     free_text_model_output = ""
@@ -1111,7 +1416,9 @@ async def auto_caption(data: AutoCaptionRequest):
         "host": host,
         "timeout_seconds": timeout_seconds,
         "prompt_template": prompt_template,
+        "group_prompt_template": group_prompt_template,
         "enable_free_text": enable_free_text,
+        "free_text_only": free_text_only,
         "free_text_prompt_template": free_text_prompt_template,
         "enabled_sentences": enabled,
         "free_text": free_text,
@@ -1132,7 +1439,9 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
     model = (data.model or _get_ollama_model(cfg)).strip()
     host = _get_ollama_host(cfg)
     prompt_template = data.prompt_template or _get_ollama_prompt_template(cfg)
+    group_prompt_template = data.group_prompt_template or _get_ollama_group_prompt_template(cfg)
     enable_free_text = _get_ollama_enable_free_text(cfg) if data.enable_free_text is None else data.enable_free_text
+    free_text_only = bool(data.free_text_only)
     free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg)
     timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg)
 
@@ -1151,7 +1460,9 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
             "count": len(image_paths),
             "model": model,
             "host": host,
+            "group_prompt_template": group_prompt_template,
             "enable_free_text": enable_free_text,
+            "free_text_only": free_text_only,
             "timeout_seconds": timeout_seconds,
         })
 
@@ -1166,45 +1477,96 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
             folder = str(Path(image_path).parent)
             sections = _get_folder_sections(cfg, folder)
             all_sentences = _all_sentences_from_sections(sections)
-            if not all_sentences:
+            if not all_sentences and not free_text_only:
                 total_errors += 1
                 yield _event_bytes({"type": "error", "path": image_path, "message": "No captions configured for this folder"})
                 continue
 
-            headers = [s["name"] for s in sections if s.get("name")]
+            headers = _all_headers_from_sections(sections)
             existing = _read_caption_file(image_path, all_sentences, headers)
             free_text = existing.get("free_text", "")
-            enabled = []
+            enabled = list(existing.get("enabled_sentences", []))
             results = []
             image_b64 = await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)
 
-            yield _event_bytes({"type": "image-start", "path": image_path, "total_sentences": len(all_sentences)})
+            total_targets = 0 if free_text_only else sum(1 for _ in _iter_caption_targets(sections))
+            yield _event_bytes({
+                "type": "image-start",
+                "path": image_path,
+                "total_sentences": len(all_sentences),
+                "total_targets": total_targets,
+                "free_text_only": free_text_only,
+                "free_text": free_text,
+            })
 
             try:
-                for index, sentence in enumerate(all_sentences, start=1):
-                    if await request.is_disconnected():
-                        return
-                    payload = {
-                        "model": model,
-                        "prompt": _ollama_prompt_for_sentence(sentence, prompt_template),
-                        "images": [image_b64],
-                        "stream": False,
-                        "options": {"temperature": 0},
-                    }
-                    response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
-                    raw_answer = str(response.get("response") or "").strip()
-                    is_match = _parse_ollama_yes_no(raw_answer)
-                    if is_match:
-                        enabled.append(sentence)
-                    result = {"sentence": sentence, "enabled": is_match, "answer": raw_answer}
-                    results.append(result)
-                    yield _event_bytes({
-                        "type": "caption-check",
-                        "path": image_path,
-                        "index": index,
-                        "total": len(all_sentences),
-                        **result,
-                    })
+                if not free_text_only:
+                    for index, target in enumerate(_iter_caption_targets(sections), start=1):
+                        if await request.is_disconnected():
+                            return
+                        if target["type"] == "sentence":
+                            sentence = target["sentence"]
+                            payload = {
+                                "model": model,
+                                "prompt": _ollama_prompt_for_sentence(sentence, prompt_template),
+                                "images": [image_b64],
+                                "stream": False,
+                                "options": {"temperature": 0},
+                            }
+                            response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
+                            raw_answer = str(response.get("response") or "").strip()
+                            is_match = _parse_ollama_yes_no(raw_answer)
+                            enabled = _apply_sentence_selection(enabled, sentence, sections, is_match)
+                            result = {"type": "sentence", "sentence": sentence, "enabled": is_match, "answer": raw_answer}
+                            results.append(result)
+                            _write_caption_file(image_path, enabled, free_text, sections)
+                            yield _event_bytes({
+                                "type": "caption-check",
+                                "path": image_path,
+                                "index": index,
+                                "total": total_targets,
+                                "sentence": sentence,
+                                "enabled": is_match,
+                                "answer": raw_answer,
+                            })
+                            continue
+
+                        group_sentences = target["sentences"]
+                        payload = {
+                            "model": model,
+                            "prompt": _ollama_prompt_for_group(target.get("group_name", ""), group_sentences, group_prompt_template),
+                            "images": [image_b64],
+                            "stream": False,
+                            "options": {"temperature": 0},
+                        }
+                        response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
+                        raw_answer = str(response.get("response") or "").strip()
+                        selection_index = _parse_ollama_selection(raw_answer, group_sentences)
+                        selected_sentence = group_sentences[selection_index - 1] if selection_index else None
+                        enabled = [sentence for sentence in enabled if sentence not in group_sentences]
+                        if selected_sentence:
+                            enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
+                        result = {
+                            "type": "group",
+                            "group_name": target.get("group_name", ""),
+                            "sentences": group_sentences,
+                            "selected_sentence": selected_sentence,
+                            "selection_index": selection_index,
+                            "answer": raw_answer,
+                        }
+                        results.append(result)
+                        _write_caption_file(image_path, enabled, free_text, sections)
+                        yield _event_bytes({
+                            "type": "group-selection",
+                            "path": image_path,
+                            "index": index,
+                            "total": total_targets,
+                            "group_name": target.get("group_name", ""),
+                            "sentences": group_sentences,
+                            "selected_sentence": selected_sentence,
+                            "selection_index": selection_index,
+                            "answer": raw_answer,
+                        })
 
                 free_text_model_output = ""
                 added_free_text_lines: list[str] = []
@@ -1222,10 +1584,12 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                     response = await loop.run_in_executor(executor, _ollama_generate, host, free_payload, timeout_seconds)
                     free_text_model_output = str(response.get("response") or "").strip()
                     free_text, added_free_text_lines = _merge_free_text(free_text, free_text_model_output, enabled)
+                    _write_caption_file(image_path, enabled, free_text, sections)
                     yield _event_bytes({
                         "type": "free-text",
                         "path": image_path,
                         "answer": free_text_model_output,
+                        "free_text": free_text,
                         "added_lines": added_free_text_lines,
                     })
 
@@ -1272,7 +1636,7 @@ async def get_captions_bulk(paths: str = Query(...), sentences: str = Query(defa
     if image_paths:
         folder = str(Path(image_paths[0]).parent)
         sections = _get_folder_sections(cfg, folder)
-        headers = [s["name"] for s in sections if s.get("name")]
+        headers = _all_headers_from_sections(sections)
     else:
         headers = []
 
@@ -1299,6 +1663,7 @@ class SettingsUpdate(BaseModel):
     ollama_timeout_seconds: Optional[int] = None
     ollama_model: Optional[str] = None
     ollama_prompt_template: Optional[str] = None
+    ollama_group_prompt_template: Optional[str] = None
     ollama_enable_free_text: Optional[bool] = None
     ollama_free_text_prompt_template: Optional[str] = None
 
@@ -1316,6 +1681,7 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
         "ollama_timeout_seconds": _get_ollama_timeout_seconds(cfg),
         "ollama_model": _get_ollama_model(cfg),
         "ollama_prompt_template": _get_ollama_prompt_template(cfg),
+        "ollama_group_prompt_template": _get_ollama_group_prompt_template(cfg),
         "ollama_enable_free_text": _get_ollama_enable_free_text(cfg),
         "ollama_free_text_prompt_template": _get_ollama_free_text_prompt_template(cfg),
     }
@@ -1348,6 +1714,8 @@ async def update_settings(data: SettingsUpdate):
         cfg["ollama_model"] = data.ollama_model.strip()
     if data.ollama_prompt_template is not None:
         cfg["ollama_prompt_template"] = data.ollama_prompt_template or DEFAULT_OLLAMA_PROMPT_TEMPLATE
+    if data.ollama_group_prompt_template is not None:
+        cfg["ollama_group_prompt_template"] = data.ollama_group_prompt_template or DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE
     if data.ollama_enable_free_text is not None:
         cfg["ollama_enable_free_text"] = bool(data.ollama_enable_free_text)
     if data.ollama_free_text_prompt_template is not None:

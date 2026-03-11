@@ -292,8 +292,19 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 .section-sentences li .check-box.checked::after { content: "✓"; color: #1e1e2e; font-size: 10px; font-weight: 700; }
 .section-sentences li .check-box.partial { background: var(--bg3); border-color: var(--fg-dim); }
 .section-sentences li .check-box.partial::after { content: "–"; color: var(--fg-dim); font-size: 11px; font-weight: 700; }
+.section-sentences li .check-box.radio { border-radius: 999px; }
+.section-sentences li .check-box.radio.checked::after { content: "●"; font-size: 8px; }
+.section-sentences li .check-box.radio.partial::after { content: "◐"; font-size: 9px; }
 .section-sentences li .sentence-text { flex: 1; }
 .section-sentences li .sentence-text.partial { color: var(--fg-dim); font-style: italic; }
+.section-sentences li .sentence-text.editable { cursor: text; }
+.section-sentences li .sentence-text[contenteditable=true] {
+  outline: none;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
 .section-sentences li .remove-btn {
   min-width: 20px; height: 20px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
   background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
@@ -345,6 +356,19 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 #model-log .log-err { color: #f38ba8; }
 
 /* Section headers */
+.section-group,
+.group-block {
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.section-body,
+.group-body {
+  display: flex;
+  flex-direction: column;
+}
+.section-body.collapsed,
+.group-body.collapsed {
+  display: none;
+}
 .section-header {
   padding: 4px 8px; display: flex; align-items: center; gap: 5px;
   background: var(--bg3); cursor: grab; user-select: none;
@@ -352,6 +376,17 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   font-size: 11px; font-weight: 600; color: var(--accent);
 }
 .section-header:hover { background: rgba(137,180,250,0.12); }
+.section-header .collapse-btn,
+.group-header .collapse-btn {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
 .section-header .drag-handle { color: var(--fg-dim); font-size: 12px; cursor: grab; }
 .section-header .section-name {
   flex: 1; cursor: text; padding: 1px 4px; border-radius: 3px; min-width: 30px;
@@ -375,8 +410,61 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   outline: 2px solid rgba(243,139,168,0.45);
   outline-offset: 1px;
 }
+.section-header .section-add-group-btn {
+  min-width: 26px; height: 22px; border: 1px solid rgba(166,227,161,0.35); border-radius: 6px;
+  background: rgba(166,227,161,0.14); color: var(--accent2); cursor: pointer;
+  display: grid; place-items: center; padding: 0 6px; flex-shrink: 0;
+  font-size: 12px; line-height: 1; font-weight: 700;
+  transition: all 0.15s ease;
+}
+.section-header .section-add-group-btn:hover {
+  background: var(--accent2); color: #1e1e2e; border-color: var(--accent2);
+}
+.group-header .group-remove-btn {
+  min-width: 18px; height: 18px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
+  background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
+  display: grid; place-items: center; padding: 0; flex-shrink: 0;
+  font-size: 13px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
+  transition: all 0.15s ease;
+}
+.group-header .group-remove-btn:hover {
+  background: #f38ba8; color: #1e1e2e; border-color: #f38ba8;
+  transform: scale(1.05);
+}
+.group-header .group-remove-btn:focus-visible {
+  outline: 2px solid rgba(243,139,168,0.45);
+  outline-offset: 1px;
+}
 .section-header.drag-over { border-bottom: 2px solid var(--accent); }
 .section-header.dragging-section { opacity: 0.5; }
+
+.group-header {
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,255,255,0.03);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  color: var(--accent-warn);
+  font-size: 11px;
+  font-weight: 600;
+}
+.group-header:hover { background: rgba(249,226,175,0.08); }
+.group-header .group-name {
+  flex: 1;
+  cursor: text;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.group-header .group-name:hover { background: rgba(255,255,255,0.08); }
+.group-header .group-name[contenteditable=true] {
+  outline: none; background: var(--bg); border: 1px solid var(--accent-warn);
+}
+.group-sentences { margin-left: 18px; }
+.group-add-row {
+  margin-left: 18px;
+  padding-left: 8px;
+}
 
 /* Section add-caption row */
 .section-add-row {
@@ -399,11 +487,31 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 /* Free text */
 #freetext-section { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #freetext-section .panel-header { flex-shrink: 0; }
+#freetext-section .panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 #freetext-section .panel-header .toggle-label {
   display: inline-flex; align-items: center; gap: 6px;
   color: var(--fg-dim); font-size: 12px; user-select: none; white-space: nowrap;
 }
 #freetext-section .panel-header .toggle-label input { accent-color: var(--accent2); }
+#add-free-text-now-btn {
+  padding: 4px 10px;
+  border: 1px solid rgba(137,180,250,0.35);
+  border-radius: 6px;
+  background: rgba(137,180,250,0.12);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+#add-free-text-now-btn:hover { background: rgba(137,180,250,0.2); }
+#add-free-text-now-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 #free-text {
   flex: 1; width: 100%; padding: 10px; background: var(--bg); color: var(--fg);
   border: none; outline: none; resize: none; font-family: 'Consolas', 'Fira Code', monospace; font-size: 13px;
@@ -574,10 +682,13 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
       <div id="freetext-section">
         <div class="panel-header">
           <span>Free Text</span>
-          <label class="toggle-label" title="Ask Ollama for additional free-text details after checking structured captions">
-            <input type="checkbox" id="auto-free-text-checkbox" checked>
-            <span>Auto Add Extra Details</span>
-          </label>
+          <div class="panel-actions">
+            <label class="toggle-label" title="Ask Ollama for additional free-text details after checking structured captions">
+              <input type="checkbox" id="auto-free-text-checkbox" checked>
+              <span>Auto Add Extra Details</span>
+            </label>
+            <button id="add-free-text-now-btn" type="button" title="Ask Ollama to add only free-text details for the selected image(s)">Add Now</button>
+          </div>
         </div>
         <textarea id="free-text" placeholder="Additional caption text..." disabled></textarea>
       </div>
@@ -622,6 +733,11 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
         <textarea id="settings-ollama-prompt" spellcheck="false"></textarea>
         <div class="settings-help">Use <span>{caption}</span> or <span>{sentence}</span> as the placeholder for the current caption.</div>
       </div>
+      <div class="settings-field">
+        <label for="settings-ollama-group-prompt">Caption Group Prompt</label>
+        <textarea id="settings-ollama-group-prompt" spellcheck="false"></textarea>
+        <div class="settings-help">Use <span>{group_name}</span>, <span>{options}</span>, and <span>{count}</span> for grouped captions.</div>
+      </div>
       <label class="settings-checkbox" for="settings-auto-free-text-enabled">
         <input type="checkbox" id="settings-auto-free-text-enabled">
         <span>Enable additional free-text suggestions</span>
@@ -649,12 +765,13 @@ const state = {
   thumbnailDimensions: {}, // path -> {width, height}
   selectedPaths: new Set(),
   lastClickedIndex: -1,
-  sections: [],          // [{name: "", sentences: [...]}, {name: "Lighting", sentences: [...]}, ...]
+  sections: [],          // [{name: "", sentences: [...], groups: [{name: "Car", sentences: [...]}]}, ...]
   // Per-image caption cache: path -> {enabled_sentences: [...], free_text: ""}
   captionCache: {},
   previewPath: null,
   saving: false,
   autoCaptioning: false,
+  autoCaptionMode: null,
   autoCaptionAbortController: null,
   cropAspectRatioLabels: ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"],
   cropAspectRatios: [],
@@ -662,11 +779,14 @@ const state = {
   cropGuide: null,
   cropDirty: false,
   cropInteraction: null,
+  collapsedSections: {},
+  collapsedGroups: {},
   ollamaServer: "127.0.0.1",
   ollamaPort: 11434,
   ollamaTimeoutSeconds: 20,
   ollamaModel: "llava",
   ollamaPromptTemplate: "You are verifying a single image caption. Reply with exactly one word: YES or NO. Reply YES only if the caption is clearly correct for the image. Reply NO if it is wrong, uncertain, too specific, or not clearly visible.\n\nCaption: {caption}\nAnswer:",
+  ollamaGroupPromptTemplate: "You are selecting the single best caption for an image from a numbered list. Reply with exactly one number from 1 to {count}. Pick the most likely correct caption for the image.\n\nGroup: {group_name}\n{options}\n\nAnswer:",
   ollamaEnableFreeText: true,
   ollamaFreeTextPromptTemplate: "You are improving an image caption file. The caption text below already covers known details and must not be repeated. Look at the image and return only notable, important visual details that are still missing. Return either NONE or one short line per missing detail, with no bullets or numbering.\n\nCurrent caption text:\n{caption_text}\n\nAnswer:",
   modelLogLines: [],
@@ -702,6 +822,7 @@ const sentencesSection = $("#sentences-section");
 const rightHorizontalResize = $("#right-horizontal-resize");
 const autoCaptionBtn = $("#auto-caption-btn");
 const autoFreeTextCheckbox = $("#auto-free-text-checkbox");
+const addFreeTextNowBtn = $("#add-free-text-now-btn");
 const addSectionBtn = $("#add-section-btn");
 const freeText = $("#free-text");
 const multiInfo = $("#multi-info");
@@ -719,8 +840,131 @@ const settingsTimeoutInput = $("#settings-ollama-timeout");
 const settingsModelInput = $("#settings-ollama-model");
 const settingsCropAspectRatiosInput = $("#settings-crop-aspect-ratios");
 const settingsPromptInput = $("#settings-ollama-prompt");
+const settingsGroupPromptInput = $("#settings-ollama-group-prompt");
 const settingsAutoFreeTextEnabled = $("#settings-auto-free-text-enabled");
 const settingsFreeTextPromptInput = $("#settings-ollama-free-text-prompt");
+
+function makeUiId(prefix) {
+  return `${prefix}-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+}
+
+function createEmptyGroup(name = "") {
+  return { name, sentences: [], _uiId: makeUiId("group") };
+}
+
+function createEmptySection(name = "") {
+  return { name, sentences: [], groups: [], _uiId: makeUiId("section") };
+}
+
+function normalizeGroupData(group) {
+  const sentences = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(group?.sentences) ? group.sentences : []) {
+    const text = String(raw || "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    sentences.push(text);
+  }
+  return {
+    name: String(group?.name || "").trim(),
+    sentences,
+    _uiId: group?._uiId || makeUiId("group"),
+  };
+}
+
+function normalizeSectionData(section) {
+  const sentences = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(section?.sentences) ? section.sentences : []) {
+    const text = String(raw || "").trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    sentences.push(text);
+  }
+  return {
+    name: String(section?.name || "").trim(),
+    sentences,
+    groups: (Array.isArray(section?.groups) ? section.groups : []).map(normalizeGroupData),
+    _uiId: section?._uiId || makeUiId("section"),
+  };
+}
+
+function normalizeSectionsData(sections) {
+  const normalized = (Array.isArray(sections) ? sections : []).map(normalizeSectionData);
+  return normalized.length ? normalized : [createEmptySection("")];
+}
+
+function serializeSectionsForSave() {
+  return normalizeSectionsData(state.sections).map(section => ({
+    name: section.name,
+    sentences: [...section.sentences],
+    groups: section.groups.map(group => ({
+      name: group.name,
+      sentences: [...group.sentences],
+    })),
+  }));
+}
+
+function getAllConfiguredSentences() {
+  return state.sections.flatMap(section => [
+    ...(section.sentences || []),
+    ...((section.groups || []).flatMap(group => group.sentences || [])),
+  ]);
+}
+
+function hasConfiguredCaptions() {
+  return getAllConfiguredSentences().length > 0;
+}
+
+function countSectionSentences(section) {
+  return (section.sentences || []).length + ((section.groups || []).reduce((sum, group) => sum + (group.sentences || []).length, 0));
+}
+
+function findGroupSentencesForSentence(sentence) {
+  for (const section of state.sections) {
+    for (const group of section.groups || []) {
+      if ((group.sentences || []).includes(sentence)) {
+        return group.sentences || [];
+      }
+    }
+  }
+  return null;
+}
+
+function applySentenceSelectionToList(enabledSentences, sentence, shouldEnable) {
+  let next = Array.isArray(enabledSentences) ? enabledSentences.filter(item => item !== sentence) : [];
+  const groupSentences = findGroupSentencesForSentence(sentence);
+  if (shouldEnable && groupSentences) {
+    next = next.filter(item => !groupSentences.includes(item));
+  }
+  if (shouldEnable) {
+    next.unshift(sentence);
+  }
+  return [...new Set(next)];
+}
+
+function ensureCaptionCache(path) {
+  if (!state.captionCache[path]) {
+    state.captionCache[path] = { enabled_sentences: [], free_text: "" };
+  }
+  return state.captionCache[path];
+}
+
+function setSectionCollapsed(section, collapsed) {
+  state.collapsedSections[section._uiId] = !!collapsed;
+}
+
+function isSectionCollapsed(section) {
+  return !!state.collapsedSections[section._uiId];
+}
+
+function setGroupCollapsed(group, collapsed) {
+  state.collapsedGroups[group._uiId] = !!collapsed;
+}
+
+function isGroupCollapsed(group) {
+  return !!state.collapsedGroups[group._uiId];
+}
 
 // ===== THUMBNAIL PRELOADING =====
 const thumbBlobCache = new Map();  // path -> blob URL
@@ -1330,13 +1574,21 @@ async function removeCrop() {
 
 function updateActionButtons() {
   const hasSelection = state.selectedPaths.size > 0;
-  const hasCaptions = state.sections.some(section => (section.sentences || []).length > 0);
-  autoCaptionBtn.disabled = !state.autoCaptioning && (!hasSelection || !hasCaptions || !state.ollamaModel.trim());
+  const hasCaptions = hasConfiguredCaptions();
+  const canRunStructured = hasSelection && hasCaptions && !!state.ollamaModel.trim();
+  const canRunFreeTextOnly = hasSelection && !!state.ollamaModel.trim();
+  autoCaptionBtn.disabled = !state.autoCaptioning && !canRunStructured;
+  addFreeTextNowBtn.disabled = !state.autoCaptioning && !canRunFreeTextOnly;
   autoCaptionBtn.classList.toggle("running", state.autoCaptioning);
-  autoCaptionBtn.textContent = state.autoCaptioning ? "Stop Auto Caption" : "Auto Caption";
-  autoCaptionBtn.title = state.autoCaptioning
+  addFreeTextNowBtn.classList.toggle("running", state.autoCaptioning && state.autoCaptionMode === "free-text-only");
+  autoCaptionBtn.textContent = state.autoCaptioning && state.autoCaptionMode === "full" ? "Stop Auto Caption" : "Auto Caption";
+  addFreeTextNowBtn.textContent = state.autoCaptioning && state.autoCaptionMode === "free-text-only" ? "Stop" : "Add Now";
+  autoCaptionBtn.title = state.autoCaptioning && state.autoCaptionMode === "full"
     ? "Stop the running auto caption operation"
     : "Use Ollama to verify captions for the selected image(s)";
+  addFreeTextNowBtn.title = state.autoCaptioning && state.autoCaptionMode === "free-text-only"
+    ? "Stop the running free-text enhancement"
+    : "Ask Ollama to add only free-text details for the selected image(s)";
 }
 
 function renderModelLog() {
@@ -1380,8 +1632,12 @@ function applySettings(settings) {
   state.ollamaTimeoutSeconds = Number(settings.ollama_timeout_seconds || 20) || 20;
   state.ollamaModel = (settings.ollama_model || "llava").trim() || "llava";
   state.ollamaPromptTemplate = settings.ollama_prompt_template || state.ollamaPromptTemplate;
+  state.ollamaGroupPromptTemplate = settings.ollama_group_prompt_template || state.ollamaGroupPromptTemplate;
   state.ollamaEnableFreeText = settings.ollama_enable_free_text ?? state.ollamaEnableFreeText;
   state.ollamaFreeTextPromptTemplate = settings.ollama_free_text_prompt_template || state.ollamaFreeTextPromptTemplate;
+  if (settings.sections) {
+    state.sections = normalizeSectionsData(settings.sections);
+  }
   autoFreeTextCheckbox.checked = !!state.ollamaEnableFreeText;
   if (state.images.length) {
     renderGrid();
@@ -1395,6 +1651,7 @@ function fillSettingsForm() {
   settingsModelInput.value = state.ollamaModel;
   settingsCropAspectRatiosInput.value = state.cropAspectRatioLabels.join(", ");
   settingsPromptInput.value = state.ollamaPromptTemplate;
+  settingsGroupPromptInput.value = state.ollamaGroupPromptTemplate;
   settingsAutoFreeTextEnabled.checked = !!state.ollamaEnableFreeText;
   settingsFreeTextPromptInput.value = state.ollamaFreeTextPromptTemplate;
 }
@@ -1448,6 +1705,7 @@ async function saveOllamaSettingsFromForm() {
   const model = settingsModelInput.value.trim() || "llava";
   const cropAspectRatios = settingsCropAspectRatiosInput.value.split(",").map(s => s.trim()).filter(Boolean);
   const promptTemplate = settingsPromptInput.value || state.ollamaPromptTemplate;
+  const groupPromptTemplate = settingsGroupPromptInput.value || state.ollamaGroupPromptTemplate;
   const enableFreeText = settingsAutoFreeTextEnabled.checked;
   const freeTextPromptTemplate = settingsFreeTextPromptInput.value || state.ollamaFreeTextPromptTemplate;
   try {
@@ -1461,6 +1719,7 @@ async function saveOllamaSettingsFromForm() {
         ollama_model: model,
         crop_aspect_ratios: cropAspectRatios,
         ollama_prompt_template: promptTemplate,
+        ollama_group_prompt_template: groupPromptTemplate,
         ollama_enable_free_text: enableFreeText,
         ollama_free_text_prompt_template: freeTextPromptTemplate,
       }),
@@ -1476,6 +1735,7 @@ async function saveOllamaSettingsFromForm() {
       ollama_model: model,
       crop_aspect_ratios: cropAspectRatios,
       ollama_prompt_template: promptTemplate,
+      ollama_group_prompt_template: groupPromptTemplate,
       ollama_enable_free_text: enableFreeText,
       ollama_free_text_prompt_template: freeTextPromptTemplate,
     });
@@ -1522,7 +1782,6 @@ async function loadFolder() {
     const settingsResp = await fetch(`/api/settings?folder=${encodeURIComponent(state.folder)}`);
     if (settingsResp.ok) {
       const settings = await settingsResp.json();
-      state.sections = settings.sections || [{"name": "", "sentences": []}];
       applySettings(settings);
     }
 
@@ -1939,7 +2198,7 @@ rotateRightBtn.addEventListener("click", () => rotatePreviewImage("right"));
 
 // ===== CAPTION DATA =====
 async function loadCaptionData(path) {
-  const allSentences = state.sections.flatMap(s => s.sentences);
+  const allSentences = getAllConfiguredSentences();
   const sentencesJson = JSON.stringify(allSentences);
   try {
     const resp = await fetch(`/api/caption?path=${encodeURIComponent(path)}&sentences=${encodeURIComponent(sentencesJson)}`);
@@ -1959,7 +2218,7 @@ async function loadCaptionData(path) {
 
 async function loadMultiCaptionState() {
   const paths = [...state.selectedPaths];
-  const allSentences = state.sections.flatMap(s => s.sentences);
+  const allSentences = getAllConfiguredSentences();
   const sentencesJson = JSON.stringify(allSentences);
 
   // Batch load captions
@@ -1996,17 +2255,21 @@ function saveSectionsToStorage() {
     fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sections: state.sections, folder: state.folder }),
+      body: JSON.stringify({ sections: serializeSectionsForSave(), folder: state.folder }),
     }).catch(err => console.error("Failed to save sections:", err));
   }, 300);
 }
 
-function addSentenceToSection(secIdx, text) {
+function addSentenceToSection(secIdx, text, groupIdx = null) {
   if (!text) return;
-  const allSentences = state.sections.flatMap(s => s.sentences);
+  const allSentences = getAllConfiguredSentences();
   if (allSentences.includes(text)) return;
   if (secIdx >= 0 && secIdx < state.sections.length) {
-    state.sections[secIdx].sentences.push(text);
+    if (groupIdx === null) {
+      state.sections[secIdx].sentences.push(text);
+    } else if (groupIdx >= 0 && groupIdx < (state.sections[secIdx].groups || []).length) {
+      state.sections[secIdx].groups[groupIdx].sentences.push(text);
+    }
   }
   saveSectionsToStorage();
   renderSentences();
@@ -2015,15 +2278,79 @@ function addSentenceToSection(secIdx, text) {
 function removeSentence(sentence) {
   for (const sec of state.sections) {
     sec.sentences = sec.sentences.filter(s => s !== sentence);
+    for (const group of sec.groups || []) {
+      group.sentences = group.sentences.filter(s => s !== sentence);
+    }
   }
   saveSectionsToStorage();
   renderSentences();
 }
 
+async function renameSentence(oldSentence, newSentence) {
+  const nextSentence = String(newSentence || "").trim();
+  if (!nextSentence || nextSentence === oldSentence) {
+    renderSentences();
+    return;
+  }
+  if (getAllConfiguredSentences().includes(nextSentence)) {
+    statusBar.textContent = "Caption already exists";
+    renderSentences();
+    return;
+  }
+  if (!state.folder) {
+    statusBar.textContent = "No folder loaded";
+    renderSentences();
+    return;
+  }
+
+  statusBar.textContent = "Renaming caption...";
+  try {
+    const resp = await fetch("/api/caption/rename-preset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        folder: state.folder,
+        old_sentence: oldSentence,
+        new_sentence: nextSentence,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to rename caption");
+    }
+    state.sections = normalizeSectionsData(data.sections || state.sections);
+    for (const caption of Object.values(state.captionCache)) {
+      if (!caption?.enabled_sentences) continue;
+      caption.enabled_sentences = [...new Set(caption.enabled_sentences.map(sentence => sentence === oldSentence ? nextSentence : sentence))];
+    }
+    if (state.selectedPaths.size === 1) {
+      const path = [...state.selectedPaths][0];
+      await loadCaptionData(path);
+    } else if (state.selectedPaths.size > 1) {
+      await loadMultiCaptionState();
+    } else {
+      renderSentences();
+    }
+    statusBar.textContent = "Caption renamed";
+  } catch (err) {
+    statusBar.textContent = `Rename error: ${err.message}`;
+    renderSentences();
+  }
+}
+
 function addSection() {
   const name = prompt("Section name:");
   if (!name || !name.trim()) return;
-  state.sections.push({ name: name.trim(), sentences: [] });
+  state.sections.push(createEmptySection(name.trim()));
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function addGroup(secIdx) {
+  const name = prompt("Group name:");
+  if (!name || !name.trim()) return;
+  if (secIdx < 0 || secIdx >= state.sections.length) return;
+  state.sections[secIdx].groups.push(createEmptyGroup(name.trim()));
   saveSectionsToStorage();
   renderSentences();
 }
@@ -2031,29 +2358,162 @@ function addSection() {
 function deleteSection(index) {
   const sec = state.sections[index];
   const label = sec.name || "(General)";
-  if (!confirm(`Delete section "${label}" and its ${sec.sentences.length} sentence(s)?`)) return;
+  if (!confirm(`Delete section "${label}" and its ${countSectionSentences(sec)} caption(s)?`)) return;
   state.sections.splice(index, 1);
   if (state.sections.length === 0) {
-    state.sections.push({ name: "", sentences: [] });
+    state.sections.push(createEmptySection(""));
   }
   saveSectionsToStorage();
   renderSentences();
+}
+
+function deleteGroup(secIdx, groupIdx) {
+  const group = state.sections[secIdx]?.groups?.[groupIdx];
+  if (!group) return;
+  const label = group.name || "(Group)";
+  if (!confirm(`Delete group "${label}" and its ${(group.sentences || []).length} caption(s)?`)) return;
+  state.sections[secIdx].groups.splice(groupIdx, 1);
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function beginEditableRename(targetEl, currentValue, onCommit, highlightColor = "var(--accent)") {
+  targetEl.contentEditable = "true";
+  targetEl.style.borderColor = highlightColor;
+  targetEl.focus();
+  const range = document.createRange();
+  range.selectNodeContents(targetEl);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  const handleBlur = () => {
+    targetEl.contentEditable = "false";
+    targetEl.style.borderColor = "";
+    const nextValue = targetEl.textContent.trim();
+    if (nextValue !== currentValue) {
+      onCommit(nextValue);
+    } else {
+      targetEl.textContent = currentValue || targetEl.textContent;
+    }
+    targetEl.removeEventListener("blur", handleBlur);
+  };
+
+  targetEl.addEventListener("blur", handleBlur);
+  targetEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); targetEl.blur(); }
+    if (e.key === "Escape") { e.preventDefault(); targetEl.textContent = currentValue || ""; targetEl.blur(); }
+  }, { once: true });
+}
+
+function getSentenceSelectionState(sentence, selectedPaths) {
+  let enabledCount = 0;
+  const totalCount = selectedPaths.length;
+  for (const path of selectedPaths) {
+    const cap = state.captionCache[path];
+    if (cap?.enabled_sentences?.includes(sentence)) {
+      enabledCount++;
+    }
+  }
+  return {
+    enabledCount,
+    totalCount,
+    isChecked: totalCount > 0 && enabledCount === totalCount,
+    isPartial: totalCount > 0 && enabledCount > 0 && enabledCount < totalCount,
+  };
+}
+
+function createSentenceListItem(sentence, selectedPaths, options = {}) {
+  const { isExclusive = false } = options;
+  const { isChecked, isPartial } = getSentenceSelectionState(sentence, selectedPaths);
+  const li = document.createElement("li");
+
+  const checkBox = document.createElement("div");
+  checkBox.className = `check-box${isExclusive ? " radio" : ""}`;
+  if (isChecked) checkBox.classList.add("checked");
+  else if (isPartial) checkBox.classList.add("partial");
+
+  const textSpan = document.createElement("span");
+  textSpan.className = "sentence-text editable";
+  if (isPartial) textSpan.classList.add("partial");
+  textSpan.textContent = sentence;
+  textSpan.title = "Click to rename caption";
+  textSpan.addEventListener("click", (e) => {
+    e.stopPropagation();
+    beginEditableRename(textSpan, sentence, (newName) => {
+      renameSentence(sentence, newName);
+    });
+  });
+
+  const rmBtn = document.createElement("button");
+  rmBtn.className = "remove-btn";
+  rmBtn.textContent = "\u00D7";
+  rmBtn.title = "Remove sentence";
+  rmBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    removeSentence(sentence);
+  });
+
+  li.appendChild(checkBox);
+  li.appendChild(textSpan);
+  li.appendChild(rmBtn);
+  li.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleSentence(sentence, isChecked, isPartial);
+  });
+  return li;
+}
+
+function createAddSentenceRow(secIdx, groupIdx = null, placeholder = "Add caption...") {
+  const addRow = document.createElement("div");
+  addRow.className = `section-add-row${groupIdx === null ? "" : " group-add-row"}`;
+  const addInput = document.createElement("input");
+  addInput.type = "text";
+  addInput.placeholder = placeholder;
+  addInput.spellcheck = false;
+  const addBtn = document.createElement("button");
+  addBtn.textContent = "+";
+  const submit = () => {
+    const text = addInput.value.trim();
+    if (!text) return;
+    addSentenceToSection(secIdx, text, groupIdx);
+    addInput.value = "";
+  };
+  addBtn.addEventListener("click", submit);
+  addInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submit();
+  });
+  addRow.appendChild(addInput);
+  addRow.appendChild(addBtn);
+  return addRow;
 }
 
 function renderSentences() {
   sectionContainer.innerHTML = "";
   const selectedPaths = [...state.selectedPaths];
 
-  // Render each section
-  state.sections.forEach((section, secIdx) => {
-    const group = document.createElement("div");
-    group.className = "section-group";
-    group.dataset.sectionIdx = secIdx;
+  state.sections = normalizeSectionsData(state.sections);
 
-    // Section header
+  state.sections.forEach((section, secIdx) => {
+    const sectionBlock = document.createElement("div");
+    sectionBlock.className = "section-group";
+    sectionBlock.dataset.sectionIdx = secIdx;
+
     const header = document.createElement("div");
     header.className = "section-header";
     header.draggable = true;
+
+    const collapseBtn = document.createElement("button");
+    collapseBtn.type = "button";
+    collapseBtn.className = "collapse-btn";
+    collapseBtn.textContent = isSectionCollapsed(section) ? "▸" : "▾";
+    collapseBtn.title = isSectionCollapsed(section) ? "Expand section" : "Collapse section";
+    collapseBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setSectionCollapsed(section, !isSectionCollapsed(section));
+      renderSentences();
+    });
+    header.appendChild(collapseBtn);
 
     const dragHandle = document.createElement("span");
     dragHandle.className = "drag-handle";
@@ -2065,32 +2525,27 @@ function renderSentences() {
     nameSpan.textContent = section.name || "(General)";
     nameSpan.addEventListener("click", (e) => {
       e.stopPropagation();
-      nameSpan.contentEditable = "true";
-      nameSpan.focus();
-      // Select all text
-      const range = document.createRange();
-      range.selectNodeContents(nameSpan);
-      const sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-    });
-    nameSpan.addEventListener("blur", () => {
-      nameSpan.contentEditable = "false";
-      const newName = nameSpan.textContent.trim();
-      if (newName !== section.name) {
+      beginEditableRename(nameSpan, section.name || "", (newName) => {
         section.name = newName;
         saveSectionsToStorage();
-      }
+        renderSentences();
+      });
     });
-    nameSpan.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); nameSpan.blur(); }
-      if (e.key === "Escape") { nameSpan.textContent = section.name || "(General)"; nameSpan.blur(); }
-    });
-    // Prevent drag when editing name
     nameSpan.addEventListener("mousedown", (e) => {
       if (nameSpan.contentEditable === "true") e.stopPropagation();
     });
     header.appendChild(nameSpan);
+
+    const addGroupBtn = document.createElement("button");
+    addGroupBtn.type = "button";
+    addGroupBtn.className = "section-add-group-btn";
+    addGroupBtn.textContent = "+G";
+    addGroupBtn.title = "Add group";
+    addGroupBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      addGroup(secIdx);
+    });
+    header.appendChild(addGroupBtn);
 
     const removeBtn = document.createElement("button");
     removeBtn.className = "section-remove-btn";
@@ -2102,7 +2557,6 @@ function renderSentences() {
     });
     header.appendChild(removeBtn);
 
-    // Drag events for section reordering
     header.addEventListener("dragstart", (e) => {
       if (nameSpan.contentEditable === "true") { e.preventDefault(); return; }
       e.dataTransfer.setData("text/plain", String(secIdx));
@@ -2124,97 +2578,94 @@ function renderSentences() {
     header.addEventListener("drop", (e) => {
       e.preventDefault();
       header.classList.remove("drag-over");
-      const fromIdx = parseInt(e.dataTransfer.getData("text/plain"));
+      const fromIdx = Number.parseInt(e.dataTransfer.getData("text/plain"), 10);
       const toIdx = secIdx;
-      if (fromIdx !== toIdx) {
-        const [moved] = state.sections.splice(fromIdx, 1);
-        state.sections.splice(toIdx, 0, moved);
-        saveSectionsToStorage();
-        renderSentences();
-      }
+      if (Number.isNaN(fromIdx) || fromIdx === toIdx) return;
+      const [moved] = state.sections.splice(fromIdx, 1);
+      state.sections.splice(toIdx, 0, moved);
+      saveSectionsToStorage();
+      renderSentences();
     });
 
-    group.appendChild(header);
+    sectionBlock.appendChild(header);
 
-    // Sentence list under this section
-    const ul = document.createElement("ul");
-    ul.className = "section-sentences";
+    const body = document.createElement("div");
+    body.className = `section-body${isSectionCollapsed(section) ? " collapsed" : ""}`;
 
-    for (const sentence of section.sentences) {
-      const li = document.createElement("li");
+    const sectionSentences = document.createElement("ul");
+    sectionSentences.className = "section-sentences";
+    for (const sentence of section.sentences || []) {
+      sectionSentences.appendChild(createSentenceListItem(sentence, selectedPaths));
+    }
+    body.appendChild(sectionSentences);
 
-      let enabledCount = 0;
-      let totalCount = selectedPaths.length;
-      for (const path of selectedPaths) {
-        const cap = state.captionCache[path];
-        if (cap && cap.enabled_sentences && cap.enabled_sentences.includes(sentence)) {
-          enabledCount++;
-        }
+    for (const [groupIdx, group] of (section.groups || []).entries()) {
+      const groupBlock = document.createElement("div");
+      groupBlock.className = "group-block";
+
+      const groupHeader = document.createElement("div");
+      groupHeader.className = "group-header";
+
+      const groupCollapseBtn = document.createElement("button");
+      groupCollapseBtn.type = "button";
+      groupCollapseBtn.className = "collapse-btn";
+      groupCollapseBtn.textContent = isGroupCollapsed(group) ? "▸" : "▾";
+      groupCollapseBtn.title = isGroupCollapsed(group) ? "Expand group" : "Collapse group";
+      groupCollapseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setGroupCollapsed(group, !isGroupCollapsed(group));
+        renderSentences();
+      });
+      groupHeader.appendChild(groupCollapseBtn);
+
+      const groupName = document.createElement("span");
+      groupName.className = "group-name";
+      groupName.textContent = group.name || "(Group)";
+      groupName.addEventListener("click", (e) => {
+        e.stopPropagation();
+        beginEditableRename(groupName, group.name || "", (newName) => {
+          group.name = newName;
+          saveSectionsToStorage();
+          renderSentences();
+        }, "var(--accent-warn)");
+      });
+      groupHeader.appendChild(groupName);
+
+      const groupRemoveBtn = document.createElement("button");
+      groupRemoveBtn.type = "button";
+      groupRemoveBtn.className = "group-remove-btn";
+      groupRemoveBtn.textContent = "\u00D7";
+      groupRemoveBtn.title = "Delete group";
+      groupRemoveBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteGroup(secIdx, groupIdx);
+      });
+      groupHeader.appendChild(groupRemoveBtn);
+
+      groupBlock.appendChild(groupHeader);
+
+      const groupBody = document.createElement("div");
+      groupBody.className = `group-body${isGroupCollapsed(group) ? " collapsed" : ""}`;
+      const groupSentences = document.createElement("ul");
+      groupSentences.className = "section-sentences group-sentences";
+      for (const sentence of group.sentences || []) {
+        groupSentences.appendChild(createSentenceListItem(sentence, selectedPaths, { isExclusive: true }));
       }
-
-      const isChecked = totalCount > 0 && enabledCount === totalCount;
-      const isPartial = totalCount > 0 && enabledCount > 0 && enabledCount < totalCount;
-
-      const checkBox = document.createElement("div");
-      checkBox.className = "check-box";
-      if (isChecked) checkBox.classList.add("checked");
-      else if (isPartial) checkBox.classList.add("partial");
-
-      const textSpan = document.createElement("span");
-      textSpan.className = "sentence-text";
-      if (isPartial) textSpan.classList.add("partial");
-      textSpan.textContent = sentence;
-
-      const rmBtn = document.createElement("button");
-      rmBtn.className = "remove-btn";
-      rmBtn.textContent = "\u00D7";
-      rmBtn.title = "Remove sentence";
-      rmBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        removeSentence(sentence);
-      });
-
-      li.appendChild(checkBox);
-      li.appendChild(textSpan);
-      li.appendChild(rmBtn);
-
-      li.addEventListener("click", (e) => {
-        e.stopPropagation();
-        toggleSentence(sentence, isChecked, isPartial);
-      });
-
-      ul.appendChild(li);
+      groupBody.appendChild(groupSentences);
+      groupBody.appendChild(createAddSentenceRow(secIdx, groupIdx, "Add caption to group..."));
+      groupBlock.appendChild(groupBody);
+      body.appendChild(groupBlock);
     }
 
-    group.appendChild(ul);
-
-    // Add sentence row inside section
-    const addRow = document.createElement("div");
-    addRow.className = "section-add-row";
-    const addInput = document.createElement("input");
-    addInput.type = "text";
-    addInput.placeholder = "Add caption...";
-    addInput.spellcheck = false;
-    const addBtn = document.createElement("button");
-    addBtn.textContent = "+";
-    addBtn.addEventListener("click", () => {
-      const text = addInput.value.trim();
-      if (text) { addSentenceToSection(secIdx, text); addInput.value = ""; }
-    });
-    addInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { const text = addInput.value.trim(); if (text) { addSentenceToSection(secIdx, text); addInput.value = ""; } }
-    });
-    addRow.appendChild(addInput);
-    addRow.appendChild(addBtn);
-    group.appendChild(addRow);
-
-    sectionContainer.appendChild(group);
+    body.appendChild(createAddSentenceRow(secIdx, null, "Add caption to section..."));
+    sectionBlock.appendChild(body);
+    sectionContainer.appendChild(sectionBlock);
   });
 
   updateActionButtons();
 }
 
-async function autoCaptionSelected() {
+async function runAutoCaptionStream({ freeTextOnly = false } = {}) {
   if (state.autoCaptioning) {
     stopAutoCaption();
     return;
@@ -2227,12 +2678,19 @@ async function autoCaptionSelected() {
     openSettingsModal();
     return;
   }
+  if (!freeTextOnly && !hasConfiguredCaptions()) {
+    statusBar.textContent = "No captions configured for this folder";
+    return;
+  }
 
   state.autoCaptioning = true;
+  state.autoCaptionMode = freeTextOnly ? "free-text-only" : "full";
   state.autoCaptionAbortController = new AbortController();
   updateActionButtons();
   clearModelLog();
-  statusBar.textContent = `Auto captioning ${paths.length} image${paths.length === 1 ? "" : "s"}...`;
+  statusBar.textContent = freeTextOnly
+    ? `Adding free text for ${paths.length} image${paths.length === 1 ? "" : "s"}...`
+    : `Auto captioning ${paths.length} image${paths.length === 1 ? "" : "s"}...`;
 
   try {
     const resp = await fetch("/api/auto-caption/stream", {
@@ -2243,7 +2701,9 @@ async function autoCaptionSelected() {
         image_paths: paths,
         model,
         prompt_template: state.ollamaPromptTemplate,
+        group_prompt_template: state.ollamaGroupPromptTemplate,
         enable_free_text: state.ollamaEnableFreeText,
+        free_text_only: freeTextOnly,
         free_text_prompt_template: state.ollamaFreeTextPromptTemplate,
         timeout_seconds: state.ollamaTimeoutSeconds,
       }),
@@ -2257,21 +2717,66 @@ async function autoCaptionSelected() {
     let errors = 0;
     await readNdjsonStream(resp, (event) => {
       if (event.type === "start") {
-        appendModelLog(`Starting auto caption for ${event.count} image(s) using ${event.model} @ ${event.host}`, "log-dim");
-        if (event.enable_free_text) {
+        appendModelLog(
+          event.free_text_only
+            ? `Starting free-text enhancement for ${event.count} image(s) using ${event.model} @ ${event.host}`
+            : `Starting auto caption for ${event.count} image(s) using ${event.model} @ ${event.host}`,
+          "log-dim"
+        );
+        if (event.enable_free_text || event.free_text_only) {
           appendModelLog("Free-text enhancement is enabled", "log-dim");
         }
       } else if (event.type === "image-start") {
-        appendModelLog(`[${getFileLabel(event.path)}] Checking ${event.total_sentences} captions...`, "log-dim");
+        const cache = ensureCaptionCache(event.path);
+        if (!event.free_text_only) {
+          cache.enabled_sentences = [];
+        }
+        cache.free_text = event.free_text || cache.free_text || "";
+        markCaptionIndicator(event.path, !!(cache.free_text && cache.free_text.trim()));
+        renderSentences();
+        appendModelLog(
+          event.free_text_only
+            ? `[${getFileLabel(event.path)}] Generating free-text details...`
+            : `[${getFileLabel(event.path)}] Checking ${event.total_targets || event.total_sentences} caption target(s)...`,
+          "log-dim"
+        );
       } else if (event.type === "caption-check") {
         const verdict = event.enabled ? "YES" : "NO";
         appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.sentence} -> ${verdict} | ${event.answer || verdict}`, event.enabled ? "log-ok" : "log-dim");
+        const cache = ensureCaptionCache(event.path);
+        cache.enabled_sentences = applySentenceSelectionToList(cache.enabled_sentences, event.sentence, !!event.enabled);
+        if (state.selectedPaths.has(event.path)) {
+          renderSentences();
+        }
+        const hasContent = cache.enabled_sentences.length > 0 || (cache.free_text && cache.free_text.trim());
+        markCaptionIndicator(event.path, !!hasContent);
+      } else if (event.type === "group-selection") {
+        const selectedSentence = event.selected_sentence || "(no valid selection)";
+        appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.group_name || "Group"} -> ${selectedSentence} | ${event.answer || ""}`, event.selected_sentence ? "log-ok" : "log-warn");
+        const cache = ensureCaptionCache(event.path);
+        for (const sentence of event.sentences || []) {
+          cache.enabled_sentences = applySentenceSelectionToList(cache.enabled_sentences, sentence, false);
+        }
+        if (event.selected_sentence) {
+          cache.enabled_sentences = applySentenceSelectionToList(cache.enabled_sentences, event.selected_sentence, true);
+        }
+        if (state.selectedPaths.has(event.path)) {
+          renderSentences();
+        }
+        const hasContent = cache.enabled_sentences.length > 0 || (cache.free_text && cache.free_text.trim());
+        markCaptionIndicator(event.path, !!hasContent);
       } else if (event.type === "free-text") {
+        const cache = ensureCaptionCache(event.path);
+        cache.free_text = event.free_text || cache.free_text || "";
         if ((event.added_lines || []).length > 0) {
           appendModelLog(`[${getFileLabel(event.path)}] Added free text: ${(event.added_lines || []).join(" | ")}`, "log-ok");
         } else {
           appendModelLog(`[${getFileLabel(event.path)}] Free text output: ${event.answer || "NONE"}`, "log-warn");
         }
+        if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
+          freeText.value = cache.free_text || "";
+        }
+        markCaptionIndicator(event.path, !!(cache.enabled_sentences.length || (cache.free_text && cache.free_text.trim())));
       } else if (event.type === "image-complete") {
         processed++;
         state.captionCache[event.path] = {
@@ -2280,21 +2785,32 @@ async function autoCaptionSelected() {
         };
         const hasContent = (event.enabled_sentences && event.enabled_sentences.length > 0) || (event.free_text && event.free_text.trim());
         markCaptionIndicator(event.path, !!hasContent);
-        appendModelLog(`[${getFileLabel(event.path)}] Completed with ${(event.enabled_sentences || []).length} matched captions`, "log-ok");
+        appendModelLog(
+          event.free_text_only
+            ? `[${getFileLabel(event.path)}] Free-text enhancement complete`
+            : `[${getFileLabel(event.path)}] Completed with ${(event.enabled_sentences || []).length} matched captions`,
+          "log-ok"
+        );
         if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
           freeText.value = event.free_text || "";
         }
         renderSentences();
-        statusBar.textContent = `Auto Caption: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`;
+        statusBar.textContent = freeTextOnly
+          ? `Add Now: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`
+          : `Auto Caption: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`;
       } else if (event.type === "error") {
         errors++;
         appendModelLog(`[${getFileLabel(event.path)}] ${event.message}`, "log-err");
-        statusBar.textContent = `Auto Caption: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`;
+        statusBar.textContent = freeTextOnly
+          ? `Add Now: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`
+          : `Auto Caption: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`;
       } else if (event.type === "done") {
         processed = event.processed ?? processed;
         errors = event.errors ?? errors;
         appendModelLog(`Finished: ${processed}/${event.count} processed, ${errors} error${errors === 1 ? "" : "s"}`, errors ? "log-warn" : "log-ok");
-        statusBar.textContent = `Auto Caption finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`;
+        statusBar.textContent = freeTextOnly
+          ? `Add Now finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`
+          : `Auto Caption finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`;
       }
     });
 
@@ -2303,17 +2819,26 @@ async function autoCaptionSelected() {
     }
   } catch (err) {
     if (err.name === "AbortError") {
-      statusBar.textContent = "Auto Caption stopped";
-      appendModelLog("Auto Caption stopped by user", "log-warn");
+      statusBar.textContent = freeTextOnly ? "Add Now stopped" : "Auto Caption stopped";
+      appendModelLog(freeTextOnly ? "Free-text enhancement stopped by user" : "Auto Caption stopped by user", "log-warn");
     } else {
-      statusBar.textContent = `Auto Caption failed: ${err.message}`;
-      appendModelLog(`Auto Caption failed: ${err.message}`, "log-err");
+      statusBar.textContent = `${freeTextOnly ? "Add Now" : "Auto Caption"} failed: ${err.message}`;
+      appendModelLog(`${freeTextOnly ? "Free-text enhancement" : "Auto Caption"} failed: ${err.message}`, "log-err");
     }
   } finally {
     state.autoCaptioning = false;
+    state.autoCaptionMode = null;
     state.autoCaptionAbortController = null;
     updateActionButtons();
   }
+}
+
+async function autoCaptionSelected() {
+  return runAutoCaptionStream({ freeTextOnly: false });
+}
+
+async function addFreeTextNow() {
+  return runAutoCaptionStream({ freeTextOnly: true });
 }
 
 function stopAutoCaption() {
@@ -2325,8 +2850,7 @@ async function toggleSentence(sentence, wasChecked, wasPartial) {
   const selectedPaths = [...state.selectedPaths];
   if (selectedPaths.length === 0) return;
 
-  // If checked or partial -> disable for all. If unchecked -> enable for all.
-  const shouldEnable = !wasChecked;
+  const shouldEnable = !wasChecked && !wasPartial;
 
   statusBar.textContent = "Saving...";
 
@@ -2343,17 +2867,8 @@ async function toggleSentence(sentence, wasChecked, wasPartial) {
     if (resp.ok) {
       // Update local cache
       for (const path of selectedPaths) {
-        if (!state.captionCache[path]) {
-          state.captionCache[path] = { enabled_sentences: [], free_text: "" };
-        }
-        const cap = state.captionCache[path];
-        if (shouldEnable) {
-          if (!cap.enabled_sentences.includes(sentence)) {
-            cap.enabled_sentences.unshift(sentence);
-          }
-        } else {
-          cap.enabled_sentences = cap.enabled_sentences.filter(s => s !== sentence);
-        }
+        const cap = ensureCaptionCache(path);
+        cap.enabled_sentences = applySentenceSelectionToList(cap.enabled_sentences, sentence, shouldEnable);
       }
       renderSentences();
       // Update caption indicators on thumbnails
@@ -2502,6 +3017,7 @@ loadBtn.addEventListener("click", loadFolder);
 folderInput.addEventListener("keydown", (e) => { if (e.key === "Enter") loadFolder(); });
 settingsBtn.addEventListener("click", openSettingsModal);
 autoCaptionBtn.addEventListener("click", autoCaptionSelected);
+addFreeTextNowBtn.addEventListener("click", addFreeTextNow);
 autoFreeTextCheckbox.addEventListener("change", async () => {
   state.ollamaEnableFreeText = autoFreeTextCheckbox.checked;
   try {
