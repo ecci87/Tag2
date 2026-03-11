@@ -491,6 +491,9 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 .section-header .section-name:hover { background: rgba(255,255,255,0.08); }
 .section-header .section-name[contenteditable=true] {
   outline: none; background: var(--bg); border: 1px solid var(--accent);
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
 }
 .section-header .section-remove-btn {
   min-width: 22px; height: 22px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
@@ -2531,32 +2534,60 @@ function deleteGroup(secIdx, groupIdx) {
 }
 
 function beginEditableRename(targetEl, currentValue, onCommit, highlightColor = "var(--accent)") {
+  if (targetEl.contentEditable === "true") {
+    return;
+  }
+  const draggableContainer = targetEl.closest(".section-header");
+  const restoreDraggable = draggableContainer ? draggableContainer.draggable : null;
+  const handleDragStart = (e) => e.preventDefault();
+
   targetEl.contentEditable = "true";
   targetEl.style.borderColor = highlightColor;
+  targetEl.draggable = false;
+  targetEl.addEventListener("dragstart", handleDragStart);
+  if (draggableContainer) {
+    draggableContainer.draggable = false;
+  }
   targetEl.focus();
   const range = document.createRange();
   range.selectNodeContents(targetEl);
+  range.collapse(false);
   const sel = window.getSelection();
   sel.removeAllRanges();
   sel.addRange(range);
 
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      targetEl.blur();
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      targetEl.textContent = currentValue || "";
+      targetEl.blur();
+    }
+  };
+
   const handleBlur = () => {
     targetEl.contentEditable = "false";
     targetEl.style.borderColor = "";
+    targetEl.removeEventListener("dragstart", handleDragStart);
+    if (draggableContainer && restoreDraggable !== null) {
+      draggableContainer.draggable = restoreDraggable;
+    }
     const nextValue = targetEl.textContent.trim();
     if (nextValue !== currentValue) {
       onCommit(nextValue);
     } else {
       targetEl.textContent = currentValue || targetEl.textContent;
     }
+    targetEl.removeEventListener("keydown", handleKeyDown);
     targetEl.removeEventListener("blur", handleBlur);
   };
 
   targetEl.addEventListener("blur", handleBlur);
-  targetEl.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); targetEl.blur(); }
-    if (e.key === "Escape") { e.preventDefault(); targetEl.textContent = currentValue || ""; targetEl.blur(); }
-  }, { once: true });
+  targetEl.addEventListener("keydown", handleKeyDown);
 }
 
 function getSentenceSelectionState(sentence, selectedPaths) {
@@ -2675,6 +2706,7 @@ function renderSentences() {
 
     const nameSpan = document.createElement("span");
     nameSpan.className = "section-name";
+    nameSpan.draggable = false;
     nameSpan.textContent = section.name || "(General)";
     nameSpan.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -2773,6 +2805,7 @@ function renderSentences() {
 
       const groupName = document.createElement("span");
       groupName.className = "group-name";
+      groupName.draggable = false;
       groupName.textContent = group.name || "(Group)";
       groupName.addEventListener("click", (e) => {
         e.stopPropagation();
