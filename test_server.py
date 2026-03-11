@@ -61,7 +61,7 @@ class TestGetFolderSections:
     def test_folder_with_sections(self):
         sections = [
             {"name": "## Lighting", "sentences": ["bright", "dark"], "groups": []},
-            {"name": "", "sentences": ["generic"], "groups": [{"name": "Car", "sentences": ["red", "blue"]}]},
+            {"name": "", "sentences": ["generic"], "groups": [{"name": "Car", "sentences": ["red", "blue"], "hidden_sentences": ["blue"]}]},
         ]
         cfg = {"folders": {os.path.normpath("/pics"): {"sections": sections}}}
         result = server._get_folder_sections(cfg, "/pics")
@@ -69,6 +69,7 @@ class TestGetFolderSections:
         assert result[0]["name"] == "## Lighting"
         assert result[0]["sentences"] == ["bright", "dark"]
         assert result[1]["groups"][0]["sentences"] == ["red", "blue"]
+        assert result[1]["groups"][0]["hidden_sentences"] == ["blue"]
 
     def test_migration_from_flat_sentences(self):
         cfg = {"folders": {os.path.normpath("/pics"): {"sentences": ["a", "b"]}}}
@@ -123,12 +124,13 @@ class TestAllSentencesFromSections:
 class TestRenameSentenceInSections:
     def test_rename_in_section_and_group(self):
         sections = [
-            {"name": "", "sentences": ["old"], "groups": [{"name": "G", "sentences": ["x", "old-2"]}]},
+            {"name": "", "sentences": ["old"], "groups": [{"name": "G", "sentences": ["x", "old-2"], "hidden_sentences": ["old-2"]}]},
         ]
         assert server._rename_sentence_in_sections(sections, "old", "new") is True
         assert sections[0]["sentences"] == ["new"]
         assert server._rename_sentence_in_sections(sections, "old-2", "new-2") is True
         assert sections[0]["groups"][0]["sentences"] == ["x", "new-2"]
+        assert sections[0]["groups"][0]["hidden_sentences"] == ["new-2"]
 
 
 class TestReadCaptionFile:
@@ -226,6 +228,16 @@ class TestWriteCaptionFile:
         assert "\nCar\n" not in txt
         assert "Blue Car" in txt
         assert "Red Car" not in txt
+
+    def test_write_skips_hidden_group_option(self, tmp_path):
+        img = str(tmp_path / "img.jpg")
+        Image.new("RGB", (10, 10)).save(img)
+        sections = [
+            {"name": "## Furniture", "sentences": [], "groups": [{"name": "Chair", "sentences": ["Chair visible", "Chair not in frame"], "hidden_sentences": ["Chair not in frame"]}]},
+        ]
+        server._write_caption_file(img, ["Chair not in frame"], "", sections)
+        txt_path = tmp_path / "img.txt"
+        assert not txt_path.exists() or txt_path.read_text(encoding="utf-8").strip() == ""
 
     def test_empty_clears_file(self, tmp_path):
         img = str(tmp_path / "img.jpg")
@@ -521,7 +533,7 @@ class TestSettingsAPI:
         os.makedirs(folder, exist_ok=True)
         sections = [
             {"name": "## Lighting", "sentences": ["bright"]},
-            {"name": "", "sentences": ["generic"]},
+            {"name": "", "sentences": ["generic"], "groups": [{"name": "Chair", "sentences": ["visible", "not visible"], "hidden_sentences": ["not visible"]}]},
         ]
         client.post("/api/settings", json={
             "folder": folder,
@@ -532,6 +544,7 @@ class TestSettingsAPI:
         assert len(data["sections"]) == 2
         assert data["sections"][0]["name"] == "## Lighting"
         assert data["sections"][0]["sentences"] == ["bright"]
+        assert data["sections"][1]["groups"][0]["hidden_sentences"] == ["not visible"]
 
     def test_settings_persistence(self, client, tmp_path):
         """Settings survive a config reload."""
@@ -658,6 +671,31 @@ class TestOllamaHelpers:
         assert results[0]["type"] == "sentence"
         assert results[1]["type"] == "group"
         assert results[1]["selected_sentence"] == "Blue Car"
+
+    def test_auto_caption_sections_marks_hidden_group_selection(self, single_image, monkeypatch):
+        def fake_generate(host, payload, timeout=120):
+            if "Group:" in payload["prompt"]:
+                return {"response": "2"}
+            return {"response": "NO"}
+
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+        sections = [{
+            "name": "",
+            "sentences": [],
+            "groups": [{"name": "Chair", "sentences": ["Chair visible", "Chair not in frame"], "hidden_sentences": ["Chair not in frame"]}],
+        }]
+        enabled, results = server._auto_caption_sections(
+            "http://127.0.0.1:11434",
+            "llava",
+            single_image,
+            sections,
+            "Caption: {caption}",
+            "Group: {group_name}\n{options}",
+            15,
+        )
+        assert enabled == ["Chair not in frame"]
+        assert results[0]["selected_sentence"] == "Chair not in frame"
+        assert results[0]["selected_hidden"] is True
 
     def test_suggest_free_text(self, single_image, monkeypatch):
         def fake_generate(host, payload, timeout=120):
@@ -790,7 +828,7 @@ class TestAutoCaptionAPI:
             return ["Moon", "Night", "Blue Car"], [
                 {"sentence": "Moon", "enabled": True, "answer": "YES"},
                 {"sentence": "Night", "enabled": True, "answer": "YES"},
-                {"type": "group", "group_name": "Car", "selected_sentence": "Blue Car", "selection_index": 2, "answer": "2"},
+                {"type": "group", "group_name": "Car", "selected_sentence": "Blue Car", "selected_hidden": False, "selection_index": 2, "answer": "2"},
             ]
 
         monkeypatch.setattr(server, "_auto_caption_sections", fake_auto_caption)
@@ -917,6 +955,32 @@ class TestAutoCaptionAPI:
         assert "Red Car" not in caption
         assert "Existing notes" in caption
 
+    def test_auto_caption_hidden_group_option_not_written(self, client, single_image, monkeypatch):
+        folder = str(os.path.dirname(single_image))
+        client.post("/api/settings", json={
+            "folder": folder,
+            "sections": [{
+                "name": "",
+                "sentences": [],
+                "groups": [{"name": "Chair", "sentences": ["Chair visible", "Chair not in frame"], "hidden_sentences": ["Chair not in frame"]}],
+            }],
+            "ollama_enable_free_text": False,
+        })
+
+        monkeypatch.setattr(server, "_ollama_generate", lambda *args, **kwargs: {"response": "2"})
+
+        resp = client.post("/api/auto-caption", json={
+            "image_path": single_image,
+            "model": "llava",
+            "enable_free_text": False,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["results"][0]["selected_hidden"] is True
+
+        caption_path = Path(single_image).with_suffix(".txt")
+        assert not caption_path.exists() or "Chair not in frame" not in caption_path.read_text(encoding="utf-8")
+
     def test_auto_caption_stream_multiple_images(self, client, img_dir, monkeypatch):
         paths = [str(img_dir / "photo1.jpg"), str(img_dir / "photo2.png")]
         client.post("/api/settings", json={
@@ -1036,3 +1100,30 @@ class TestAutoCaptionAPI:
         assert "Blue Car" in caption
         assert "Red Car" not in caption
         assert "Keep this" in caption
+
+    def test_auto_caption_stream_hidden_group_option_not_written(self, client, img_dir, monkeypatch):
+        image_path = str(img_dir / "photo1.jpg")
+        client.post("/api/settings", json={
+            "folder": str(img_dir),
+            "sections": [{
+                "name": "",
+                "sentences": [],
+                "groups": [{"name": "Chair", "sentences": ["Chair visible", "Chair not in frame"], "hidden_sentences": ["Chair not in frame"]}],
+            }],
+            "ollama_enable_free_text": False,
+        })
+
+        monkeypatch.setattr(server, "_ollama_generate", lambda *args, **kwargs: {"response": "2"})
+
+        resp = client.post("/api/auto-caption/stream", json={
+            "image_paths": [image_path],
+            "model": "llava",
+            "enable_free_text": False,
+        })
+        assert resp.status_code == 200
+        events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+        group_event = next(e for e in events if e["type"] == "group-selection")
+        assert group_event["selected_hidden"] is True
+
+        caption_path = img_dir / "photo1.txt"
+        assert not caption_path.exists() or "Chair not in frame" not in caption_path.read_text(encoding="utf-8")

@@ -394,6 +394,12 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 .section-sentences li .check-box.radio.partial::after { content: "◐"; font-size: 9px; }
 .section-sentences li .sentence-text { flex: 1; }
 .section-sentences li .sentence-text.partial { color: var(--fg-dim); font-style: italic; }
+.section-sentences li .sentence-text.hidden-export::after {
+  content: " not in txt";
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
 .section-sentences li .sentence-text.editable { cursor: text; }
 .section-sentences li .sentence-text[contenteditable=true] {
   outline: none;
@@ -403,15 +409,42 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   padding: 1px 4px;
 }
 .section-sentences li .remove-btn {
-  min-width: 20px; height: 20px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
-  background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
+  min-width: 20px; height: 20px; border: none; border-radius: 6px;
+  background: transparent; color: #f38ba8; cursor: pointer;
   display: grid; place-items: center; flex-shrink: 0; padding: 0;
   font-size: 14px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
-  opacity: 0.9; transition: all 0.15s ease;
+  opacity: 0.9; transition: color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
 }
 .section-sentences li .remove-btn:hover {
-  background: #f38ba8; color: #1e1e2e; border-color: #f38ba8;
+  color: #f5a3bb;
   transform: scale(1.05);
+}
+.section-sentences li .export-toggle-btn {
+  min-width: 34px;
+  height: 18px;
+  border: 1px solid rgba(137,180,250,0.2);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0 6px;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.section-sentences li .export-toggle-btn:not(.active) {
+  opacity: 0.7;
+}
+.section-sentences li .export-toggle-btn:hover {
+  border-color: rgba(137,180,250,0.4);
+  color: var(--accent);
+}
+.section-sentences li .export-toggle-btn.active {
+  border-color: rgba(166,227,161,0.35);
+  background: rgba(166,227,161,0.10);
+  color: var(--accent2);
 }
 .section-sentences li .remove-btn:focus-visible {
   outline: 2px solid rgba(243,139,168,0.45);
@@ -484,7 +517,14 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   padding: 0;
   flex-shrink: 0;
 }
-.section-header .drag-handle { color: var(--fg-dim); font-size: 12px; cursor: grab; }
+.section-header .drag-handle {
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+  padding: 0 2px;
+}
 .section-header .section-name {
   flex: 1; cursor: text; padding: 1px 4px; border-radius: 3px; min-width: 30px;
 }
@@ -496,14 +536,14 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   cursor: text;
 }
 .section-header .section-remove-btn {
-  min-width: 22px; height: 22px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
-  background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
+  min-width: 22px; height: 22px; border: none; border-radius: 6px;
+  background: transparent; color: #f38ba8; cursor: pointer;
   display: grid; place-items: center; padding: 0; flex-shrink: 0;
   font-size: 13px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
-  transition: all 0.15s ease;
+  transition: color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
 }
 .section-header .section-remove-btn:hover {
-  background: #f38ba8; color: #1e1e2e; border-color: #f38ba8;
+  color: #f5a3bb;
   transform: scale(1.05);
 }
 .section-header .section-remove-btn:focus-visible {
@@ -522,17 +562,17 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   background: var(--accent-warn); color: #1e1e2e; border-color: var(--accent-warn);
 }
 .group-header .group-remove-btn {
-  min-width: 22px; height: 22px; border: 1px solid rgba(243,139,168,0.35); border-radius: 6px;
-  background: rgba(243,139,168,0.14); color: #f38ba8; cursor: pointer;
+  min-width: 22px; height: 22px; border: none; border-radius: 6px;
+  background: transparent; color: #f38ba8; cursor: pointer;
   display: grid; place-items: center; padding: 0; flex-shrink: 0;
   font-size: 13px; line-height: 0; font-weight: 700; font-family: 'Segoe UI Symbol', 'Arial', sans-serif;
-  transition: all 0.15s ease;
+  transition: color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
 }
 .group-header .group-refresh-btn {
   flex-shrink: 0;
 }
 .group-header .group-remove-btn:hover {
-  background: #f38ba8; color: #1e1e2e; border-color: #f38ba8;
+  color: #f5a3bb;
   transform: scale(1.05);
 }
 .group-header .group-remove-btn:focus-visible {
@@ -814,9 +854,9 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
         <input type="text" id="settings-ollama-model" placeholder="llava" spellcheck="false">
       </div>
       <div class="settings-field">
-        <label for="settings-crop-aspect-ratios">Crop Aspect Ratios</label>
+        <label for="settings-crop-aspect-ratios">Aspect Ratios</label>
         <input type="text" class="compact-code" id="settings-crop-aspect-ratios" placeholder="4:3, 16:9, 3:4, 1:1, 9:16, 2:3, 3:2" spellcheck="false">
-        <div class="settings-help">Comma-separated list. The crop rectangle snaps to the closest allowed ratio.</div>
+        <div class="settings-help">Comma-separated list. The crop rectangle snaps to the closest allowed ratio. Images not matching these ratios will be marked with "AR" in the preview.</div>
       </div>
       <div class="settings-field">
         <label for="settings-ollama-prompt">Caption Check Prompt</label>
@@ -999,7 +1039,7 @@ function setGenerateButtonContent(button, label, options = {}) {
 }
 
 function createEmptyGroup(name = "") {
-  return { name, sentences: [], _uiId: makeUiId("group") };
+  return { name, sentences: [], hidden_sentences: [], _uiId: makeUiId("group") };
 }
 
 function createEmptySection(name = "") {
@@ -1015,9 +1055,18 @@ function normalizeGroupData(group) {
     seen.add(text);
     sentences.push(text);
   }
+  const hiddenSentences = [];
+  const hiddenSeen = new Set();
+  for (const raw of Array.isArray(group?.hidden_sentences) ? group.hidden_sentences : []) {
+    const text = String(raw || "").trim();
+    if (!text || hiddenSeen.has(text) || !sentences.includes(text)) continue;
+    hiddenSeen.add(text);
+    hiddenSentences.push(text);
+  }
   return {
     name: String(group?.name || "").trim(),
     sentences,
+    hidden_sentences: hiddenSentences,
     _uiId: group?._uiId || makeUiId("group"),
   };
 }
@@ -1051,6 +1100,7 @@ function serializeSectionsForSave() {
     groups: section.groups.map(group => ({
       name: group.name,
       sentences: [...group.sentences],
+      hidden_sentences: [...(group.hidden_sentences || [])],
     })),
   }));
 }
@@ -1070,15 +1120,33 @@ function countSectionSentences(section) {
   return (section.sentences || []).length + ((section.groups || []).reduce((sum, group) => sum + (group.sentences || []).length, 0));
 }
 
-function findGroupSentencesForSentence(sentence) {
+function findGroupForSentence(sentence) {
   for (const section of state.sections) {
     for (const group of section.groups || []) {
       if ((group.sentences || []).includes(sentence)) {
-        return group.sentences || [];
+        return group;
       }
     }
   }
   return null;
+}
+
+function findGroupSentencesForSentence(sentence) {
+  return findGroupForSentence(sentence)?.sentences || null;
+}
+
+function isSentenceHiddenOnExport(sentence) {
+  const group = findGroupForSentence(sentence);
+  return !!group && (group.hidden_sentences || []).includes(sentence);
+}
+
+function getExportedEnabledSentences(enabledSentences) {
+  return (Array.isArray(enabledSentences) ? enabledSentences : []).filter(sentence => !isSentenceHiddenOnExport(sentence));
+}
+
+function hasEffectiveCaptionContent(caption) {
+  if (!caption) return false;
+  return getExportedEnabledSentences(caption.enabled_sentences).length > 0 || !!(caption.free_text && caption.free_text.trim());
 }
 
 function applySentenceSelectionToList(enabledSentences, sentence, shouldEnable) {
@@ -2436,8 +2504,23 @@ function removeSentence(sentence) {
     sec.sentences = sec.sentences.filter(s => s !== sentence);
     for (const group of sec.groups || []) {
       group.sentences = group.sentences.filter(s => s !== sentence);
+      group.hidden_sentences = (group.hidden_sentences || []).filter(s => s !== sentence);
     }
   }
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function toggleSentenceHiddenOnExport(sentence) {
+  const group = findGroupForSentence(sentence);
+  if (!group) return;
+  const hidden = new Set(group.hidden_sentences || []);
+  if (hidden.has(sentence)) {
+    hidden.delete(sentence);
+  } else {
+    hidden.add(sentence);
+  }
+  group.hidden_sentences = (group.sentences || []).filter(item => hidden.has(item));
   saveSectionsToStorage();
   renderSentences();
 }
@@ -2608,7 +2691,7 @@ function getSentenceSelectionState(sentence, selectedPaths) {
 }
 
 function createSentenceListItem(sentence, selectedPaths, options = {}) {
-  const { isExclusive = false } = options;
+  const { isExclusive = false, allowSuppressToggle = false } = options;
   const { isChecked, isPartial } = getSentenceSelectionState(sentence, selectedPaths);
   const li = document.createElement("li");
 
@@ -2620,6 +2703,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const textSpan = document.createElement("span");
   textSpan.className = "sentence-text editable";
   if (isPartial) textSpan.classList.add("partial");
+  if (allowSuppressToggle && isSentenceHiddenOnExport(sentence)) textSpan.classList.add("hidden-export");
   textSpan.textContent = sentence;
   textSpan.title = "Click to rename caption";
   textSpan.addEventListener("click", (e) => {
@@ -2638,9 +2722,29 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     removeSentence(sentence);
   });
 
-  li.appendChild(checkBox);
-  li.appendChild(textSpan);
-  li.appendChild(rmBtn);
+  if (allowSuppressToggle) {
+    const hiddenOnExport = isSentenceHiddenOnExport(sentence);
+    const exportToggleBtn = document.createElement("button");
+    exportToggleBtn.type = "button";
+    exportToggleBtn.className = `export-toggle-btn${hiddenOnExport ? "" : " active"}`;
+    exportToggleBtn.textContent = "TXT";
+    exportToggleBtn.title = hiddenOnExport
+      ? "Do not write this option to the txt output when selected"
+      : "Write this option to the txt output when selected";
+    exportToggleBtn.setAttribute("aria-pressed", hiddenOnExport ? "false" : "true");
+    exportToggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleSentenceHiddenOnExport(sentence);
+    });
+    li.appendChild(checkBox);
+    li.appendChild(textSpan);
+    li.appendChild(exportToggleBtn);
+    li.appendChild(rmBtn);
+  } else {
+    li.appendChild(checkBox);
+    li.appendChild(textSpan);
+    li.appendChild(rmBtn);
+  }
   li.addEventListener("click", (e) => {
     e.stopPropagation();
     toggleSentence(sentence, isChecked, isPartial);
@@ -2701,7 +2805,8 @@ function renderSentences() {
 
     const dragHandle = document.createElement("span");
     dragHandle.className = "drag-handle";
-    dragHandle.textContent = "\u2800\u2801\u2802\u2803";
+    dragHandle.textContent = "⇅";
+    dragHandle.title = "Drag to reorder section";
     header.appendChild(dragHandle);
 
     const nameSpan = document.createElement("span");
@@ -2847,7 +2952,7 @@ function renderSentences() {
       const groupSentences = document.createElement("ul");
       groupSentences.className = "section-sentences group-sentences";
       for (const sentence of group.sentences || []) {
-        groupSentences.appendChild(createSentenceListItem(sentence, selectedPaths, { isExclusive: true }));
+        groupSentences.appendChild(createSentenceListItem(sentence, selectedPaths, { isExclusive: true, allowSuppressToggle: true }));
       }
       groupBody.appendChild(groupSentences);
       groupBody.appendChild(createAddSentenceRow(secIdx, groupIdx, "Add caption to group..."));
@@ -2955,11 +3060,14 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         if (state.selectedPaths.has(event.path)) {
           renderSentences();
         }
-        const hasContent = cache.enabled_sentences.length > 0 || (cache.free_text && cache.free_text.trim());
+        const hasContent = hasEffectiveCaptionContent(cache);
         markCaptionIndicator(event.path, !!hasContent);
       } else if (event.type === "group-selection") {
         const selectedSentence = event.selected_sentence || "(no valid selection)";
-        appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.group_name || "Group"} -> ${selectedSentence} | ${event.answer || ""}`, event.selected_sentence ? "log-ok" : "log-warn");
+        appendModelLog(
+          `[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.group_name || "Group"} -> ${selectedSentence}${event.selected_hidden ? " (ignored in txt)" : ""} | ${event.answer || ""}`,
+          event.selected_sentence ? "log-ok" : "log-warn"
+        );
         const cache = ensureCaptionCache(event.path);
         for (const sentence of event.sentences || []) {
           cache.enabled_sentences = applySentenceSelectionToList(cache.enabled_sentences, sentence, false);
@@ -2970,7 +3078,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         if (state.selectedPaths.has(event.path)) {
           renderSentences();
         }
-        const hasContent = cache.enabled_sentences.length > 0 || (cache.free_text && cache.free_text.trim());
+        const hasContent = hasEffectiveCaptionContent(cache);
         markCaptionIndicator(event.path, !!hasContent);
       } else if (event.type === "free-text") {
         const cache = ensureCaptionCache(event.path);
@@ -2983,14 +3091,14 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
           freeText.value = cache.free_text || "";
         }
-        markCaptionIndicator(event.path, !!(cache.enabled_sentences.length || (cache.free_text && cache.free_text.trim())));
+        markCaptionIndicator(event.path, hasEffectiveCaptionContent(cache));
       } else if (event.type === "image-complete") {
         processed++;
         state.captionCache[event.path] = {
           enabled_sentences: event.enabled_sentences || [],
           free_text: event.free_text || "",
         };
-        const hasContent = (event.enabled_sentences && event.enabled_sentences.length > 0) || (event.free_text && event.free_text.trim());
+        const hasContent = hasEffectiveCaptionContent(event);
         markCaptionIndicator(event.path, !!hasContent);
         appendModelLog(
           event.free_text_only
@@ -3097,12 +3205,8 @@ async function toggleSentence(sentence, wasChecked, wasPartial) {
       // Update caption indicators on thumbnails
       for (const path of selectedPaths) {
         const cap = state.captionCache[path];
-        const hasContent = cap && (cap.enabled_sentences.length > 0 || (cap.free_text && cap.free_text.trim()));
+        const hasContent = hasEffectiveCaptionContent(cap);
         markCaptionIndicator(path, hasContent);
-      }
-      // If single selection, reload to get accurate free text
-      if (selectedPaths.length === 1) {
-        await loadCaptionData(selectedPaths[0]);
       }
       statusBar.textContent = "Saved";
     }
@@ -3148,7 +3252,7 @@ async function saveFreeText(path) {
     });
     statusBar.textContent = "Saved";
     // Update caption indicator
-    const hasContent = (cap.enabled_sentences && cap.enabled_sentences.length > 0) || (cap.free_text && cap.free_text.trim());
+    const hasContent = hasEffectiveCaptionContent(cap);
     markCaptionIndicator(path, !!hasContent);
   } catch (err) {
     statusBar.textContent = `Error saving: ${err.message}`;

@@ -59,7 +59,7 @@ On first use, a `config.json` file is created automatically to store:
 - your last opened folder
 - per-folder sentence presets
 - Ollama connection and prompt settings
-- configured crop aspect ratios
+- configured aspect ratios
 
 This file is gitignored.
 

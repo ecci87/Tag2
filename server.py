@@ -171,9 +171,15 @@ def _get_folder_sections(cfg: dict, folder: str) -> list[dict]:
 
     def _normalize_group(group: dict | None) -> dict:
         group = dict(group or {})
+        sentences = _normalize_sentences(group.get("sentences", []))
+        hidden_sentences = [
+            sentence for sentence in _normalize_sentences(group.get("hidden_sentences", []))
+            if sentence in sentences
+        ]
         return {
             "name": str(group.get("name") or "").strip(),
-            "sentences": _normalize_sentences(group.get("sentences", [])),
+            "sentences": sentences,
+            "hidden_sentences": hidden_sentences,
         }
 
     def _normalize_section(section: dict | None) -> dict:
@@ -230,6 +236,18 @@ def _all_sentences_from_sections(sections: list[dict]) -> list[str]:
         for group in sec.get("groups", []) or []:
             result.extend(group.get("sentences", []))
     return result
+
+
+def _group_hidden_sentences(group: dict | None) -> list[str]:
+    return [sentence for sentence in (group or {}).get("hidden_sentences", []) or [] if sentence]
+
+
+def _is_hidden_group_sentence(sections: list[dict], sentence: str) -> bool:
+    for section in sections:
+        for group in section.get("groups", []) or []:
+            if sentence in _group_hidden_sentences(group):
+                return True
+    return False
 
 
 def _is_general_section_name(name: str | None) -> bool:
@@ -381,6 +399,12 @@ def _rename_sentence_in_sections(sections: list[dict], old_sentence: str, new_se
             if old_sentence in group_sentences:
                 renamed = True
             group["sentences"] = [new_sentence if sentence == old_sentence else sentence for sentence in group_sentences]
+            group_hidden_sentences = _group_hidden_sentences(group)
+            group["hidden_sentences"] = [
+                new_sentence if sentence == old_sentence else sentence
+                for sentence in group_hidden_sentences
+                if (new_sentence if sentence == old_sentence else sentence) in group["sentences"]
+            ]
     return renamed
 
 
@@ -885,7 +909,7 @@ def _build_caption_text(enabled_sentences: list[str], free_text: str,
     """Build the final caption text in the same format as the caption file."""
     if sections:
         enabled_sentences = _normalize_enabled_sentences(enabled_sentences, sections)
-        enabled_set = set(enabled_sentences)
+        enabled_set = {sentence for sentence in enabled_sentences if not _is_hidden_group_sentence(sections, sentence)}
         blocks = []
         for section in _ordered_sections_for_output(sections):
             sec_name = section.get("name", "")
@@ -994,6 +1018,7 @@ def _auto_caption_sections(host: str, model: str, image_path: str,
         raw_answer = str(response.get("response") or "").strip()
         selection_index = _parse_ollama_selection(raw_answer, group_sentences)
         selected_sentence = group_sentences[selection_index - 1] if selection_index else None
+        selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
         enabled = [sentence for sentence in enabled if sentence not in group_sentences]
         if selected_sentence:
             enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
@@ -1002,6 +1027,7 @@ def _auto_caption_sections(host: str, model: str, image_path: str,
             "group_name": target.get("group_name", ""),
             "sentences": group_sentences,
             "selected_sentence": selected_sentence,
+            "selected_hidden": selected_hidden,
             "selection_index": selection_index,
             "answer": raw_answer,
         })
@@ -1648,6 +1674,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                         raw_answer = str(response.get("response") or "").strip()
                         selection_index = _parse_ollama_selection(raw_answer, group_sentences)
                         selected_sentence = group_sentences[selection_index - 1] if selection_index else None
+                        selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
                         enabled = [sentence for sentence in enabled if sentence not in group_sentences]
                         if selected_sentence:
                             enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
@@ -1658,6 +1685,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             "group_name": target.get("group_name", ""),
                             "sentences": group_sentences,
                             "selected_sentence": selected_sentence,
+                            "selected_hidden": selected_hidden,
                             "selection_index": selection_index,
                             "answer": raw_answer,
                         }
@@ -1673,6 +1701,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             "group_name": target.get("group_name", ""),
                             "sentences": group_sentences,
                             "selected_sentence": selected_sentence,
+                            "selected_hidden": selected_hidden,
                             "selection_index": selection_index,
                             "answer": raw_answer,
                         })
