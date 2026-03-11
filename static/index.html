@@ -37,6 +37,20 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 #folder-input:focus { border-color: var(--accent); }
 #load-btn { padding: 6px 16px; background: var(--accent); color: #1e1e2e; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
 #load-btn:hover { filter: brightness(1.1); }
+#settings-btn {
+  width: 34px; height: 34px; background: var(--bg3); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; cursor: pointer; font-size: 18px; line-height: 1; flex-shrink: 0;
+}
+#settings-btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(137,180,250,0.10); }
+#auto-caption-btn { flex: 1; padding: 5px 12px; background: var(--accent); color: #1e1e2e; border: none; border-radius: 3px; cursor: pointer; font-weight: 600; }
+#auto-caption-btn:hover { filter: brightness(1.1); }
+#auto-caption-btn.running {
+  background: rgba(243,139,168,0.18); color: #f38ba8; border: 1px solid rgba(243,139,168,0.35);
+}
+#auto-caption-btn.running:hover { background: #f38ba8; color: #1e1e2e; border-color: #f38ba8; filter: none; }
+#load-btn:disabled, #auto-caption-btn:disabled, #add-section-bar button:disabled, .section-add-row button:disabled {
+  opacity: 0.55; cursor: not-allowed; filter: none;
+}
 #thumb-size-slider { width: 120px; accent-color: var(--accent); }
 #status-bar { font-size: 11px; color: var(--fg-dim); margin-left: auto; white-space: nowrap; }
 
@@ -70,10 +84,27 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   padding: 2px 4px; font-size: 10px; color: #fff;
   background: rgba(0,0,0,0.65); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.thumb-cell .caption-dot {
-  position: absolute; top: 4px; right: 4px; width: 8px; height: 8px;
-  border-radius: 50%; background: var(--accent2);
+.thumb-cell .caption-dot,
+.thumb-cell .aspect-warning {
+  position: absolute; top: 4px;
+  min-width: 18px; height: 18px; padding: 0 4px;
+  border-radius: 999px;
+  display: none; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.35);
 }
+.thumb-cell .caption-dot {
+  right: 4px;
+  background: rgba(166,227,161,0.94);
+  color: #103117;
+}
+.thumb-cell .aspect-warning {
+  left: 4px;
+  background: rgba(243,139,168,0.94);
+  color: #2b0d16;
+}
+.thumb-cell.has-caption .caption-dot { display: flex; }
+.thumb-cell.aspect-mismatch .aspect-warning { display: flex; }
 .thumb-cell.has-caption {
   border-left: 3px solid var(--accent2);
 }
@@ -103,6 +134,69 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   user-select: none; -webkit-user-drag: none;
   pointer-events: none;
 }
+#crop-overlay {
+  position: absolute; inset: 0; pointer-events: none;
+}
+.crop-guide {
+  position: absolute; display: none; pointer-events: none;
+  background: rgba(255,255,255,0.18); z-index: 1;
+}
+.crop-guide.visible { display: block; }
+#crop-guide-v { width: 1px; }
+#crop-guide-h { height: 1px; }
+#crop-box {
+  position: absolute; display: none; border: 2px solid var(--accent2); border-radius: 4px;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.45); pointer-events: auto;
+}
+#crop-box.active { display: block; }
+#crop-box .crop-label {
+  position: absolute; top: -24px; left: 0; padding: 2px 8px; border-radius: 999px;
+  background: rgba(0,0,0,0.72); color: #fff; font-size: 11px; white-space: nowrap;
+}
+.crop-handle, .crop-edge {
+  position: absolute; pointer-events: auto;
+}
+.crop-handle {
+  width: 12px; height: 12px; border-radius: 50%; background: var(--accent2);
+  border: 2px solid #1e1e2e;
+}
+.crop-edge { background: transparent; }
+.crop-handle[data-handle="nw"] { left: -6px; top: -6px; cursor: nwse-resize; }
+.crop-handle[data-handle="ne"] { right: -6px; top: -6px; cursor: nesw-resize; }
+.crop-handle[data-handle="sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.crop-handle[data-handle="se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.crop-edge[data-handle="n"], .crop-edge[data-handle="s"] { left: 12px; right: 12px; height: 12px; }
+.crop-edge[data-handle="n"] { top: -6px; cursor: ns-resize; }
+.crop-edge[data-handle="s"] { bottom: -6px; cursor: ns-resize; }
+.crop-edge[data-handle="w"], .crop-edge[data-handle="e"] { top: 12px; bottom: 12px; width: 12px; }
+.crop-edge[data-handle="w"] { left: -6px; cursor: ew-resize; }
+.crop-edge[data-handle="e"] { right: -6px; cursor: ew-resize; }
+#crop-apply-btn {
+  position: absolute; left: 50%; bottom: 40px; transform: translateX(calc(-50% - 56px));
+  display: none; padding: 7px 18px; border: 1px solid rgba(166,227,161,0.35); border-radius: 8px;
+  background: var(--accent2); color: #1e1e2e; font-weight: 700; cursor: pointer; pointer-events: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+#crop-apply-btn.visible { display: block; }
+#crop-apply-btn:hover { filter: brightness(1.08); }
+#crop-cancel-btn {
+  position: absolute; left: 50%; bottom: 40px; transform: translateX(calc(-50% + 56px));
+  display: none; padding: 7px 18px; border: 1px solid rgba(243,139,168,0.35); border-radius: 8px;
+  background: rgba(243,139,168,0.14); color: #f38ba8; font-weight: 700; cursor: pointer; pointer-events: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+#crop-cancel-btn.visible { display: block; }
+#crop-cancel-btn:hover { filter: brightness(1.08); }
+#crop-remove-btn {
+  position: absolute; bottom: 40px; display: none; padding: 7px 18px; border-radius: 8px;
+  font-weight: 700; cursor: pointer; pointer-events: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+#crop-remove-btn {
+  left: 50%; transform: translateX(-50%);
+  background: rgba(243,139,168,0.14); color: #f38ba8; border: 1px solid rgba(243,139,168,0.35);
+}
+#crop-remove-btn.visible { display: block; }
+#crop-remove-btn:hover { filter: brightness(1.08); }
 #preview-placeholder {
   color: var(--fg-dim); font-size: 16px; text-align: center; padding: 20px;
 }
@@ -127,7 +221,38 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   padding: 6px 10px; font-size: 12px; color: var(--fg-dim); border-bottom: 1px solid var(--border);
   display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
 }
-#sentences-section { flex-shrink: 0; border-bottom: 1px solid var(--border); max-height: 50%; overflow-y: auto; }
+#sentences-section {
+  flex: 0 0 50%;
+  min-height: 120px;
+  border-bottom: 1px solid var(--border);
+  overflow-y: auto;
+}
+#right-horizontal-resize {
+  height: 6px;
+  cursor: row-resize;
+  background: transparent;
+  flex-shrink: 0;
+  position: relative;
+}
+#right-horizontal-resize::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  transform: translateX(-50%);
+  width: 56px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--border);
+}
+#right-horizontal-resize:hover,
+#right-horizontal-resize.active {
+  background: rgba(137,180,250,0.12);
+}
+#right-horizontal-resize:hover::before,
+#right-horizontal-resize.active::before {
+  background: var(--accent);
+}
 .section-sentences { list-style: none; }
 .section-sentences li {
   padding: 7px 10px; cursor: pointer; display: flex; align-items: center; gap: 8px;
@@ -171,6 +296,30 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   border-radius: 3px; cursor: pointer; font-weight: 600;
 }
 #add-section-bar button:hover { filter: brightness(1.1); }
+
+#model-log-panel {
+  display: none; flex-direction: column; border-bottom: 1px solid var(--border); background: var(--bg);
+  flex-shrink: 0;
+}
+#model-log-panel.visible { display: flex; }
+#model-log-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--fg-dim); font-size: 12px;
+}
+#model-log-clear-btn {
+  background: transparent; color: var(--fg-dim); border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 8px; cursor: pointer; font-size: 12px;
+}
+#model-log-clear-btn:hover { color: var(--fg); border-color: var(--accent); }
+#model-log {
+  max-height: 170px; overflow: auto; padding: 8px 10px; margin: 0;
+  font-family: 'Consolas', 'Fira Code', monospace; font-size: 12px; line-height: 1.45;
+  white-space: pre-wrap; color: var(--fg);
+}
+#model-log .log-dim { color: var(--fg-dim); }
+#model-log .log-ok { color: var(--accent2); }
+#model-log .log-warn { color: var(--accent-warn); }
+#model-log .log-err { color: #f38ba8; }
 
 /* Section headers */
 .section-header {
@@ -227,6 +376,11 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 /* Free text */
 #freetext-section { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #freetext-section .panel-header { flex-shrink: 0; }
+#freetext-section .panel-header .toggle-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--fg-dim); font-size: 12px; user-select: none; white-space: nowrap;
+}
+#freetext-section .panel-header .toggle-label input { accent-color: var(--accent2); }
 #free-text {
   flex: 1; width: 100%; padding: 10px; background: var(--bg); color: var(--fg);
   border: none; outline: none; resize: none; font-family: 'Consolas', 'Fira Code', monospace; font-size: 13px;
@@ -259,6 +413,61 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   padding: 6px 14px; cursor: pointer; font-size: 13px;
 }
 .ctx-menu div:hover { background: var(--hover); }
+
+/* Settings modal */
+#settings-modal {
+  position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.55); z-index: 2000;
+}
+#settings-modal.open { display: flex; }
+#settings-dialog {
+  width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.45);
+}
+#settings-dialog-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+}
+#settings-dialog-title { font-size: 14px; font-weight: 700; color: var(--fg); }
+#settings-close-btn {
+  width: 28px; height: 28px; background: transparent; color: var(--fg-dim); border: 1px solid transparent;
+  border-radius: 6px; cursor: pointer; font-size: 18px;
+}
+#settings-close-btn:hover { background: var(--bg3); color: var(--fg); border-color: var(--border); }
+#settings-form { padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.settings-grid {
+  display: grid; grid-template-columns: 1fr 120px 140px; gap: 12px;
+}
+.settings-field { display: flex; flex-direction: column; gap: 6px; }
+.settings-field label { font-size: 12px; color: var(--fg-dim); }
+.settings-field input,
+.settings-field textarea {
+  width: 100%; padding: 8px 10px; background: var(--bg3); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px; outline: none;
+}
+.settings-field input:focus,
+.settings-field textarea:focus { border-color: var(--accent); }
+.settings-field textarea {
+  min-height: 180px; resize: vertical; font-family: 'Consolas', 'Fira Code', monospace; line-height: 1.45;
+}
+.settings-field input[type="text"].compact-code {
+  font-family: 'Consolas', 'Fira Code', monospace;
+}
+.settings-help { font-size: 12px; color: var(--fg-dim); }
+.settings-checkbox {
+  display: inline-flex; align-items: center; gap: 8px; color: var(--fg); font-size: 13px;
+}
+.settings-checkbox input { accent-color: var(--accent2); }
+#settings-actions {
+  display: flex; justify-content: flex-end; gap: 8px; padding: 0 14px 14px;
+}
+#settings-actions button {
+  padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer; font-weight: 600;
+}
+#settings-cancel-btn { background: var(--bg3); color: var(--fg); }
+#settings-save-btn { background: var(--accent2); color: #1e1e2e; border-color: rgba(166,227,161,0.35); }
+#settings-cancel-btn:hover, #settings-save-btn:hover { filter: brightness(1.08); }
 </style>
 </head>
 <body>
@@ -268,6 +477,7 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <label>Folder:</label>
     <input type="text" id="folder-input" placeholder="/path/to/images" spellcheck="false">
     <button id="load-btn">Load</button>
+    <button id="settings-btn" title="Ollama settings" aria-label="Ollama settings">⚙</button>
     <label style="margin-left:12px">Size:</label>
     <input type="range" id="thumb-size-slider" min="60" max="400" value="160">
     <span id="status-bar"></span>
@@ -290,6 +500,24 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <!-- CENTER: image preview -->
     <div id="center-panel">
       <img id="preview-img" alt="Preview">
+      <div id="crop-overlay">
+        <div id="crop-guide-v" class="crop-guide"></div>
+        <div id="crop-guide-h" class="crop-guide"></div>
+        <div id="crop-box">
+          <div class="crop-label"></div>
+          <div class="crop-handle" data-handle="nw"></div>
+          <div class="crop-handle" data-handle="ne"></div>
+          <div class="crop-handle" data-handle="sw"></div>
+          <div class="crop-handle" data-handle="se"></div>
+          <div class="crop-edge" data-handle="n"></div>
+          <div class="crop-edge" data-handle="e"></div>
+          <div class="crop-edge" data-handle="s"></div>
+          <div class="crop-edge" data-handle="w"></div>
+        </div>
+        <button id="crop-apply-btn" type="button">Apply</button>
+        <button id="crop-cancel-btn" type="button">Cancel</button>
+        <button id="crop-remove-btn" type="button">Remove Crop</button>
+      </div>
       <div id="preview-placeholder">Select an image to preview</div>
       <div id="preview-info"></div>
     </div>
@@ -300,19 +528,86 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <div id="right-panel">
       <!-- Add section button -->
       <div id="add-section-bar">
+        <button id="auto-caption-btn" title="Use Ollama to verify captions for the selected image(s)">Auto Caption</button>
         <button id="add-section-btn" title="Add new section">+ Add Section</button>
+      </div>
+      <div id="model-log-panel">
+        <div id="model-log-header">
+          <span>Model Log</span>
+          <button id="model-log-clear-btn" type="button">Clear</button>
+        </div>
+        <pre id="model-log"></pre>
       </div>
       <!-- Sentence toggles -->
       <div id="sentences-section">
         <div id="section-container"></div>
       </div>
+      <div id="right-horizontal-resize" title="Resize captions and free text"></div>
       <!-- Free text -->
       <div id="freetext-section">
-        <div class="panel-header"><span>Free Text</span></div>
+        <div class="panel-header">
+          <span>Free Text</span>
+          <label class="toggle-label" title="Ask Ollama for additional free-text details after checking structured captions">
+            <input type="checkbox" id="auto-free-text-checkbox" checked>
+            <span>Auto Add Extra Details</span>
+          </label>
+        </div>
         <textarea id="free-text" placeholder="Additional caption text..." disabled></textarea>
       </div>
       <!-- Multi-select info (at bottom) -->
       <div id="multi-info"></div>
+    </div>
+  </div>
+</div>
+
+<div id="settings-modal" aria-hidden="true">
+  <div id="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title">
+    <div id="settings-dialog-header">
+      <div id="settings-dialog-title">Ollama Settings</div>
+      <button id="settings-close-btn" type="button" aria-label="Close settings">×</button>
+    </div>
+    <form id="settings-form">
+      <div class="settings-grid">
+        <div class="settings-field">
+          <label for="settings-ollama-server">Server</label>
+          <input type="text" id="settings-ollama-server" placeholder="127.0.0.1" spellcheck="false">
+        </div>
+        <div class="settings-field">
+          <label for="settings-ollama-port">Port</label>
+          <input type="number" id="settings-ollama-port" min="1" max="65535" placeholder="11434" spellcheck="false">
+        </div>
+        <div class="settings-field">
+          <label for="settings-ollama-timeout">Timeout (s)</label>
+          <input type="number" id="settings-ollama-timeout" min="1" max="600" placeholder="20" spellcheck="false">
+        </div>
+      </div>
+      <div class="settings-field">
+        <label for="settings-ollama-model">Model</label>
+        <input type="text" id="settings-ollama-model" placeholder="llava" spellcheck="false">
+      </div>
+      <div class="settings-field">
+        <label for="settings-crop-aspect-ratios">Crop Aspect Ratios</label>
+        <input type="text" class="compact-code" id="settings-crop-aspect-ratios" placeholder="4:3, 16:9, 3:4, 1:1, 9:16, 2:3, 3:2" spellcheck="false">
+        <div class="settings-help">Comma-separated list. The crop rectangle snaps to the closest allowed ratio.</div>
+      </div>
+      <div class="settings-field">
+        <label for="settings-ollama-prompt">Caption Check Prompt</label>
+        <textarea id="settings-ollama-prompt" spellcheck="false"></textarea>
+        <div class="settings-help">Use <span>{caption}</span> or <span>{sentence}</span> as the placeholder for the current caption.</div>
+      </div>
+      <label class="settings-checkbox" for="settings-auto-free-text-enabled">
+        <input type="checkbox" id="settings-auto-free-text-enabled">
+        <span>Enable additional free-text suggestions</span>
+      </label>
+      <div class="settings-field">
+        <label for="settings-ollama-free-text-prompt">Free Text Prompt</label>
+        <textarea id="settings-ollama-free-text-prompt" spellcheck="false"></textarea>
+        <div class="settings-help">Use <span>{caption_text}</span>, <span>{current_caption}</span>, or <span>{caption}</span> for the updated caption txt.</div>
+      </div>
+    </form>
+    <div id="settings-actions">
+      <button id="settings-cancel-btn" type="button">Cancel</button>
+      <button id="settings-save-btn" type="button">Save</button>
     </div>
   </div>
 </div>
@@ -322,6 +617,9 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 const state = {
   folder: "",
   images: [],            // [{name, path, size, mtime}, ...]
+  imageCrops: {},        // path -> {x, y, w, h, ratio}
+  imageVersions: {},     // path -> cache-busting token
+  thumbnailDimensions: {}, // path -> {width, height}
   selectedPaths: new Set(),
   lastClickedIndex: -1,
   sections: [],          // [{name: "", sentences: [...]}, {name: "Lighting", sentences: [...]}, ...]
@@ -329,6 +627,22 @@ const state = {
   captionCache: {},
   previewPath: null,
   saving: false,
+  autoCaptioning: false,
+  autoCaptionAbortController: null,
+  cropAspectRatioLabels: ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"],
+  cropAspectRatios: [],
+  cropDraft: null,
+  cropGuide: null,
+  cropDirty: false,
+  cropInteraction: null,
+  ollamaServer: "127.0.0.1",
+  ollamaPort: 11434,
+  ollamaTimeoutSeconds: 20,
+  ollamaModel: "llava",
+  ollamaPromptTemplate: "You are verifying a single image caption. Reply with exactly one word: YES or NO. Reply YES only if the caption is clearly correct for the image. Reply NO if it is wrong, uncertain, too specific, or not clearly visible.\n\nCaption: {caption}\nAnswer:",
+  ollamaEnableFreeText: true,
+  ollamaFreeTextPromptTemplate: "You are improving an image caption file. The caption text below already covers known details and must not be repeated. Look at the image and return only notable, important visual details that are still missing. Return either NONE or one short line per missing detail, with no bullets or numbering.\n\nCurrent caption text:\n{caption_text}\n\nAnswer:",
+  modelLogLines: [],
   thumbSize: 160,
 };
 
@@ -336,27 +650,73 @@ const state = {
 const $ = (s) => document.querySelector(s);
 const folderInput = $("#folder-input");
 const loadBtn = $("#load-btn");
+const settingsBtn = $("#settings-btn");
 const thumbSlider = $("#thumb-size-slider");
 const statusBar = $("#status-bar");
 const fileCount = $("#file-count");
 const fileGrid = $("#file-grid");
 const fileGridContainer = $("#file-grid-container");
 const previewImg = $("#preview-img");
+const cropOverlay = $("#crop-overlay");
+const cropGuideV = $("#crop-guide-v");
+const cropGuideH = $("#crop-guide-h");
+const cropBox = $("#crop-box");
+const cropLabel = cropBox.querySelector(".crop-label");
+const cropApplyBtn = $("#crop-apply-btn");
+const cropCancelBtn = $("#crop-cancel-btn");
+const cropRemoveBtn = $("#crop-remove-btn");
 const previewPlaceholder = $("#preview-placeholder");
 const previewInfo = $("#preview-info");
 const sectionContainer = $("#section-container");
+const sentencesSection = $("#sentences-section");
+const rightHorizontalResize = $("#right-horizontal-resize");
+const autoCaptionBtn = $("#auto-caption-btn");
+const autoFreeTextCheckbox = $("#auto-free-text-checkbox");
 const addSectionBtn = $("#add-section-btn");
 const freeText = $("#free-text");
 const multiInfo = $("#multi-info");
+const modelLogPanel = $("#model-log-panel");
+const modelLog = $("#model-log");
+const modelLogClearBtn = $("#model-log-clear-btn");
+const settingsModal = $("#settings-modal");
+const settingsForm = $("#settings-form");
+const settingsCloseBtn = $("#settings-close-btn");
+const settingsCancelBtn = $("#settings-cancel-btn");
+const settingsSaveBtn = $("#settings-save-btn");
+const settingsServerInput = $("#settings-ollama-server");
+const settingsPortInput = $("#settings-ollama-port");
+const settingsTimeoutInput = $("#settings-ollama-timeout");
+const settingsModelInput = $("#settings-ollama-model");
+const settingsCropAspectRatiosInput = $("#settings-crop-aspect-ratios");
+const settingsPromptInput = $("#settings-ollama-prompt");
+const settingsAutoFreeTextEnabled = $("#settings-auto-free-text-enabled");
+const settingsFreeTextPromptInput = $("#settings-ollama-free-text-prompt");
 
 // ===== THUMBNAIL PRELOADING =====
 const thumbBlobCache = new Map();  // path -> blob URL
 const thumbLoadQueue = [];
 let thumbLoadingCount = 0;
 const MAX_CONCURRENT_THUMB_LOADS = 12;
+const CROP_SNAP_HYSTERESIS_PX = 10;
+
+function getImageVersion(path) {
+  return state.imageVersions[path] || 0;
+}
+
+function bumpImageVersion(path) {
+  state.imageVersions[path] = Date.now();
+}
+
+function buildImageApiUrl(endpoint, path, extraParams = {}) {
+  const params = new URLSearchParams({ path, v: String(getImageVersion(path)) });
+  Object.entries(extraParams).forEach(([key, value]) => {
+    params.set(key, String(value));
+  });
+  return `/api/${endpoint}?${params.toString()}`;
+}
 
 function queueThumbLoad(path, size, priority = false) {
-  if (thumbBlobCache.has(path + ":" + size)) return;
+  if (thumbBlobCache.has(`${path}:${size}:${getImageVersion(path)}`)) return;
   const item = { path, size };
   if (priority) {
     thumbLoadQueue.unshift(item);
@@ -369,10 +729,10 @@ function queueThumbLoad(path, size, priority = false) {
 async function processThumbQueue() {
   while (thumbLoadingCount < MAX_CONCURRENT_THUMB_LOADS && thumbLoadQueue.length > 0) {
     const { path, size } = thumbLoadQueue.shift();
-    const key = path + ":" + size;
+    const key = `${path}:${size}:${getImageVersion(path)}`;
     if (thumbBlobCache.has(key)) continue;
     thumbLoadingCount++;
-    fetch(`/api/thumbnail?path=${encodeURIComponent(path)}&size=${size}`)
+    fetch(buildImageApiUrl("thumbnail", path, { size }))
       .then(r => r.ok ? r.blob() : null)
       .then(blob => {
         if (blob) {
@@ -395,7 +755,7 @@ let previewLoadingSet = new Set(); // paths currently being fetched
 function preloadPreview(path) {
   if (previewCache.has(path) || previewLoadingSet.has(path)) return;
   previewLoadingSet.add(path);
-  fetch(`/api/preview?path=${encodeURIComponent(path)}`)
+  fetch(buildImageApiUrl("preview", path))
     .then(r => r.ok ? r.blob() : null)
     .then(blob => {
       if (blob) {
@@ -460,6 +820,613 @@ function updateFileCountDisplay() {
   fileCount.textContent = `${total} images • ${captioned} captioned`;
 }
 
+function imageConformsToAspectRatios(image, tolerance = 5) {
+  const dims = state.thumbnailDimensions[image?.path] || null;
+  const width = Number(dims?.width || 0);
+  const height = Number(dims?.height || 0);
+  if (!width || !height || !state.cropAspectRatios.length) return true;
+  return state.cropAspectRatios.some((ratio) => {
+    const expectedWidth = height * ratio.value;
+    const expectedHeight = width / ratio.value;
+    return Math.abs(width - expectedWidth) <= tolerance || Math.abs(height - expectedHeight) <= tolerance;
+  });
+}
+
+function refreshAspectWarning(path) {
+  const image = state.images.find((item) => item.path === path);
+  const cell = fileGrid.querySelector(`.thumb-cell[data-path="${CSS.escape(path)}"]`);
+  if (!image || !cell) return;
+  cell.classList.toggle("aspect-mismatch", !imageConformsToAspectRatios(image));
+}
+
+function storeThumbnailDimensions(path, width, height) {
+  if (!path || !width || !height) return;
+  state.thumbnailDimensions[path] = { width, height };
+  refreshAspectWarning(path);
+}
+
+function updateImageDimensions(path, cropState) {
+  const image = state.images.find((item) => item.path === path);
+  if (!image || !cropState) return;
+  if (cropState.current_width) image.width = cropState.current_width;
+  if (cropState.current_height) image.height = cropState.current_height;
+}
+
+function parseAspectRatioEntry(label) {
+  const text = String(label || "").trim();
+  const match = text.match(/^(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)$/);
+  if (!match) return null;
+  const w = Number(match[1]);
+  const h = Number(match[2]);
+  if (!w || !h) return null;
+  return { label: `${match[1]}:${match[2]}`, value: w / h };
+}
+
+function setCropAspectRatios(labels) {
+  const parsed = (labels || []).map(parseAspectRatioEntry).filter(Boolean);
+  const fallback = ["4:3", "16:9", "3:4", "1:1"].map(parseAspectRatioEntry).filter(Boolean);
+  state.cropAspectRatios = parsed.length ? parsed : fallback;
+  state.cropAspectRatioLabels = state.cropAspectRatios.map(r => r.label);
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function invalidateImageCaches(path) {
+  if (previewCache.has(path)) {
+    URL.revokeObjectURL(previewCache.get(path));
+    previewCache.delete(path);
+  }
+  delete state.thumbnailDimensions[path];
+  for (const key of [...thumbBlobCache.keys()]) {
+    if (key.startsWith(path + ":")) {
+      URL.revokeObjectURL(thumbBlobCache.get(key));
+      thumbBlobCache.delete(key);
+    }
+  }
+}
+
+function clearCropDraft() {
+  state.cropDraft = null;
+  state.cropDirty = false;
+  state.cropInteraction = null;
+  renderCropOverlay();
+}
+
+function canEditCrop() {
+  return state.selectedPaths.size === 1 && !!state.previewPath && imgNatW > 0 && imgNatH > 0;
+}
+
+function getCurrentCropState() {
+  return state.previewPath ? (state.imageCrops[state.previewPath] || null) : null;
+}
+
+function hasAppliedCrop() {
+  return !!getCurrentCropState()?.applied;
+}
+
+function getCropSaveScale() {
+  const cropState = getCurrentCropState();
+  const width = cropState?.current_width || imgNatW || 1;
+  const height = cropState?.current_height || imgNatH || 1;
+  return {
+    x: width / Math.max(1, imgNatW),
+    y: height / Math.max(1, imgNatH),
+  };
+}
+
+function buildCropPayload(crop) {
+  const scale = getCropSaveScale();
+  return {
+    x: Math.round(crop.x * scale.x),
+    y: Math.round(crop.y * scale.y),
+    w: Math.max(1, Math.round(crop.w * scale.x)),
+    h: Math.max(1, Math.round(crop.h * scale.y)),
+    ratio: crop.ratio,
+  };
+}
+
+function clearCropGuide() {
+  if (!state.cropGuide) return;
+  state.cropGuide = null;
+  renderCropOverlay();
+}
+
+function setCropGuideToCenter() {
+  if (!imgNatW || !imgNatH) return;
+  state.cropGuide = {
+    x: imgNatW / 2,
+    y: imgNatH / 2,
+  };
+  renderCropOverlay();
+}
+
+function updateCropGuideFromClient(clientX, clientY) {
+  if (!canEditCrop()) {
+    clearCropGuide();
+    return;
+  }
+  const panelRect = document.getElementById("center-panel").getBoundingClientRect();
+  const px = clientX - panelRect.left;
+  const py = clientY - panelRect.top;
+  const imgLeft = panX;
+  const imgTop = panY;
+  const imgRight = panX + imgNatW * zoomLevel;
+  const imgBottom = panY + imgNatH * zoomLevel;
+  if (px < imgLeft || px > imgRight || py < imgTop || py > imgBottom) {
+    clearCropGuide();
+    return;
+  }
+  const point = screenToImage(clientX, clientY);
+  state.cropGuide = { x: point.x, y: point.y };
+  renderCropOverlay();
+}
+
+function updateCropButtons() {
+  const editable = canEditCrop();
+  const hasDraft = !!state.cropDraft;
+  cropRemoveBtn.classList.toggle("visible", editable && !hasDraft && hasAppliedCrop());
+  cropCancelBtn.classList.toggle("visible", editable && hasDraft);
+  cropApplyBtn.classList.toggle("visible", editable && hasDraft && state.cropDirty);
+}
+
+function renderCropOverlay() {
+  const crop = state.cropDraft;
+  const guide = state.cropGuide;
+  if (guide && canEditCrop()) {
+    cropGuideV.classList.add("visible");
+    cropGuideH.classList.add("visible");
+    cropGuideV.style.left = `${panX + guide.x * zoomLevel}px`;
+    cropGuideV.style.top = `${panY}px`;
+    cropGuideV.style.height = `${imgNatH * zoomLevel}px`;
+    cropGuideH.style.left = `${panX}px`;
+    cropGuideH.style.top = `${panY + guide.y * zoomLevel}px`;
+    cropGuideH.style.width = `${imgNatW * zoomLevel}px`;
+  } else {
+    cropGuideV.classList.remove("visible");
+    cropGuideH.classList.remove("visible");
+  }
+  if (!crop || !canEditCrop()) {
+    cropBox.classList.remove("active");
+    updateCropButtons();
+    return;
+  }
+  cropBox.classList.add("active");
+  cropBox.style.left = (panX + crop.x * zoomLevel) + "px";
+  cropBox.style.top = (panY + crop.y * zoomLevel) + "px";
+  cropBox.style.width = (crop.w * zoomLevel) + "px";
+  cropBox.style.height = (crop.h * zoomLevel) + "px";
+  cropLabel.textContent = `${crop.ratio || "custom"} • ${crop.w}×${crop.h}`;
+  updateCropButtons();
+}
+
+function screenToImage(clientX, clientY) {
+  const panelRect = document.getElementById("center-panel").getBoundingClientRect();
+  const px = clientX - panelRect.left;
+  const py = clientY - panelRect.top;
+  return {
+    x: clamp((px - panX) / zoomLevel, 0, imgNatW),
+    y: clamp((py - panY) / zoomLevel, 0, imgNatH),
+  };
+}
+
+function chooseClosestRatio(anchorX, anchorY, currentX, currentY, ratios, stickyChoice = null) {
+  const dx = currentX - anchorX;
+  const dy = currentY - anchorY;
+  const signX = dx >= 0 ? 1 : -1;
+  const signY = dy >= 0 ? 1 : -1;
+  const targetW = Math.abs(dx);
+  const targetH = Math.abs(dy);
+  const maxW = signX > 0 ? (imgNatW - anchorX) : anchorX;
+  const maxH = signY > 0 ? (imgNatH - anchorY) : anchorY;
+
+  const candidates = [];
+  for (const ratio of ratios) {
+    const r = ratio.value;
+    const widthFromX = Math.min(targetW, maxW, maxH * r);
+    const heightFromX = widthFromX / r;
+    const cand1 = {
+      x: signX > 0 ? anchorX : anchorX - widthFromX,
+      y: signY > 0 ? anchorY : anchorY - heightFromX,
+      w: widthFromX,
+      h: heightFromX,
+      ratio: ratio.label,
+    };
+    const dist1 = Math.hypot((cand1.x + (signX > 0 ? cand1.w : 0)) - currentX, (cand1.y + (signY > 0 ? cand1.h : 0)) - currentY);
+
+    const heightFromY = Math.min(targetH, maxH, maxW / r);
+    const widthFromY = heightFromY * r;
+    const cand2 = {
+      x: signX > 0 ? anchorX : anchorX - widthFromY,
+      y: signY > 0 ? anchorY : anchorY - heightFromY,
+      w: widthFromY,
+      h: heightFromY,
+      ratio: ratio.label,
+    };
+    const dist2 = Math.hypot((cand2.x + (signX > 0 ? cand2.w : 0)) - currentX, (cand2.y + (signY > 0 ? cand2.h : 0)) - currentY);
+
+    for (const [cand, dist, mode] of [[cand1, dist1, "width"], [cand2, dist2, "height"]]) {
+      if (cand.w < 1 || cand.h < 1) continue;
+      candidates.push({ crop: cand, dist, key: `${ratio.label}:${mode}` });
+    }
+  }
+
+  if (candidates.length === 0) return null;
+
+  const best = candidates.reduce((winner, candidate) => candidate.dist < winner.dist ? candidate : winner);
+  const stickyCandidate = stickyChoice
+    ? candidates.find((candidate) => candidate.key === stickyChoice)
+    : null;
+  const chosen = stickyCandidate && stickyCandidate.dist <= best.dist + CROP_SNAP_HYSTERESIS_PX
+    ? stickyCandidate
+    : best;
+
+  return {
+    crop: chosen.crop,
+    stickyChoice: chosen.key,
+  };
+}
+
+function setCropDraft(crop, dirty = false) {
+  if (!crop) {
+    clearCropDraft();
+    return;
+  }
+  state.cropDraft = {
+    x: Math.round(crop.x),
+    y: Math.round(crop.y),
+    w: Math.max(1, Math.round(crop.w)),
+    h: Math.max(1, Math.round(crop.h)),
+    ratio: crop.ratio || state.cropAspectRatioLabels[0] || "1:1",
+  };
+  state.cropDirty = dirty;
+  renderCropOverlay();
+}
+
+function getDraftRatio() {
+  if (state.cropDraft?.ratio) {
+    const found = state.cropAspectRatios.find(r => r.label === state.cropDraft.ratio);
+    if (found) return found;
+  }
+  return state.cropAspectRatios[0] || { label: "1:1", value: 1 };
+}
+
+function resizeCropFromHandle(baseCrop, handle, currentX, currentY, stickyChoice = null) {
+  const ratio = getDraftRatio();
+  const centerX = baseCrop.x + baseCrop.w / 2;
+  const centerY = baseCrop.y + baseCrop.h / 2;
+  const touchesLeft = baseCrop.x <= 0;
+  const touchesRight = baseCrop.x + baseCrop.w >= imgNatW;
+  const touchesTop = baseCrop.y <= 0;
+  const touchesBottom = baseCrop.y + baseCrop.h >= imgNatH;
+  if (["nw", "ne", "sw", "se"].includes(handle)) {
+    const anchors = {
+      nw: { x: baseCrop.x + baseCrop.w, y: baseCrop.y + baseCrop.h },
+      ne: { x: baseCrop.x, y: baseCrop.y + baseCrop.h },
+      sw: { x: baseCrop.x + baseCrop.w, y: baseCrop.y },
+      se: { x: baseCrop.x, y: baseCrop.y },
+    };
+    return chooseClosestRatio(
+      anchors[handle].x,
+      anchors[handle].y,
+      currentX,
+      currentY,
+      state.cropAspectRatios.length ? state.cropAspectRatios : [ratio],
+      stickyChoice,
+    );
+  }
+
+  const r = ratio.value;
+  if (handle === "e") {
+    const requestedWidth = Math.max(1, currentX - baseCrop.x);
+    const maxWidthByRatio = 2 * Math.min(centerY, imgNatH - centerY) * r;
+    if (requestedWidth > maxWidthByRatio && (touchesTop || touchesBottom)) {
+      const nextX = clamp(currentX - baseCrop.w, 0, imgNatW - baseCrop.w);
+      return { crop: { ...baseCrop, x: nextX }, stickyChoice };
+    }
+    let width = clamp(requestedWidth, 1, imgNatW - baseCrop.x);
+    width = Math.min(width, maxWidthByRatio);
+    const height = width / r;
+    return { crop: { x: baseCrop.x, y: clamp(centerY - height / 2, 0, imgNatH - height), w: width, h: height, ratio: ratio.label }, stickyChoice };
+  }
+  if (handle === "w") {
+    const requestedWidth = Math.max(1, (baseCrop.x + baseCrop.w) - currentX);
+    const maxWidthByRatio = 2 * Math.min(centerY, imgNatH - centerY) * r;
+    if (requestedWidth > maxWidthByRatio && (touchesTop || touchesBottom)) {
+      const nextX = clamp(currentX, 0, imgNatW - baseCrop.w);
+      return { crop: { ...baseCrop, x: nextX }, stickyChoice };
+    }
+    let width = clamp(requestedWidth, 1, baseCrop.x + baseCrop.w);
+    width = Math.min(width, maxWidthByRatio);
+    const height = width / r;
+    return { crop: { x: (baseCrop.x + baseCrop.w) - width, y: clamp(centerY - height / 2, 0, imgNatH - height), w: width, h: height, ratio: ratio.label }, stickyChoice };
+  }
+  if (handle === "s") {
+    const requestedHeight = Math.max(1, currentY - baseCrop.y);
+    const maxHeightByRatio = (2 * Math.min(centerX, imgNatW - centerX)) / r;
+    if (requestedHeight > maxHeightByRatio && (touchesLeft || touchesRight)) {
+      const nextY = clamp(currentY - baseCrop.h, 0, imgNatH - baseCrop.h);
+      return { crop: { ...baseCrop, y: nextY }, stickyChoice };
+    }
+    let height = clamp(requestedHeight, 1, imgNatH - baseCrop.y);
+    height = Math.min(height, maxHeightByRatio);
+    const width = height * r;
+    return { crop: { x: clamp(centerX - width / 2, 0, imgNatW - width), y: baseCrop.y, w: width, h: height, ratio: ratio.label }, stickyChoice };
+  }
+  if (handle === "n") {
+    const requestedHeight = Math.max(1, (baseCrop.y + baseCrop.h) - currentY);
+    const maxHeightByRatio = (2 * Math.min(centerX, imgNatW - centerX)) / r;
+    if (requestedHeight > maxHeightByRatio && (touchesLeft || touchesRight)) {
+      const nextY = clamp(currentY, 0, imgNatH - baseCrop.h);
+      return { crop: { ...baseCrop, y: nextY }, stickyChoice };
+    }
+    let height = clamp(requestedHeight, 1, baseCrop.y + baseCrop.h);
+    height = Math.min(height, maxHeightByRatio);
+    const width = height * r;
+    return { crop: { x: clamp(centerX - width / 2, 0, imgNatW - width), y: (baseCrop.y + baseCrop.h) - height, w: width, h: height, ratio: ratio.label }, stickyChoice };
+  }
+  return null;
+}
+
+async function loadCropData(path) {
+  try {
+    const resp = await fetch(`/api/crop?path=${encodeURIComponent(path)}`);
+    if (!resp.ok) throw new Error("Failed to load crop");
+    const data = await resp.json();
+    state.imageCrops[path] = data.crop || null;
+    if (state.previewPath === path) {
+      updateCropButtons();
+    }
+  } catch (err) {
+    console.error("Failed to load crop:", err);
+  }
+}
+
+function startCropCreate(event) {
+  const start = screenToImage(event.clientX, event.clientY);
+  state.cropInteraction = { mode: "create", anchor: start, stickySnap: null };
+  const ratio = state.cropAspectRatios[0] || { label: "1:1", value: 1 };
+  setCropDraft({ x: start.x, y: start.y, w: 1, h: 1, ratio: ratio.label }, true);
+}
+
+function startCropResize(handle, event) {
+  if (!state.cropDraft) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.cropInteraction = { mode: "resize", handle, baseCrop: { ...state.cropDraft }, stickySnap: null };
+}
+
+async function applyCropDraft() {
+  return applyCropDraftWithOptions();
+}
+
+async function applyCropDraftWithOptions(options = {}) {
+  if (!state.previewPath || !state.cropDraft || !state.cropDirty) return;
+  const { reopenPreview = true } = options;
+  const path = state.previewPath;
+  statusBar.textContent = "Applying crop...";
+  try {
+    const resp = await fetch("/api/crop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_path: path, crop: buildCropPayload(state.cropDraft) }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "Failed to apply crop");
+    state.imageCrops[path] = data.crop || null;
+    updateImageDimensions(path, data.crop);
+    clearCropDraft();
+    bumpImageVersion(path);
+    invalidateImageCaches(path);
+    renderGrid();
+    userHasZoomed = false;
+    zoomLevel = 1;
+    panX = 0;
+    panY = 0;
+    if (reopenPreview) {
+      showPreview(path);
+    }
+    statusBar.textContent = "Crop applied";
+  } catch (err) {
+    statusBar.textContent = `Crop error: ${err.message}`;
+  }
+}
+
+function cancelCropEdit() {
+  if (!state.cropDraft && !state.cropInteraction) return;
+  clearCropDraft();
+  statusBar.textContent = "Crop edit cancelled";
+}
+
+async function removeCrop() {
+  if (!state.previewPath || !hasAppliedCrop()) return;
+  const path = state.previewPath;
+  statusBar.textContent = "Removing crop...";
+  try {
+    const resp = await fetch("/api/crop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_path: path, crop: null }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "Failed to remove crop");
+    state.imageCrops[path] = data.crop || null;
+    updateImageDimensions(path, data.crop);
+    clearCropDraft();
+    bumpImageVersion(path);
+    invalidateImageCaches(path);
+    renderGrid();
+    userHasZoomed = false;
+    zoomLevel = 1;
+    panX = 0;
+    panY = 0;
+    showPreview(path);
+    statusBar.textContent = "Crop removed";
+  } catch (err) {
+    statusBar.textContent = `Crop error: ${err.message}`;
+  }
+}
+
+function updateActionButtons() {
+  const hasSelection = state.selectedPaths.size > 0;
+  const hasCaptions = state.sections.some(section => (section.sentences || []).length > 0);
+  autoCaptionBtn.disabled = !state.autoCaptioning && (!hasSelection || !hasCaptions || !state.ollamaModel.trim());
+  autoCaptionBtn.classList.toggle("running", state.autoCaptioning);
+  autoCaptionBtn.textContent = state.autoCaptioning ? "Stop Auto Caption" : "Auto Caption";
+  autoCaptionBtn.title = state.autoCaptioning
+    ? "Stop the running auto caption operation"
+    : "Use Ollama to verify captions for the selected image(s)";
+}
+
+function renderModelLog() {
+  if (state.modelLogLines.length === 0) {
+    modelLog.textContent = "";
+    modelLogPanel.classList.remove("visible");
+    return;
+  }
+  modelLogPanel.classList.add("visible");
+  modelLog.innerHTML = state.modelLogLines.join("\n");
+  modelLog.scrollTop = modelLog.scrollHeight;
+}
+
+function clearModelLog() {
+  state.modelLogLines = [];
+  renderModelLog();
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function appendModelLog(text, kind = "") {
+  const safe = escapeHtml(text);
+  state.modelLogLines.push(kind ? `<span class="${kind}">${safe}</span>` : safe);
+  if (state.modelLogLines.length > 400) {
+    state.modelLogLines = state.modelLogLines.slice(-400);
+  }
+  renderModelLog();
+}
+
+function applySettings(settings) {
+  setCropAspectRatios(settings.crop_aspect_ratios || state.cropAspectRatioLabels);
+  state.ollamaServer = (settings.ollama_server || "127.0.0.1").trim();
+  state.ollamaPort = Number(settings.ollama_port || 11434) || 11434;
+  state.ollamaTimeoutSeconds = Number(settings.ollama_timeout_seconds || 20) || 20;
+  state.ollamaModel = (settings.ollama_model || "llava").trim() || "llava";
+  state.ollamaPromptTemplate = settings.ollama_prompt_template || state.ollamaPromptTemplate;
+  state.ollamaEnableFreeText = settings.ollama_enable_free_text ?? state.ollamaEnableFreeText;
+  state.ollamaFreeTextPromptTemplate = settings.ollama_free_text_prompt_template || state.ollamaFreeTextPromptTemplate;
+  autoFreeTextCheckbox.checked = !!state.ollamaEnableFreeText;
+  if (state.images.length) {
+    renderGrid();
+  }
+}
+
+function fillSettingsForm() {
+  settingsServerInput.value = state.ollamaServer;
+  settingsPortInput.value = String(state.ollamaPort);
+  settingsTimeoutInput.value = String(state.ollamaTimeoutSeconds);
+  settingsModelInput.value = state.ollamaModel;
+  settingsCropAspectRatiosInput.value = state.cropAspectRatioLabels.join(", ");
+  settingsPromptInput.value = state.ollamaPromptTemplate;
+  settingsAutoFreeTextEnabled.checked = !!state.ollamaEnableFreeText;
+  settingsFreeTextPromptInput.value = state.ollamaFreeTextPromptTemplate;
+}
+
+function openSettingsModal() {
+  fillSettingsForm();
+  settingsModal.classList.add("open");
+  settingsModal.setAttribute("aria-hidden", "false");
+  settingsServerInput.focus();
+}
+
+function closeSettingsModal() {
+  settingsModal.classList.remove("open");
+  settingsModal.setAttribute("aria-hidden", "true");
+}
+
+function getFileLabel(path) {
+  return String(path || "").split(/[\\/]/).pop() || String(path || "");
+}
+
+async function readNdjsonStream(response, onEvent) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line) continue;
+      onEvent(JSON.parse(line));
+    }
+
+    if (done) break;
+  }
+
+  const tail = buffer.trim();
+  if (tail) {
+    onEvent(JSON.parse(tail));
+  }
+}
+
+async function saveOllamaSettingsFromForm() {
+  const server = settingsServerInput.value.trim() || "127.0.0.1";
+  const port = Number(settingsPortInput.value || "11434") || 11434;
+  const timeoutSeconds = Number(settingsTimeoutInput.value || "20") || 20;
+  const model = settingsModelInput.value.trim() || "llava";
+  const cropAspectRatios = settingsCropAspectRatiosInput.value.split(",").map(s => s.trim()).filter(Boolean);
+  const promptTemplate = settingsPromptInput.value || state.ollamaPromptTemplate;
+  const enableFreeText = settingsAutoFreeTextEnabled.checked;
+  const freeTextPromptTemplate = settingsFreeTextPromptInput.value || state.ollamaFreeTextPromptTemplate;
+  try {
+    const resp = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ollama_server: server,
+        ollama_port: port,
+        ollama_timeout_seconds: timeoutSeconds,
+        ollama_model: model,
+        crop_aspect_ratios: cropAspectRatios,
+        ollama_prompt_template: promptTemplate,
+        ollama_enable_free_text: enableFreeText,
+        ollama_free_text_prompt_template: freeTextPromptTemplate,
+      }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail || "Failed to save settings");
+    }
+    applySettings({
+      ollama_server: server,
+      ollama_port: port,
+      ollama_timeout_seconds: timeoutSeconds,
+      ollama_model: model,
+      crop_aspect_ratios: cropAspectRatios,
+      ollama_prompt_template: promptTemplate,
+      ollama_enable_free_text: enableFreeText,
+      ollama_free_text_prompt_template: freeTextPromptTemplate,
+    });
+    updateActionButtons();
+    closeSettingsModal();
+    statusBar.textContent = `Ollama: ${state.ollamaModel} @ ${state.ollamaServer}:${state.ollamaPort}`;
+  } catch (err) {
+    statusBar.textContent = `Settings error: ${err.message}`;
+  }
+}
+
 // ===== FOLDER LOADING =====
 async function loadFolder() {
   const folder = folderInput.value.trim();
@@ -469,6 +1436,9 @@ async function loadFolder() {
   state.lastClickedIndex = -1;
   state.previewPath = null;
   state.captionCache = {};
+  state.imageCrops = {};
+  state.imageVersions = {};
+  state.thumbnailDimensions = {};
   statusBar.textContent = "Loading...";
 
   try {
@@ -477,6 +1447,7 @@ async function loadFolder() {
     const data = await resp.json();
     state.images = data.images;
     state.folder = data.folder;
+    state.imageVersions = Object.fromEntries((state.images || []).map(img => [img.path, img.mtime || 0]));
     folderInput.value = data.folder;
     updateFileCountDisplay();
     statusBar.textContent = `Loaded ${state.images.length} images`;
@@ -492,12 +1463,14 @@ async function loadFolder() {
     if (settingsResp.ok) {
       const settings = await settingsResp.json();
       state.sections = settings.sections || [{"name": "", "sentences": []}];
+      applySettings(settings);
     }
 
     renderGrid();
     hidePreview();
     renderSentences();
     freeText.value = "";
+    updateActionButtons();
     freeText.disabled = true;
 
     // Preload all thumbnails
@@ -529,6 +1502,7 @@ function renderGrid() {
     let cls = "thumb-cell";
     if (state.selectedPaths.has(img.path)) cls += " selected";
     if (img.has_caption) cls += " has-caption";
+    if (!imageConformsToAspectRatios(img)) cls += " aspect-mismatch";
     cell.className = cls;
     cell.style.width = size + "px";
     cell.style.height = size + "px";
@@ -538,11 +1512,14 @@ function renderGrid() {
     const imgEl = document.createElement("img");
     imgEl.dataset.path = img.path;
     imgEl.loading = "lazy";
-    const cachedUrl = thumbBlobCache.get(img.path + ":" + thumbLoadSize);
+    imgEl.addEventListener("load", () => {
+      storeThumbnailDimensions(img.path, imgEl.naturalWidth, imgEl.naturalHeight);
+    });
+    const cachedUrl = thumbBlobCache.get(`${img.path}:${thumbLoadSize}:${getImageVersion(img.path)}`);
     if (cachedUrl) {
       imgEl.src = cachedUrl;
     } else {
-      imgEl.src = `/api/thumbnail?path=${encodeURIComponent(img.path)}&size=${thumbLoadSize}`;
+      imgEl.src = buildImageApiUrl("thumbnail", img.path, { size: thumbLoadSize });
     }
     cell.appendChild(imgEl);
 
@@ -552,12 +1529,18 @@ function renderGrid() {
     nameEl.title = img.name;
     cell.appendChild(nameEl);
 
-    // Caption dot indicator (visible if has_caption)
     const dot = document.createElement("div");
     dot.className = "caption-dot";
-    dot.style.display = img.has_caption ? "block" : "none";
+    dot.textContent = "TXT";
+    dot.title = "Caption text file exists";
     dot.dataset.captionDot = img.path;
     cell.appendChild(dot);
+
+    const aspectWarning = document.createElement("div");
+    aspectWarning.className = "aspect-warning";
+    aspectWarning.textContent = "AR";
+    aspectWarning.title = "Image aspect ratio does not match the configured aspect ratio list";
+    cell.appendChild(aspectWarning);
 
     cell.addEventListener("click", (e) => handleThumbClick(i, e));
     cell.addEventListener("dblclick", (e) => {
@@ -577,8 +1560,6 @@ function markCaptionIndicator(path, hasCaption) {
   const cell = fileGrid.querySelector(`[data-path="${CSS.escape(path)}"]`);
   if (cell) {
     cell.classList.toggle("has-caption", hasCaption);
-    const dot = cell.querySelector(".caption-dot");
-    if (dot) dot.style.display = hasCaption ? "block" : "none";
   }
 }
 
@@ -624,6 +1605,7 @@ function handleThumbClick(index, event) {
     const path = [...state.selectedPaths][0];
     showPreview(path);
     loadCaptionData(path);
+    loadCropData(path);
     freeText.disabled = false;
   } else if (state.selectedPaths.size > 1) {
     // Show preview of clicked image
@@ -631,6 +1613,7 @@ function handleThumbClick(index, event) {
     freeText.disabled = true;
     freeText.value = "(Multiple images selected)";
     loadMultiCaptionState();
+    clearCropDraft();
   } else {
     hidePreview();
     freeText.disabled = true;
@@ -639,6 +1622,7 @@ function handleThumbClick(index, event) {
 
   updateMultiInfo();
   renderSentences();
+  updateActionButtons();
 
   // Preload adjacent images
   preloadAdjacent(index);
@@ -681,9 +1665,18 @@ function applyTransform() {
   previewImg.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
   previewImg.style.width = imgNatW + "px";
   previewImg.style.height = imgNatH + "px";
+  renderCropOverlay();
 }
 
-function showPreview(path) {
+async function showPreview(path) {
+  const previousPath = state.previewPath;
+  if (previousPath && previousPath !== path && state.cropDraft) {
+    if (state.cropDirty) {
+      await applyCropDraftWithOptions({ reopenPreview: false });
+    } else {
+      clearCropDraft();
+    }
+  }
   state.previewPath = path;
 
   const loadSrc = (src) => {
@@ -697,6 +1690,7 @@ function showPreview(path) {
       imgNatW = previewImg.naturalWidth;
       imgNatH = previewImg.naturalHeight;
       resetZoomPan();
+      setCropGuideToCenter();
       previewImg.style.display = "block";
     };
     previewImg.src = src;
@@ -709,12 +1703,12 @@ function showPreview(path) {
   } else {
     // 2) Show the thumbnail instantly as a blurry placeholder
     const thumbLoadSize = getThumbLoadSize();
-    const cachedThumb = thumbBlobCache.get(path + ":" + thumbLoadSize);
+    const cachedThumb = thumbBlobCache.get(`${path}:${thumbLoadSize}:${getImageVersion(path)}`);
     if (cachedThumb) {
       loadSrc(cachedThumb);
     } else {
       // 3) Nothing cached at all — load preview URL directly
-      loadSrc(`/api/preview?path=${encodeURIComponent(path)}`);
+      loadSrc(buildImageApiUrl("preview", path));
     }
     // Start loading the preview-quality version in background
     preloadPreview(path);
@@ -723,7 +1717,7 @@ function showPreview(path) {
   previewPlaceholder.style.display = "none";
   const img = state.images.find(i => i.path === path);
   if (img) {
-    previewInfo.textContent = img.name;
+    previewInfo.textContent = hasAppliedCrop() ? `${img.name} • cropped` : img.name;
     previewInfo.style.display = "block";
   }
 }
@@ -735,11 +1729,16 @@ function hidePreview() {
   previewInfo.style.display = "none";
   imgNatW = 0;
   imgNatH = 0;
+  clearCropDraft();
 }
 
 // ===== ZOOM & PAN =====
 {
   const panel = document.getElementById("center-panel");
+
+  panel.addEventListener("contextmenu", (e) => {
+    if (canEditCrop()) e.preventDefault();
+  });
 
   // Mouse wheel zoom — zooms toward cursor position
   panel.addEventListener("wheel", (e) => {
@@ -771,6 +1770,12 @@ function hidePreview() {
   let dragStartX, dragStartY, dragPanStartX, dragPanStartY;
 
   panel.addEventListener("mousedown", (e) => {
+    if (e.button === 2 && canEditCrop()) {
+      startCropCreate(e);
+      updateCropGuideFromClient(e.clientX, e.clientY);
+      e.preventDefault();
+      return;
+    }
     if (e.button !== 0) return;
     isDragging = true;
     userHasZoomed = true;
@@ -782,7 +1787,46 @@ function hidePreview() {
     e.preventDefault();
   });
 
+  panel.addEventListener("mousemove", (e) => {
+    updateCropGuideFromClient(e.clientX, e.clientY);
+  });
+
+  panel.addEventListener("mouseleave", () => {
+    renderCropOverlay();
+  });
+
   window.addEventListener("mousemove", (e) => {
+    if (state.cropInteraction && canEditCrop()) {
+      updateCropGuideFromClient(e.clientX, e.clientY);
+      const point = screenToImage(e.clientX, e.clientY);
+      if (state.cropInteraction.mode === "create") {
+        const result = chooseClosestRatio(
+          state.cropInteraction.anchor.x,
+          state.cropInteraction.anchor.y,
+          point.x,
+          point.y,
+          state.cropAspectRatios,
+          state.cropInteraction.stickySnap,
+        );
+        if (result?.crop) {
+          state.cropInteraction.stickySnap = result.stickyChoice;
+          setCropDraft(result.crop, true);
+        }
+      } else if (state.cropInteraction.mode === "resize") {
+        const result = resizeCropFromHandle(
+          state.cropInteraction.baseCrop,
+          state.cropInteraction.handle,
+          point.x,
+          point.y,
+          state.cropInteraction.stickySnap,
+        );
+        if (result?.crop) {
+          state.cropInteraction.stickySnap = result.stickyChoice;
+          setCropDraft(result.crop, true);
+        }
+      }
+      return;
+    }
     if (!isDragging) return;
     panX = dragPanStartX + (e.clientX - dragStartX);
     panY = dragPanStartY + (e.clientY - dragStartY);
@@ -790,6 +1834,9 @@ function hidePreview() {
   });
 
   window.addEventListener("mouseup", () => {
+    if (state.cropInteraction) {
+      state.cropInteraction = null;
+    }
     if (isDragging) {
       isDragging = false;
       panel.classList.remove("dragging");
@@ -817,6 +1864,16 @@ function hidePreview() {
     }
   });
 }
+
+cropBox.querySelectorAll("[data-handle]").forEach(handleEl => {
+  handleEl.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || !canEditCrop()) return;
+    startCropResize(handleEl.dataset.handle, e);
+  });
+});
+cropApplyBtn.addEventListener("click", applyCropDraft);
+cropCancelBtn.addEventListener("click", cancelCropEdit);
+cropRemoveBtn.addEventListener("click", removeCrop);
 
 // ===== CAPTION DATA =====
 async function loadCaptionData(path) {
@@ -1091,6 +2148,115 @@ function renderSentences() {
 
     sectionContainer.appendChild(group);
   });
+
+  updateActionButtons();
+}
+
+async function autoCaptionSelected() {
+  if (state.autoCaptioning) {
+    stopAutoCaption();
+    return;
+  }
+  if (state.selectedPaths.size === 0 || state.autoCaptioning) return;
+  const paths = [...state.selectedPaths];
+  const model = state.ollamaModel.trim();
+  if (!model) {
+    statusBar.textContent = "Configure an Ollama model first";
+    openSettingsModal();
+    return;
+  }
+
+  state.autoCaptioning = true;
+  state.autoCaptionAbortController = new AbortController();
+  updateActionButtons();
+  clearModelLog();
+  statusBar.textContent = `Auto captioning ${paths.length} image${paths.length === 1 ? "" : "s"}...`;
+
+  try {
+    const resp = await fetch("/api/auto-caption/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: state.autoCaptionAbortController.signal,
+      body: JSON.stringify({
+        image_paths: paths,
+        model,
+        prompt_template: state.ollamaPromptTemplate,
+        enable_free_text: state.ollamaEnableFreeText,
+        free_text_prompt_template: state.ollamaFreeTextPromptTemplate,
+        timeout_seconds: state.ollamaTimeoutSeconds,
+      }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail || "Auto caption failed");
+    }
+
+    let processed = 0;
+    let errors = 0;
+    await readNdjsonStream(resp, (event) => {
+      if (event.type === "start") {
+        appendModelLog(`Starting auto caption for ${event.count} image(s) using ${event.model} @ ${event.host}`, "log-dim");
+        if (event.enable_free_text) {
+          appendModelLog("Free-text enhancement is enabled", "log-dim");
+        }
+      } else if (event.type === "image-start") {
+        appendModelLog(`[${getFileLabel(event.path)}] Checking ${event.total_sentences} captions...`, "log-dim");
+      } else if (event.type === "caption-check") {
+        const verdict = event.enabled ? "YES" : "NO";
+        appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.sentence} -> ${verdict} | ${event.answer || verdict}`, event.enabled ? "log-ok" : "log-dim");
+      } else if (event.type === "free-text") {
+        if ((event.added_lines || []).length > 0) {
+          appendModelLog(`[${getFileLabel(event.path)}] Added free text: ${(event.added_lines || []).join(" | ")}`, "log-ok");
+        } else {
+          appendModelLog(`[${getFileLabel(event.path)}] Free text output: ${event.answer || "NONE"}`, "log-warn");
+        }
+      } else if (event.type === "image-complete") {
+        processed++;
+        state.captionCache[event.path] = {
+          enabled_sentences: event.enabled_sentences || [],
+          free_text: event.free_text || "",
+        };
+        const hasContent = (event.enabled_sentences && event.enabled_sentences.length > 0) || (event.free_text && event.free_text.trim());
+        markCaptionIndicator(event.path, !!hasContent);
+        appendModelLog(`[${getFileLabel(event.path)}] Completed with ${(event.enabled_sentences || []).length} matched captions`, "log-ok");
+        if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
+          freeText.value = event.free_text || "";
+        }
+        renderSentences();
+        statusBar.textContent = `Auto Caption: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`;
+      } else if (event.type === "error") {
+        errors++;
+        appendModelLog(`[${getFileLabel(event.path)}] ${event.message}`, "log-err");
+        statusBar.textContent = `Auto Caption: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`;
+      } else if (event.type === "done") {
+        processed = event.processed ?? processed;
+        errors = event.errors ?? errors;
+        appendModelLog(`Finished: ${processed}/${event.count} processed, ${errors} error${errors === 1 ? "" : "s"}`, errors ? "log-warn" : "log-ok");
+        statusBar.textContent = `Auto Caption finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`;
+      }
+    });
+
+    if (state.selectedPaths.size > 1) {
+      renderSentences();
+    }
+  } catch (err) {
+    if (err.name === "AbortError") {
+      statusBar.textContent = "Auto Caption stopped";
+      appendModelLog("Auto Caption stopped by user", "log-warn");
+    } else {
+      statusBar.textContent = `Auto Caption failed: ${err.message}`;
+      appendModelLog(`Auto Caption failed: ${err.message}`, "log-err");
+    }
+  } finally {
+    state.autoCaptioning = false;
+    state.autoCaptionAbortController = null;
+    updateActionButtons();
+  }
+}
+
+function stopAutoCaption() {
+  if (!state.autoCaptioning || !state.autoCaptionAbortController) return;
+  state.autoCaptionAbortController.abort();
 }
 
 async function toggleSentence(sentence, wasChecked, wasPartial) {
@@ -1235,18 +2401,84 @@ function setupResize(handleEl, panelEl, side) {
     document.addEventListener("mouseup", onUp);
   });
 }
+
+function setupVerticalResize(handleEl, topEl, bottomEl, containerEl) {
+  let startY, startTopHeight;
+  handleEl.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    startY = e.clientY;
+    startTopHeight = topEl.getBoundingClientRect().height;
+    handleEl.classList.add("active");
+
+    const onMove = (e2) => {
+      const containerHeight = containerEl.getBoundingClientRect().height;
+      const handleHeight = handleEl.getBoundingClientRect().height;
+      const minTop = 120;
+      const minBottom = 120;
+      const maxTop = Math.max(minTop, containerHeight - minBottom - handleHeight);
+      const nextTop = Math.max(minTop, Math.min(maxTop, startTopHeight + (e2.clientY - startY)));
+      topEl.style.flex = `0 0 ${nextTop}px`;
+      bottomEl.style.flex = "1 1 auto";
+    };
+
+    const onUp = () => {
+      handleEl.classList.remove("active");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
 setupResize($("#left-resize"), $("#left-panel"), "left");
 setupResize($("#right-resize"), $("#right-panel"), "right");
+setupVerticalResize(rightHorizontalResize, sentencesSection, $("#freetext-section"), $("#right-panel"));
 
 // ===== EVENT LISTENERS =====
 loadBtn.addEventListener("click", loadFolder);
 folderInput.addEventListener("keydown", (e) => { if (e.key === "Enter") loadFolder(); });
+settingsBtn.addEventListener("click", openSettingsModal);
+autoCaptionBtn.addEventListener("click", autoCaptionSelected);
+autoFreeTextCheckbox.addEventListener("change", async () => {
+  state.ollamaEnableFreeText = autoFreeTextCheckbox.checked;
+  try {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ollama_enable_free_text: state.ollamaEnableFreeText }),
+    });
+  } catch (err) {
+    console.error("Failed to save free-text toggle:", err);
+  }
+});
 addSectionBtn.addEventListener("click", addSection);
+settingsCloseBtn.addEventListener("click", closeSettingsModal);
+settingsCancelBtn.addEventListener("click", closeSettingsModal);
+settingsSaveBtn.addEventListener("click", saveOllamaSettingsFromForm);
+modelLogClearBtn.addEventListener("click", clearModelLog);
+settingsForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  saveOllamaSettingsFromForm();
+});
+settingsModal.addEventListener("click", (e) => {
+  if (e.target === settingsModal) closeSettingsModal();
+});
 
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && settingsModal.classList.contains("open")) {
+    closeSettingsModal();
+    return;
+  }
+  if (e.key === "Escape" && (state.cropDraft || state.cropInteraction)) {
+    e.preventDefault();
+    cancelCropEdit();
+    return;
+  }
+  if (settingsModal.classList.contains("open")) return;
   // Ctrl+A to select all (when not in text input)
-  if ((e.ctrlKey || e.metaKey) && e.key === "a" && document.activeElement !== freeText && document.activeElement !== folderInput) {
+  if ((e.ctrlKey || e.metaKey) && e.key === "a" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA" && !document.activeElement?.isContentEditable) {
     e.preventDefault();
     state.selectedPaths.clear();
     state.images.forEach(img => state.selectedPaths.add(img.path));
@@ -1257,7 +2489,8 @@ document.addEventListener("keydown", (e) => {
 
   // Arrow keys for navigation
   if (e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "ArrowDown") {
-    if (document.activeElement === freeText || document.activeElement === newSentenceInput || document.activeElement === folderInput) return;
+    const activeEl = document.activeElement;
+    if (activeEl === freeText || activeEl === folderInput || activeEl?.tagName === "INPUT" || activeEl?.tagName === "TEXTAREA" || activeEl?.isContentEditable) return;
     e.preventDefault();
     const dir = (e.key === "ArrowRight" || e.key === "ArrowDown") ? 1 : -1;
     let newIdx = state.lastClickedIndex + dir;
@@ -1281,6 +2514,7 @@ async function initFromSettings() {
       if (settings.last_folder) {
         folderInput.value = settings.last_folder;
       }
+      applySettings(settings);
     }
   } catch (err) {
     console.error("Failed to load settings:", err);
@@ -1289,7 +2523,9 @@ async function initFromSettings() {
 initFromSettings();
 
 // Initial render of sentences
+setCropAspectRatios(state.cropAspectRatioLabels);
 renderSentences();
+updateActionButtons();
 </script>
 </body>
 </html>

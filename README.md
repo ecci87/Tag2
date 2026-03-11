@@ -7,9 +7,12 @@ A lightweight, browser-based tool for browsing images and managing text captions
 - Browse images from any local folder
 - Thumbnail grid with adjustable sizes
 - Zoomable image preview
-- Predefined sentence tags (per-folder configurable)
+- Predefined caption tags (per-folder configurable)
 - Free-text captions
-- Batch toggle sentences across multiple selected images
+- Batch toggle captions across multiple selected images
+- Auto captioning with Ollama by checking images against the predefined captions
+- Aspect ratio checking in the thumbnail grid against the configured allowed ratios
+- Real image cropping with aspect-ratio snapping and reversible undo while the server is running
 - Caption files saved as `.txt` alongside each image
 
 ## Quick Start
@@ -51,7 +54,14 @@ python server.py 9000
 
 ## Configuration
 
-On first use, a `config.json` file is created automatically to store your last opened folder and per-folder sentence presets. This file is gitignored.
+On first use, a `config.json` file is created automatically to store:
+
+- your last opened folder
+- per-folder sentence presets
+- Ollama connection and prompt settings
+- configured crop aspect ratios
+
+This file is gitignored.
 
 ## License
 

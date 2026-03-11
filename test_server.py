@@ -4,8 +4,11 @@ import json
 import os
 import shutil
 import tempfile
+from io import BytesIO
+from pathlib import Path
 
 import pytest
+import piexif
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -282,6 +285,17 @@ class TestPreview:
         resp = client.get("/api/preview", params={"path": single_image})
         assert resp.status_code == 200
 
+    def test_preview_respects_exif_orientation(self, client, tmp_path):
+        image_path = tmp_path / "rotated.jpg"
+        img = Image.new("RGB", (30, 10), color="green")
+        exif = piexif.dump({"0th": {piexif.ImageIFD.Orientation: 6}})
+        img.save(str(image_path), exif=exif)
+
+        resp = client.get("/api/preview", params={"path": str(image_path)})
+        assert resp.status_code == 200
+        preview = Image.open(BytesIO(resp.content))
+        assert preview.width < preview.height
+
     def test_preview_not_found(self, client):
         resp = client.get("/api/preview", params={"path": "/no/such/file.jpg"})
         assert resp.status_code == 404
@@ -414,6 +428,15 @@ class TestSettingsAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert "last_folder" in data
+        assert data["crop_aspect_ratios"] == ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"]
+        assert data["ollama_host"] == "http://127.0.0.1:11434"
+        assert data["ollama_server"] == "127.0.0.1"
+        assert data["ollama_port"] == 11434
+        assert data["ollama_timeout_seconds"] == 20
+        assert data["ollama_model"] == "llava"
+        assert "{caption}" in data["ollama_prompt_template"]
+        assert data["ollama_enable_free_text"] is True
+        assert "{caption_text}" in data["ollama_free_text_prompt_template"]
 
     def test_save_and_load_last_folder(self, client):
         client.post("/api/settings", json={"last_folder": "/my/folder"})
@@ -466,3 +489,243 @@ class TestConfigPersistence:
         cfg = server._load_config()
         assert cfg["last_folder"] == ""
         assert cfg["folders"] == {}
+        assert cfg["crop_aspect_ratios"] == ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"]
+        assert cfg["ollama_host"] == "http://127.0.0.1:11434"
+        assert cfg["ollama_server"] == "127.0.0.1"
+        assert cfg["ollama_port"] == 11434
+        assert cfg["ollama_timeout_seconds"] == 20
+        assert cfg["ollama_model"] == "llava"
+        assert "{caption}" in cfg["ollama_prompt_template"]
+        assert cfg["ollama_enable_free_text"] is True
+        assert "{caption_text}" in cfg["ollama_free_text_prompt_template"]
+
+
+class TestOllamaHelpers:
+    def test_parse_yes_no(self):
+        assert server._parse_ollama_yes_no("YES") is True
+        assert server._parse_ollama_yes_no("No.") is False
+        assert server._parse_ollama_yes_no("YES - the object is visible") is True
+        assert server._parse_ollama_yes_no("uncertain") is False
+
+    def test_prompt_template_substitution(self):
+        prompt = server._ollama_prompt_for_sentence("Moon", "Caption check: {caption} / {sentence}")
+        assert prompt == "Caption check: Moon / Moon"
+
+    def test_free_text_prompt_template_substitution(self):
+        prompt = server._ollama_prompt_for_free_text("- Moon", "Current: {caption_text} / {current_caption}")
+        assert prompt == "Current: - Moon / - Moon"
+
+    def test_merge_free_text_avoids_duplicates(self):
+        merged, added = server._merge_free_text(
+            "Already there\nNight sky",
+            "Night sky\nMoon visible\n- Already there\nBright stars",
+            ["Moon"],
+        )
+        assert added == ["Moon visible", "Bright stars"]
+        assert merged == "Already there\nNight sky\nMoon visible\nBright stars"
+
+    def test_auto_caption_sentences(self, single_image, monkeypatch):
+        def fake_generate(host, payload, timeout=120):
+            assert timeout == 17
+            prompt = payload["prompt"]
+            if "Moon" in prompt:
+                return {"response": "YES"}
+            return {"response": "NO"}
+
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+        enabled, results = server._auto_caption_sentences(
+            "http://127.0.0.1:11434",
+            "llava",
+            single_image,
+            ["Moon", "Night", "Car"],
+            "Caption? {caption}",
+            17,
+        )
+        assert enabled == ["Moon"]
+        assert len(results) == 3
+        assert results[0]["enabled"] is True
+        assert results[1]["enabled"] is False
+
+    def test_suggest_free_text(self, single_image, monkeypatch):
+        def fake_generate(host, payload, timeout=120):
+            assert timeout == 9
+            assert "Current caption text" in payload["prompt"]
+            return {"response": "Moon visible\nBright stars"}
+
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+        result = server._suggest_free_text(
+            "http://127.0.0.1:11434",
+            "llava",
+            single_image,
+            "- Night",
+            timeout=9,
+        )
+        assert "Moon visible" in result
+
+
+class TestCropAPI:
+    def test_get_crop_default_none(self, client, single_image):
+        resp = client.get("/api/crop", params={"path": single_image})
+        assert resp.status_code == 200
+        crop = resp.json()["crop"]
+        assert crop["applied"] is False
+        assert crop["current_width"] == 100
+        assert crop["current_height"] == 100
+
+    def test_save_and_get_crop(self, client, single_image):
+        crop = {"x": 10, "y": 5, "w": 40, "h": 30, "ratio": "4:3"}
+        resp = client.post("/api/crop", json={"image_path": single_image, "crop": crop})
+        assert resp.status_code == 200
+        saved = resp.json()["crop"]
+        assert saved["applied"] is True
+        assert saved["current_width"] == 40
+        assert saved["current_height"] == 30
+
+        with Image.open(single_image) as img:
+            assert img.size == (40, 30)
+
+        resp = client.get("/api/crop", params={"path": single_image})
+        assert resp.json()["crop"]["original_width"] == 100
+        assert os.path.isfile(server._get_crop_backup_path(single_image))
+
+    def test_clear_crop(self, client, single_image):
+        client.post("/api/crop", json={"image_path": single_image, "crop": {"x": 1, "y": 1, "w": 20, "h": 20}})
+        resp = client.post("/api/crop", json={"image_path": single_image, "crop": None})
+        assert resp.status_code == 200
+        assert resp.json()["crop"]["applied"] is False
+
+        with Image.open(single_image) as img:
+            assert img.size == (100, 100)
+        assert not os.path.exists(server._get_crop_backup_path(single_image))
+
+    def test_thumbnail_respects_crop(self, client, single_image):
+        with Image.open(single_image) as img:
+            img = Image.new("RGB", (100, 100))
+            for x in range(100):
+                for y in range(100):
+                    img.putpixel((x, y), (255, 0, 0) if x < 50 else (0, 0, 255))
+            img.save(single_image)
+
+        client.post("/api/crop", json={
+            "image_path": single_image,
+            "crop": {"x": 0, "y": 0, "w": 50, "h": 100, "ratio": "1:2"},
+        })
+        resp = client.get("/api/thumbnail", params={"path": single_image, "size": 64})
+        assert resp.status_code == 200
+        thumb = Image.open(BytesIO(resp.content))
+        r, g, b = thumb.getpixel((thumb.width // 2, thumb.height // 2))
+        assert r > b
+
+
+class TestAutoCaptionAPI:
+    def test_auto_caption_single_image(self, client, single_image, monkeypatch):
+        folder = str(os.path.dirname(single_image))
+        client.post("/api/settings", json={
+            "folder": folder,
+            "sections": [{"name": "", "sentences": ["Moon", "Night", "Car"]}],
+            "ollama_server": "localhost",
+            "ollama_port": 11435,
+            "ollama_timeout_seconds": 12,
+            "ollama_model": "llava",
+            "ollama_prompt_template": "Caption: {caption}",
+            "ollama_enable_free_text": True,
+            "ollama_free_text_prompt_template": "Current caption text:\n{caption_text}",
+        })
+
+        def fake_auto_caption(host, model, image_path, sentences, prompt_template, timeout):
+            assert host == "http://localhost:11435"
+            assert model == "llava"
+            assert image_path == single_image
+            assert sentences == ["Moon", "Night", "Car"]
+            assert prompt_template == "Caption: {caption}"
+            assert timeout == 12
+            return ["Moon", "Night"], [
+                {"sentence": "Moon", "enabled": True, "answer": "YES"},
+                {"sentence": "Night", "enabled": True, "answer": "YES"},
+                {"sentence": "Car", "enabled": False, "answer": "NO"},
+            ]
+
+        monkeypatch.setattr(server, "_auto_caption_sentences", fake_auto_caption)
+        monkeypatch.setattr(server, "_suggest_free_text", lambda *args: "Moon visible\nNight sky")
+
+        resp = client.post("/api/auto-caption", json={
+            "image_path": single_image,
+            "model": "llava",
+            "prompt_template": "Caption: {caption}",
+            "enable_free_text": True,
+            "free_text_prompt_template": "Current caption text:\n{caption_text}",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled_sentences"] == ["Moon", "Night"]
+        assert data["results"][2]["enabled"] is False
+        assert data["host"] == "http://localhost:11435"
+        assert data["timeout_seconds"] == 12
+        assert data["prompt_template"] == "Caption: {caption}"
+        assert data["added_free_text_lines"] == ["Moon visible", "Night sky"]
+
+        caption = (Path(single_image).with_suffix(".txt")).read_text(encoding="utf-8")
+        assert "- Moon" in caption
+        assert "- Night" in caption
+        assert "Car" not in caption
+        assert "Moon visible" in caption
+
+    def test_auto_caption_requires_sentences(self, client, single_image):
+        folder = str(os.path.dirname(single_image))
+        client.post("/api/settings", json={
+            "folder": folder,
+            "sections": [{"name": "", "sentences": []}],
+        })
+        resp = client.post("/api/auto-caption", json={"image_path": single_image, "model": "llava"})
+        assert resp.status_code == 400
+
+    def test_auto_caption_ollama_error(self, client, single_image, monkeypatch):
+        folder = str(os.path.dirname(single_image))
+        client.post("/api/settings", json={
+            "folder": folder,
+            "sections": [{"name": "", "sentences": ["Moon"]}],
+        })
+
+        def fake_auto_caption(host, model, image_path, sentences, prompt_template, timeout):
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr(server, "_auto_caption_sentences", fake_auto_caption)
+        resp = client.post("/api/auto-caption", json={"image_path": single_image, "model": "llava"})
+        assert resp.status_code == 502
+
+    def test_auto_caption_stream_multiple_images(self, client, img_dir, monkeypatch):
+        paths = [str(img_dir / "photo1.jpg"), str(img_dir / "photo2.png")]
+        client.post("/api/settings", json={
+            "folder": str(img_dir),
+            "sections": [{"name": "", "sentences": ["Moon", "Night"]}],
+            "ollama_enable_free_text": True,
+        })
+
+        def fake_generate(host, payload, timeout=120):
+            prompt = payload["prompt"]
+            if "Current caption text" in prompt:
+                return {"response": "Bright stars\nMoon visible"}
+            if "Moon" in prompt:
+                return {"response": "YES"}
+            return {"response": "NO"}
+
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption/stream", json={
+            "image_paths": paths,
+            "model": "llava",
+            "enable_free_text": True,
+        })
+        assert resp.status_code == 200
+        events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+        assert events[0]["type"] == "start"
+        assert any(e["type"] == "caption-check" and e["sentence"] == "Moon" for e in events)
+        assert any(e["type"] == "free-text" and "Bright stars" in e["answer"] for e in events)
+        assert events[-1]["type"] == "done"
+        assert events[-1]["processed"] == 2
+
+        caption1 = (img_dir / "photo1.txt").read_text(encoding="utf-8")
+        caption2 = (img_dir / "photo2.txt").read_text(encoding="utf-8")
+        assert "- Moon" in caption1
+        assert "Bright stars" in caption1
+        assert "- Moon" in caption2
