@@ -670,6 +670,23 @@ class TestSettingsAPI:
         resp = client.get("/api/settings")
         assert resp.json()["thumb_size"] == 224
 
+    def test_get_ollama_models(self, client, monkeypatch):
+        monkeypatch.setattr(server, "_list_ollama_models", lambda host, timeout=20: ["llava:latest", "qwen2.5vl"])
+        resp = client.get("/api/ollama/models", params={"server": "localhost", "port": 11435})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["host"] == "http://localhost:11435"
+        assert data["models"] == ["llava:latest", "qwen2.5vl"]
+
+    def test_get_ollama_models_error(self, client, monkeypatch):
+        def fail(host, timeout=20):
+            raise RuntimeError("connection refused")
+
+        monkeypatch.setattr(server, "_list_ollama_models", fail)
+        resp = client.get("/api/ollama/models")
+        assert resp.status_code == 502
+        assert "Ollama error" in resp.json()["detail"]
+
     def test_save_and_load_sections(self, client, tmp_path):
         folder = str(tmp_path / "test_folder")
         os.makedirs(folder, exist_ok=True)

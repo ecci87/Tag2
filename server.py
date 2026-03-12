@@ -10,6 +10,8 @@ import json
 import asyncio
 import subprocess
 import platform
+import urllib.error
+import urllib.request
 import warnings
 from pathlib import Path
 from io import BytesIO
@@ -146,6 +148,32 @@ DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE = (
     "Current caption text:\n{caption_text}\n\n"
     "Answer:"
 )
+
+
+def _list_ollama_models(host: str, timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> list[str]:
+    """Return the list of available Ollama model names from /api/tags."""
+    url = f"{host.rstrip('/')}/api/tags"
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(detail or str(exc)) from exc
+    except TimeoutError as exc:
+        raise RuntimeError(f"request timed out after {timeout} seconds") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(str(exc.reason or exc)) from exc
+
+    models: list[str] = []
+    seen: set[str] = set()
+    for item in payload.get("models", []) or []:
+        name = str((item or {}).get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        models.append(name)
+    return models
 
 
 def _load_config() -> dict:
@@ -1238,6 +1266,27 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
         result["sections"] = _get_folder_sections(cfg, folder)
         result["folder"] = os.path.normpath(folder)
     return result
+
+
+@app.get("/api/ollama/models")
+async def get_ollama_models(
+    server: Optional[str] = Query(default=None),
+    port: Optional[int] = Query(default=None),
+):
+    """List available model names from the configured Ollama instance."""
+    cfg = _load_config()
+    host = _compose_ollama_host(
+        server if server is not None else cfg.get("ollama_server"),
+        port if port is not None else cfg.get("ollama_port"),
+        DEFAULT_OLLAMA_SERVER,
+        DEFAULT_OLLAMA_PORT,
+    )
+    timeout = _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+    try:
+        models = _list_ollama_models(host, timeout)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"Ollama error: {exc}") from exc
+    return {"host": host, "models": models}
 
 
 @app.post("/api/settings")
