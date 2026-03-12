@@ -330,22 +330,49 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     display: none;
     top: 8px;
     left: 8px;
-    max-width: min(420px, calc(100% - 16px));
-    padding: 2px 0;
+    max-width: calc(100% - 16px);
+    max-height: calc(100% - 16px);
+    padding: 2px 6px 4px 0;
     background: transparent;
     pointer-events: auto;
     z-index: 3;
   }
   #preview-caption-overlay.visible { display: block; }
+  #preview-caption-overlay.collapsed #preview-caption-list { display: none; }
+  #preview-caption-overlay-header {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+  #preview-caption-toggle {
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border: 1px solid rgba(137,180,250,0.24);
+    border-radius: 6px;
+    background: rgba(0,0,0,0.36);
+    color: var(--fg);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  }
+  #preview-caption-toggle:hover {
+    border-color: rgba(137,180,250,0.42);
+    color: var(--accent);
+  }
   #preview-caption-list {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    max-height: min(40vh, 320px);
-    overflow: auto;
+    column-width: 220px;
+    column-gap: 18px;
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 48px);
+    overflow: hidden;
   }
   .preview-caption-link {
+    display: block;
+    width: 100%;
+    margin: 0 0 2px;
     padding: 0;
     border: none;
     background: transparent;
@@ -356,6 +383,7 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     cursor: pointer;
     text-shadow: 0 1px 3px rgba(0,0,0,0.9);
     transition: color 0.12s ease, opacity 0.12s ease;
+    break-inside: avoid;
   }
   .preview-caption-link:hover {
     color: var(--accent);
@@ -529,6 +557,38 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   background: rgba(166,227,161,0.10);
   color: var(--accent2);
 }
+.section-sentences li .filter-toggle-btn {
+  min-width: 20px;
+  height: 20px;
+  border: 1px solid rgba(137,180,250,0.2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.section-sentences li .filter-toggle-btn svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+  pointer-events: none;
+}
+.section-sentences li .filter-toggle-btn:hover {
+  border-color: rgba(137,180,250,0.4);
+  color: var(--accent);
+}
+.section-sentences li .filter-toggle-btn.active {
+  border-color: rgba(249,226,175,0.45);
+  background: rgba(249,226,175,0.10);
+  color: var(--accent-warn);
+}
 .section-sentences li .remove-btn:focus-visible {
   outline: 2px solid rgba(243,139,168,0.45);
   outline-offset: 1px;
@@ -681,6 +741,10 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   transition: color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
 }
 .group-header .group-refresh-btn {
+  flex-shrink: 0;
+}
+.section-header .section-refresh-btn,
+.section-sentences li .sentence-refresh-btn {
   flex-shrink: 0;
 }
 .group-header .group-remove-btn:hover {
@@ -948,7 +1012,10 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <div id="center-panel">
       <img id="preview-img" alt="Preview">
       <div id="preview-caption-overlay" aria-live="polite">
-        <div id="preview-caption-list"></div>
+          <div id="preview-caption-overlay-header">
+           <button id="preview-caption-toggle" type="button" aria-expanded="true" title="Collapse enabled captions">−</button>
+          </div>
+          <div id="preview-caption-list"></div>
       </div>
       <div id="crop-overlay">
         <div id="crop-guide-v" class="crop-guide"></div>
@@ -1090,9 +1157,13 @@ const state = {
   thumbnailDimensions: {}, // path -> {width, height}
   selectedPaths: new Set(),
   lastClickedIndex: -1,
+  lastClickedPath: null,
   sections: [],          // [{name: "", sentences: [...], groups: [{name: "Car", sentences: [...]}]}, ...]
   // Per-image caption cache: path -> {enabled_sentences: [...], free_text: ""}
   captionCache: {},
+  activeSentenceFilters: new Set(),
+  filterCaptionCacheKey: "",
+  filterLoadingPromise: null,
   previewPath: null,
   saving: false,
   autoCaptioning: false,
@@ -1116,6 +1187,7 @@ const state = {
   ollamaFreeTextPromptTemplate: "You are improving an image caption file. The caption text below already covers known details and must not be repeated. Look at the image and return only notable, important visual details that are still missing. Return either NONE or one short line per missing detail, with no bullets or numbering.\n\nCurrent caption text:\n{caption_text}\n\nAnswer:",
   modelLogLines: [],
   modelLogCollapsed: false,
+  previewCaptionOverlayCollapsed: false,
   hideAddButtons: false,
   thumbSize: 160,
 };
@@ -1145,6 +1217,7 @@ const rotateRightBtn = $("#rotate-right-btn");
 const previewPlaceholder = $("#preview-placeholder");
 const previewInfo = $("#preview-info");
 const previewCaptionOverlay = $("#preview-caption-overlay");
+const previewCaptionToggle = $("#preview-caption-toggle");
 const previewCaptionList = $("#preview-caption-list");
 const sectionContainer = $("#section-container");
 const sentencesSection = $("#sentences-section");
@@ -1241,6 +1314,25 @@ function createGenerateSparkleIcon() {
   sparkleB.setAttribute("d", "M8 14.75L8.45 16L9.7 16.45L8.45 16.9L8 18.15L7.55 16.9L6.3 16.45L7.55 16L8 14.75Z");
   sparkleB.setAttribute("fill", "#ffc4f0");
   svg.appendChild(sparkleB);
+
+  return svg;
+}
+
+function createFilterIcon() {
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+
+  const path = document.createElementNS(svgNs, "path");
+  path.setAttribute("d", "M4 6H20L14 13V18L10 20V13L4 6Z");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.8");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute("stroke-linecap", "round");
+  svg.appendChild(path);
 
   return svg;
 }
@@ -1474,8 +1566,37 @@ function isSentenceHiddenOnExport(sentence) {
   return !!group && (group.hidden_sentences || []).includes(sentence);
 }
 
+function getConfiguredSentenceOrder() {
+  const ordered = [];
+  for (const section of normalizeSectionsData(state.sections)) {
+    for (const entry of getOrderedSectionEntries(section)) {
+      if (entry.type === "sentence") {
+        ordered.push(entry.sentence);
+      } else if (entry.type === "group") {
+        ordered.push(...(entry.group?.sentences || []));
+      }
+    }
+  }
+  return ordered;
+}
+
+function orderEnabledSentences(enabledSentences) {
+  const unique = [...new Set((Array.isArray(enabledSentences) ? enabledSentences : []).filter(Boolean))];
+  if (unique.length <= 1) return unique;
+
+  const configuredOrder = getConfiguredSentenceOrder();
+  if (configuredOrder.length === 0) return unique;
+
+  const orderMap = new Map(configuredOrder.map((sentence, index) => [sentence, index]));
+  return [...unique].sort((a, b) => {
+    const indexA = orderMap.has(a) ? orderMap.get(a) : Number.MAX_SAFE_INTEGER;
+    const indexB = orderMap.has(b) ? orderMap.get(b) : Number.MAX_SAFE_INTEGER;
+    return indexA - indexB;
+  });
+}
+
 function getExportedEnabledSentences(enabledSentences) {
-  return (Array.isArray(enabledSentences) ? enabledSentences : []).filter(sentence => !isSentenceHiddenOnExport(sentence));
+  return orderEnabledSentences(enabledSentences).filter(sentence => !isSentenceHiddenOnExport(sentence));
 }
 
 function hasEffectiveCaptionContent(caption) {
@@ -1490,9 +1611,9 @@ function applySentenceSelectionToList(enabledSentences, sentence, shouldEnable) 
     next = next.filter(item => !groupSentences.includes(item));
   }
   if (shouldEnable) {
-    next.unshift(sentence);
+    next.push(sentence);
   }
-  return [...new Set(next)];
+  return orderEnabledSentences(next);
 }
 
 function ensureCaptionCache(path) {
@@ -1505,7 +1626,121 @@ function ensureCaptionCache(path) {
 function getPreviewEnabledSentences(path = state.previewPath) {
   if (!path) return [];
   const enabledSentences = state.captionCache[path]?.enabled_sentences;
-  return [...new Set((Array.isArray(enabledSentences) ? enabledSentences : []).filter(Boolean))];
+  return orderEnabledSentences(enabledSentences);
+}
+
+function getActiveSentenceFilters() {
+  return [...state.activeSentenceFilters].filter(Boolean);
+}
+
+function getActiveSentenceFilterKey() {
+  return JSON.stringify([...getActiveSentenceFilters()].sort());
+}
+
+function canApplyActiveSentenceFilters() {
+  const filters = getActiveSentenceFilters();
+  if (filters.length === 0) return false;
+  if (state.filterCaptionCacheKey !== getActiveSentenceFilterKey()) return false;
+  return state.images.every(img => !!state.captionCache[img.path]);
+}
+
+function getEnabledSentencesForPath(path) {
+  const enabledSentences = state.captionCache[path]?.enabled_sentences;
+  return orderEnabledSentences(enabledSentences);
+}
+
+function imageMatchesActiveFilters(image) {
+  const filters = getActiveSentenceFilters();
+  if (filters.length === 0 || !canApplyActiveSentenceFilters()) return true;
+  const enabled = new Set(getEnabledSentencesForPath(image?.path));
+  return filters.every(sentence => enabled.has(sentence));
+}
+
+function getVisibleImageEntries() {
+  return state.images
+    .map((img, index) => ({ img, index }))
+    .filter(({ img }) => imageMatchesActiveFilters(img));
+}
+
+function getVisibleImageIndexByPath(path) {
+  if (!path) return -1;
+  return getVisibleImageEntries().findIndex(entry => entry.img.path === path);
+}
+
+async function fetchCaptionsBulk(paths, sentences = getAllConfiguredSentences()) {
+  if (!Array.isArray(paths) || paths.length === 0) return {};
+  const resp = await fetch("/api/captions/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      paths,
+      sentences,
+    }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.detail || "Failed to load captions");
+  }
+  return data;
+}
+
+async function ensureCaptionCacheLoadedForFiltering() {
+  const filters = getActiveSentenceFilters();
+  if (filters.length === 0 || state.images.length === 0) return;
+
+  const filterKey = getActiveSentenceFilterKey();
+  const needsReload = state.filterCaptionCacheKey !== filterKey || state.images.some(img => !state.captionCache[img.path]);
+  if (!needsReload) return;
+  if (state.filterLoadingPromise) return state.filterLoadingPromise;
+
+  state.filterLoadingPromise = (async () => {
+    const data = await fetchCaptionsBulk(state.images.map(img => img.path));
+    for (const [path, caption] of Object.entries(data || {})) {
+      state.captionCache[path] = caption;
+    }
+    state.filterCaptionCacheKey = filterKey;
+  })().finally(() => {
+    state.filterLoadingPromise = null;
+  });
+
+  return state.filterLoadingPromise;
+}
+
+function refreshGridForActiveFilters() {
+  if (state.activeSentenceFilters.size > 0) {
+    renderGrid();
+  } else {
+    updateFileCountDisplay();
+  }
+}
+
+async function toggleSentenceFilter(sentence) {
+  const isActive = state.activeSentenceFilters.has(sentence);
+  if (isActive) {
+    state.activeSentenceFilters.delete(sentence);
+  } else {
+    state.activeSentenceFilters.add(sentence);
+  }
+
+  try {
+    if (state.activeSentenceFilters.size > 0) {
+      statusBar.textContent = `Applying ${state.activeSentenceFilters.size} filter${state.activeSentenceFilters.size === 1 ? "" : "s"}...`;
+      await ensureCaptionCacheLoadedForFiltering();
+      statusBar.textContent = `Filtered by ${state.activeSentenceFilters.size} caption${state.activeSentenceFilters.size === 1 ? "" : "s"}`;
+    } else {
+      statusBar.textContent = "Filter cleared";
+    }
+  } catch (err) {
+    if (isActive) {
+      state.activeSentenceFilters.add(sentence);
+    } else {
+      state.activeSentenceFilters.delete(sentence);
+    }
+    statusBar.textContent = `Filter error: ${err.message}`;
+  }
+
+  renderGrid();
+  renderSentences();
 }
 
 function setSectionCollapsed(section, collapsed) {
@@ -1568,6 +1803,11 @@ function jumpToSentenceInList(sentence) {
 function renderPreviewCaptionOverlay() {
   previewCaptionList.innerHTML = "";
   previewCaptionOverlay.classList.remove("visible");
+  previewCaptionOverlay.classList.toggle("collapsed", !!state.previewCaptionOverlayCollapsed);
+  previewCaptionToggle.textContent = state.previewCaptionOverlayCollapsed ? "+" : "−";
+  previewCaptionToggle.setAttribute("aria-expanded", state.previewCaptionOverlayCollapsed ? "false" : "true");
+  previewCaptionToggle.setAttribute("aria-label", state.previewCaptionOverlayCollapsed ? "Expand enabled captions" : "Collapse enabled captions");
+  previewCaptionToggle.title = state.previewCaptionOverlayCollapsed ? "Expand enabled captions" : "Collapse enabled captions";
 
   const sentences = getPreviewEnabledSentences();
   if (!state.previewPath || !imgNatW || !imgNatH || previewImg.style.display === "none" || sentences.length === 0) {
@@ -1575,24 +1815,31 @@ function renderPreviewCaptionOverlay() {
   }
 
   const panel = $("#center-panel");
-  const maxWidth = Math.max(180, Math.min(420, panel.clientWidth - 16));
+  const maxWidth = Math.max(220, panel.clientWidth - 16);
 
   previewCaptionOverlay.style.maxWidth = `${maxWidth}px`;
 
-  for (const sentence of sentences) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "preview-caption-link";
-    button.textContent = sentence;
-    button.setAttribute("aria-label", `Jump to caption: ${sentence}`);
-    button.addEventListener("click", (e) => {
-      e.stopPropagation();
-      jumpToSentenceInList(sentence);
-    });
-    previewCaptionList.appendChild(button);
+  if (!state.previewCaptionOverlayCollapsed) {
+    for (const sentence of sentences) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "preview-caption-link";
+      button.textContent = sentence;
+      button.setAttribute("aria-label", `Jump to caption: ${sentence}`);
+      button.addEventListener("click", (e) => {
+        e.stopPropagation();
+        jumpToSentenceInList(sentence);
+      });
+      previewCaptionList.appendChild(button);
+    }
   }
 
   previewCaptionOverlay.classList.add("visible");
+}
+
+function togglePreviewCaptionOverlayCollapsed() {
+  state.previewCaptionOverlayCollapsed = !state.previewCaptionOverlayCollapsed;
+  renderPreviewCaptionOverlay();
 }
 
 // ===== THUMBNAIL PRELOADING =====
@@ -1720,6 +1967,12 @@ function updateFileCountDisplay() {
     return;
   }
   const captioned = state.images.filter(img => img.has_caption).length;
+  const visible = getVisibleImageEntries().length;
+  const filterCount = state.activeSentenceFilters.size;
+  if (filterCount > 0 && canApplyActiveSentenceFilters()) {
+    fileCount.textContent = `${visible}/${total} images • ${captioned} captioned • ${filterCount} filter${filterCount === 1 ? "" : "s"}`;
+    return;
+  }
   fileCount.textContent = `${total} images • ${captioned} captioned`;
 }
 
@@ -2405,8 +2658,12 @@ async function loadFolder() {
   state.folder = folder;
   state.selectedPaths.clear();
   state.lastClickedIndex = -1;
+  state.lastClickedPath = null;
   state.previewPath = null;
   state.captionCache = {};
+  state.activeSentenceFilters.clear();
+  state.filterCaptionCacheKey = "";
+  state.filterLoadingPromise = null;
   state.imageCrops = {};
   state.imageVersions = {};
   state.thumbnailDimensions = {};
@@ -2465,9 +2722,11 @@ function renderGrid() {
   fileGrid.innerHTML = "";
   const size = state.thumbSize;
   const thumbLoadSize = getThumbLoadSize();
+  const visibleEntries = getVisibleImageEntries();
 
-  for (let i = 0; i < state.images.length; i++) {
-    const img = state.images[i];
+  updateFileCountDisplay();
+
+  for (const { img, index } of visibleEntries) {
     const cell = document.createElement("div");
     let cls = "thumb-cell";
     if (state.selectedPaths.has(img.path)) cls += " selected";
@@ -2476,7 +2735,7 @@ function renderGrid() {
     cell.className = cls;
     cell.style.width = size + "px";
     cell.style.height = size + "px";
-    cell.dataset.index = i;
+    cell.dataset.index = index;
     cell.dataset.path = img.path;
 
     const imgEl = document.createElement("img");
@@ -2512,7 +2771,7 @@ function renderGrid() {
     aspectWarning.title = "Image aspect ratio does not match the configured aspect ratio list";
     cell.appendChild(aspectWarning);
 
-    cell.addEventListener("click", (e) => handleThumbClick(i, e));
+    cell.addEventListener("click", (e) => handleThumbClick(index, e));
     cell.addEventListener("dblclick", (e) => {
       e.preventDefault();
       fetch(`/api/open-in-explorer?path=${encodeURIComponent(img.path)}`);
@@ -2544,6 +2803,10 @@ function updateGridSelection() {
 // ===== SELECTION HANDLING =====
 function handleThumbClick(index, event) {
   const img = state.images[index];
+  if (!img) return;
+  const visibleEntries = getVisibleImageEntries();
+  const currentVisibleIndex = visibleEntries.findIndex(entry => entry.img.path === img.path);
+  const lastVisibleIndex = visibleEntries.findIndex(entry => entry.img.path === state.lastClickedPath);
 
   if (event.ctrlKey || event.metaKey) {
     // Toggle individual selection
@@ -2553,19 +2816,23 @@ function handleThumbClick(index, event) {
       state.selectedPaths.add(img.path);
     }
     state.lastClickedIndex = index;
-  } else if (event.shiftKey && state.lastClickedIndex >= 0) {
+    state.lastClickedPath = img.path;
+  } else if (event.shiftKey && lastVisibleIndex >= 0 && currentVisibleIndex >= 0) {
     // Range select
-    const start = Math.min(state.lastClickedIndex, index);
-    const end = Math.max(state.lastClickedIndex, index);
+    const start = Math.min(lastVisibleIndex, currentVisibleIndex);
+    const end = Math.max(lastVisibleIndex, currentVisibleIndex);
     if (!event.ctrlKey) state.selectedPaths.clear();
     for (let i = start; i <= end; i++) {
-      state.selectedPaths.add(state.images[i].path);
+      state.selectedPaths.add(visibleEntries[i].img.path);
     }
+    state.lastClickedIndex = index;
+    state.lastClickedPath = img.path;
   } else {
     // Single select
     state.selectedPaths.clear();
     state.selectedPaths.add(img.path);
     state.lastClickedIndex = index;
+    state.lastClickedPath = img.path;
   }
 
   updateGridSelection();
@@ -2595,14 +2862,26 @@ function handleThumbClick(index, event) {
   updateActionButtons();
 
   // Preload adjacent images
-  preloadAdjacent(index);
+  preloadAdjacent(img.path);
 }
 
-function preloadAdjacent(index) {
+function preloadAdjacent(path) {
+  const visibleEntries = getVisibleImageEntries();
+  let index = visibleEntries.findIndex(entry => entry.img.path === path);
+  if (index < 0) {
+    index = state.images.findIndex(img => img.path === path);
+    for (let d = -3; d <= 3; d++) {
+      const i = index + d;
+      if (i >= 0 && i < state.images.length) {
+        preloadPreview(state.images[i].path);
+      }
+    }
+    return;
+  }
   for (let d = -3; d <= 3; d++) {
     const i = index + d;
-    if (i >= 0 && i < state.images.length) {
-      preloadPreview(state.images[i].path);
+    if (i >= 0 && i < visibleEntries.length) {
+      preloadPreview(visibleEntries[i].img.path);
     }
   }
 }
@@ -2860,6 +3139,9 @@ async function loadCaptionData(path) {
     if (resp.ok) {
       const data = await resp.json();
       state.captionCache[path] = data;
+      if (state.activeSentenceFilters.size > 0) {
+        state.filterCaptionCacheKey = getActiveSentenceFilterKey();
+      }
       // Update UI if still selected
       if (state.selectedPaths.size === 1 && state.selectedPaths.has(path)) {
         freeText.value = data.free_text || "";
@@ -2868,6 +3150,7 @@ async function loadCaptionData(path) {
       if (state.previewPath === path) {
         renderPreviewCaptionOverlay();
       }
+      refreshGridForActiveFilters();
     }
   } catch (err) {
     console.error("Failed to load caption:", err);
@@ -2876,20 +3159,19 @@ async function loadCaptionData(path) {
 
 async function loadMultiCaptionState() {
   const paths = [...state.selectedPaths];
-  const allSentences = getAllConfiguredSentences();
-  const sentencesJson = JSON.stringify(allSentences);
 
   // Batch load captions
   try {
-    const resp = await fetch(`/api/captions/bulk?paths=${encodeURIComponent(JSON.stringify(paths))}&sentences=${encodeURIComponent(sentencesJson)}`);
-    if (resp.ok) {
-      const data = await resp.json();
-      for (const [path, caption] of Object.entries(data)) {
-        state.captionCache[path] = caption;
-      }
-      renderSentences();
-      renderPreviewCaptionOverlay();
+    const data = await fetchCaptionsBulk(paths);
+    for (const [path, caption] of Object.entries(data)) {
+      state.captionCache[path] = caption;
     }
+    if (state.activeSentenceFilters.size > 0) {
+      state.filterCaptionCacheKey = getActiveSentenceFilterKey();
+    }
+    refreshGridForActiveFilters();
+    renderSentences();
+    renderPreviewCaptionOverlay();
   } catch (err) {
     console.error("Failed to load bulk captions:", err);
   }
@@ -3052,6 +3334,7 @@ function addSentenceToSection(secIdx, text, groupIdx = null) {
 }
 
 function removeSentence(sentence) {
+  state.activeSentenceFilters.delete(sentence);
   for (const sec of state.sections) {
     sec.sentences = sec.sentences.filter(s => s !== sentence);
     sec.item_order = (sec.item_order || []).filter(item => !(item?.type === "sentence" && item.sentence === sentence));
@@ -3061,6 +3344,7 @@ function removeSentence(sentence) {
     }
   }
   saveSectionsToStorage();
+  refreshGridForActiveFilters();
   renderSentences();
 }
 
@@ -3115,6 +3399,12 @@ async function renameSentence(oldSentence, newSentence) {
       if (!caption?.enabled_sentences) continue;
       caption.enabled_sentences = [...new Set(caption.enabled_sentences.map(sentence => sentence === oldSentence ? nextSentence : sentence))];
     }
+    if (state.activeSentenceFilters.has(oldSentence)) {
+      state.activeSentenceFilters.delete(oldSentence);
+      state.activeSentenceFilters.add(nextSentence);
+    }
+    state.filterCaptionCacheKey = getActiveSentenceFilterKey();
+    refreshGridForActiveFilters();
     if (state.selectedPaths.size === 1) {
       const path = [...state.selectedPaths][0];
       await loadCaptionData(path);
@@ -3263,6 +3553,8 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const groupIdx = normalizeGroupIndex(options.groupIdx);
   const sentenceIdx = Number.isInteger(options.sentenceIdx) ? options.sentenceIdx : -1;
   const topLevelMix = !!options.topLevelMix;
+  const canRefreshSentence = groupIdx === null;
+  const isFilterActive = state.activeSentenceFilters.has(sentence);
   const { isChecked, isPartial } = getSentenceSelectionState(sentence, selectedPaths);
   const li = document.createElement("li");
   li.dataset.sentence = sentence;
@@ -3322,6 +3614,36 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     removeSentence(sentence);
   });
 
+  let refreshBtn = null;
+  if (canRefreshSentence) {
+    refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    refreshBtn.className = "sentence-refresh-btn generate-btn generate-btn-icon";
+    refreshBtn.title = "Refresh this caption with auto captioning";
+    refreshBtn.disabled = state.autoCaptioning || state.selectedPaths.size === 0 || !state.ollamaModel.trim();
+    setGenerateButtonContent(refreshBtn, "Refresh this caption with auto captioning", { iconOnly: true });
+    refreshBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      refreshSentenceCaption(sentence);
+    });
+  }
+
+  const filterToggleBtn = document.createElement("button");
+  filterToggleBtn.type = "button";
+  filterToggleBtn.className = `filter-toggle-btn${isFilterActive ? " active" : ""}`;
+  filterToggleBtn.title = isFilterActive
+    ? "Remove this caption from the thumbnail filter"
+    : "Filter thumbnails to images that include this caption";
+  filterToggleBtn.setAttribute("aria-pressed", isFilterActive ? "true" : "false");
+  filterToggleBtn.setAttribute("aria-label", isFilterActive
+    ? "Remove this caption from the thumbnail filter"
+    : "Filter thumbnails to images that include this caption");
+  filterToggleBtn.appendChild(createFilterIcon());
+  filterToggleBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await toggleSentenceFilter(sentence);
+  });
+
   if (allowSuppressToggle) {
     const hiddenOnExport = isSentenceHiddenOnExport(sentence);
     const exportToggleBtn = document.createElement("button");
@@ -3339,12 +3661,16 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     li.appendChild(dragHandle);
     li.appendChild(checkBox);
     li.appendChild(textSpan);
+    if (refreshBtn) li.appendChild(refreshBtn);
+    li.appendChild(filterToggleBtn);
     li.appendChild(exportToggleBtn);
     li.appendChild(rmBtn);
   } else {
     li.appendChild(dragHandle);
     li.appendChild(checkBox);
     li.appendChild(textSpan);
+    if (refreshBtn) li.appendChild(refreshBtn);
+    li.appendChild(filterToggleBtn);
     li.appendChild(rmBtn);
   }
   li.addEventListener("dragover", (e) => {
@@ -3721,6 +4047,18 @@ function renderSentences() {
     });
     header.appendChild(nameSpan);
 
+    const sectionRefreshBtn = document.createElement("button");
+    sectionRefreshBtn.type = "button";
+    sectionRefreshBtn.className = "section-refresh-btn generate-btn generate-btn-icon";
+    sectionRefreshBtn.title = "Refresh this section with auto captioning";
+    sectionRefreshBtn.disabled = state.autoCaptioning || state.selectedPaths.size === 0 || !state.ollamaModel.trim();
+    setGenerateButtonContent(sectionRefreshBtn, "Refresh this section with auto captioning", { iconOnly: true });
+    sectionRefreshBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      refreshSectionCaptions(secIdx);
+    });
+    header.appendChild(sectionRefreshBtn);
+
     const removeBtn = document.createElement("button");
     removeBtn.className = "section-remove-btn";
     removeBtn.textContent = "\u00D7";
@@ -3817,7 +4155,95 @@ function renderSentences() {
   renderPreviewCaptionOverlay();
 }
 
-async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex = null, targetGroupIndex = null, enableFreeText = null } = {}) {
+function getAutoCaptionScope({ freeTextOnly = false, targetSectionIndex = null, targetGroupIndex = null, targetSentence = null } = {}) {
+  if (freeTextOnly) return "free-text-only";
+  if (targetSentence && String(targetSentence).trim()) return "sentence";
+  if (targetSectionIndex !== null && targetGroupIndex !== null) return "group";
+  if (targetSectionIndex !== null) return "section";
+  return "full";
+}
+
+function getAutoCaptionScopeLabel(scope) {
+  switch (scope) {
+    case "free-text-only": return "Add Now";
+    case "sentence": return "Caption refresh";
+    case "group": return "Group refresh";
+    case "section": return "Section refresh";
+    default: return "Auto Caption";
+  }
+}
+
+function getAutoCaptionScopeLogLabel(scope) {
+  return scope === "free-text-only" ? "Free-text enhancement" : getAutoCaptionScopeLabel(scope);
+}
+
+function getAutoCaptionStatusIntro(scope, count) {
+  const suffix = `for ${count} image${count === 1 ? "" : "s"}...`;
+  switch (scope) {
+    case "free-text-only": return `Adding free text ${suffix}`;
+    case "sentence": return `Refreshing caption ${suffix}`;
+    case "group": return `Refreshing group ${suffix}`;
+    case "section": return `Refreshing section ${suffix}`;
+    default: return `Auto captioning ${suffix}`;
+  }
+}
+
+function getAutoCaptionStartLog(scope, event) {
+  const count = event.count;
+  const target = `${count} image(s) using ${event.model} @ ${event.host}`;
+  switch (scope) {
+    case "free-text-only": return `Starting free-text enhancement for ${target}`;
+    case "sentence": return `Starting caption refresh for ${target}`;
+    case "group": return `Starting group refresh for ${target}`;
+    case "section": return `Starting section refresh for ${target}`;
+    default: return `Starting auto caption for ${target}`;
+  }
+}
+
+function getAutoCaptionImageStartLog(scope, event, targetSentence) {
+  const fileLabel = getFileLabel(event.path);
+  if (scope === "free-text-only") {
+    return `[${fileLabel}] Generating free-text details...`;
+  }
+  if (scope === "sentence") {
+    return `[${fileLabel}] Refreshing caption ${targetSentence || ""}...`;
+  }
+  if (event.target_scope?.type === "group") {
+    return `[${fileLabel}] Refreshing group ${event.target_scope.group_name || "(Group)"}...`;
+  }
+  if (event.target_scope?.type === "section") {
+    return `[${fileLabel}] Refreshing section ${event.target_scope.section_name || "(General)"}...`;
+  }
+  return `[${fileLabel}] Checking ${event.total_targets || event.total_sentences} caption target(s)...`;
+}
+
+function getAutoCaptionCompleteLog(scope, event) {
+  const fileLabel = getFileLabel(event.path);
+  switch (scope) {
+    case "free-text-only":
+      return `[${fileLabel}] Free-text enhancement complete`;
+    case "sentence":
+      return `[${fileLabel}] Caption refresh complete`;
+    case "group":
+      return `[${fileLabel}] Group refresh complete`;
+    case "section":
+      return `[${fileLabel}] Section refresh complete`;
+    default:
+      return `[${fileLabel}] Completed with ${(event.enabled_sentences || []).length} matched captions`;
+  }
+}
+
+function getAutoCaptionProgressText(scope, processed, total, errors = 0, finished = false) {
+  const label = getAutoCaptionScopeLabel(scope);
+  const base = finished
+    ? `${label} finished: ${processed}/${total} processed`
+    : `${label}: ${processed}/${total} done`;
+  if (!errors) return base;
+  if (finished) return `${base}, ${errors} errors`;
+  return `${base}, ${errors} error${errors === 1 ? "" : "s"}`;
+}
+
+async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex = null, targetGroupIndex = null, targetSentence = null, enableFreeText = null } = {}) {
   if (state.autoCaptioning) {
     stopAutoCaption();
     return;
@@ -3834,18 +4260,14 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
     statusBar.textContent = "No captions configured for this folder";
     return;
   }
-  const isGroupOnly = targetSectionIndex !== null && targetGroupIndex !== null;
+  const scope = getAutoCaptionScope({ freeTextOnly, targetSectionIndex, targetGroupIndex, targetSentence });
 
   state.autoCaptioning = true;
-  state.autoCaptionMode = freeTextOnly ? "free-text-only" : (isGroupOnly ? "group" : "full");
+  state.autoCaptionMode = scope;
   state.autoCaptionAbortController = new AbortController();
   updateActionButtons();
   clearModelLog();
-  statusBar.textContent = freeTextOnly
-    ? `Adding free text for ${paths.length} image${paths.length === 1 ? "" : "s"}...`
-    : (isGroupOnly
-      ? `Refreshing group for ${paths.length} image${paths.length === 1 ? "" : "s"}...`
-      : `Auto captioning ${paths.length} image${paths.length === 1 ? "" : "s"}...`);
+  statusBar.textContent = getAutoCaptionStatusIntro(scope, paths.length);
 
   try {
     const resp = await fetch("/api/auto-caption/stream", {
@@ -3861,6 +4283,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         free_text_only: freeTextOnly,
         target_section_index: targetSectionIndex,
         target_group_index: targetGroupIndex,
+        target_sentence: targetSentence,
         free_text_prompt_template: state.ollamaFreeTextPromptTemplate,
         timeout_seconds: state.ollamaTimeoutSeconds,
       }),
@@ -3874,38 +4297,26 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
     let errors = 0;
     await readNdjsonStream(resp, (event) => {
       if (event.type === "start") {
-        appendModelLog(
-          event.free_text_only
-            ? `Starting free-text enhancement for ${event.count} image(s) using ${event.model} @ ${event.host}`
-            : (isGroupOnly
-              ? `Starting group refresh for ${event.count} image(s) using ${event.model} @ ${event.host}`
-              : `Starting auto caption for ${event.count} image(s) using ${event.model} @ ${event.host}`),
-          "log-dim"
-        );
+        appendModelLog(getAutoCaptionStartLog(scope, event), "log-dim");
         if (event.enable_free_text || event.free_text_only) {
           appendModelLog("Free-text enhancement is enabled", "log-dim");
         }
       } else if (event.type === "image-start") {
         const cache = ensureCaptionCache(event.path);
-        if (!event.free_text_only && !event.target_group) {
+        if (!event.free_text_only && (!event.target_scope || event.target_scope.type === "full")) {
           cache.enabled_sentences = [];
         }
         cache.free_text = event.free_text || cache.free_text || "";
         markCaptionIndicator(event.path, !!(cache.free_text && cache.free_text.trim()));
+        refreshGridForActiveFilters();
         renderSentences();
-        appendModelLog(
-          event.free_text_only
-            ? `[${getFileLabel(event.path)}] Generating free-text details...`
-            : (event.target_group
-              ? `[${getFileLabel(event.path)}] Refreshing group ${event.target_group.group_name || "(Group)"}...`
-              : `[${getFileLabel(event.path)}] Checking ${event.total_targets || event.total_sentences} caption target(s)...`),
-          "log-dim"
-        );
+        appendModelLog(getAutoCaptionImageStartLog(scope, event, targetSentence), "log-dim");
       } else if (event.type === "caption-check") {
         const verdict = event.enabled ? "YES" : "NO";
         appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.sentence} -> ${verdict} | ${event.answer || verdict}`, event.enabled ? "log-ok" : "log-dim");
         const cache = ensureCaptionCache(event.path);
         cache.enabled_sentences = applySentenceSelectionToList(cache.enabled_sentences, event.sentence, !!event.enabled);
+        refreshGridForActiveFilters();
         if (state.selectedPaths.has(event.path)) {
           renderSentences();
         }
@@ -3924,6 +4335,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         if (event.selected_sentence) {
           cache.enabled_sentences = applySentenceSelectionToList(cache.enabled_sentences, event.selected_sentence, true);
         }
+        refreshGridForActiveFilters();
         if (state.selectedPaths.has(event.path)) {
           renderSentences();
         }
@@ -3947,42 +4359,24 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           enabled_sentences: event.enabled_sentences || [],
           free_text: event.free_text || "",
         };
+        refreshGridForActiveFilters();
         const hasContent = hasEffectiveCaptionContent(event);
         markCaptionIndicator(event.path, !!hasContent);
-        appendModelLog(
-          event.free_text_only
-            ? `[${getFileLabel(event.path)}] Free-text enhancement complete`
-            : (isGroupOnly
-              ? `[${getFileLabel(event.path)}] Group refresh complete`
-              : `[${getFileLabel(event.path)}] Completed with ${(event.enabled_sentences || []).length} matched captions`),
-          "log-ok"
-        );
+        appendModelLog(getAutoCaptionCompleteLog(scope, event), "log-ok");
         if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
           freeText.value = event.free_text || "";
         }
         renderSentences();
-        statusBar.textContent = freeTextOnly
-          ? `Add Now: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`
-          : (isGroupOnly
-            ? `Group refresh: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`
-            : `Auto Caption: ${processed}/${paths.length} done${errors ? `, ${errors} error${errors === 1 ? "" : "s"}` : ""}`);
+        statusBar.textContent = getAutoCaptionProgressText(scope, processed, paths.length, errors, false);
       } else if (event.type === "error") {
         errors++;
         appendModelLog(`[${getFileLabel(event.path)}] ${event.message}`, "log-err");
-        statusBar.textContent = freeTextOnly
-          ? `Add Now: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`
-          : (isGroupOnly
-            ? `Group refresh: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`
-            : `Auto Caption: ${processed}/${paths.length} done, ${errors} error${errors === 1 ? "" : "s"}`);
+        statusBar.textContent = getAutoCaptionProgressText(scope, processed, paths.length, errors, false);
       } else if (event.type === "done") {
         processed = event.processed ?? processed;
         errors = event.errors ?? errors;
         appendModelLog(`Finished: ${processed}/${event.count} processed, ${errors} error${errors === 1 ? "" : "s"}`, errors ? "log-warn" : "log-ok");
-        statusBar.textContent = freeTextOnly
-          ? `Add Now finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`
-          : (isGroupOnly
-            ? `Group refresh finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`
-            : `Auto Caption finished: ${processed}/${event.count} processed${errors ? `, ${errors} errors` : ""}`);
+        statusBar.textContent = getAutoCaptionProgressText(scope, processed, event.count, errors, true);
       }
     });
 
@@ -3991,11 +4385,13 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
     }
   } catch (err) {
     if (err.name === "AbortError") {
-      statusBar.textContent = freeTextOnly ? "Add Now stopped" : (isGroupOnly ? "Group refresh stopped" : "Auto Caption stopped");
-      appendModelLog(freeTextOnly ? "Free-text enhancement stopped by user" : (isGroupOnly ? "Group refresh stopped by user" : "Auto Caption stopped by user"), "log-warn");
+      statusBar.textContent = `${getAutoCaptionScopeLabel(scope)} stopped`;
+      appendModelLog(`${getAutoCaptionScopeLogLabel(scope)} stopped by user`, "log-warn");
     } else {
-      statusBar.textContent = `${freeTextOnly ? "Add Now" : (isGroupOnly ? "Group refresh" : "Auto Caption")} failed: ${err.message}`;
-      appendModelLog(`${freeTextOnly ? "Free-text enhancement" : (isGroupOnly ? "Group refresh" : "Auto Caption")} failed: ${err.message}`, "log-err");
+      const scopeLabel = getAutoCaptionScopeLabel(scope);
+      const logLabel = getAutoCaptionScopeLogLabel(scope);
+      statusBar.textContent = `${scopeLabel} failed: ${err.message}`;
+      appendModelLog(`${logLabel} failed: ${err.message}`, "log-err");
     }
   } finally {
     state.autoCaptioning = false;
@@ -4017,6 +4413,20 @@ async function refreshGroupCaptions(sectionIndex, groupIndex) {
   return runAutoCaptionStream({
     targetSectionIndex: sectionIndex,
     targetGroupIndex: groupIndex,
+    enableFreeText: false,
+  });
+}
+
+async function refreshSectionCaptions(sectionIndex) {
+  return runAutoCaptionStream({
+    targetSectionIndex: sectionIndex,
+    enableFreeText: false,
+  });
+}
+
+async function refreshSentenceCaption(sentence) {
+  return runAutoCaptionStream({
+    targetSentence: sentence,
     enableFreeText: false,
   });
 }
@@ -4050,6 +4460,7 @@ async function toggleSentence(sentence, wasChecked, wasPartial) {
         const cap = ensureCaptionCache(path);
         cap.enabled_sentences = applySentenceSelectionToList(cap.enabled_sentences, sentence, shouldEnable);
       }
+      refreshGridForActiveFilters();
       renderSentences();
       renderPreviewCaptionOverlay();
       // Update caption indicators on thumbnails
@@ -4215,6 +4626,10 @@ settingsCloseBtn.addEventListener("click", closeSettingsModal);
 settingsCancelBtn.addEventListener("click", closeSettingsModal);
 settingsSaveBtn.addEventListener("click", saveOllamaSettingsFromForm);
 modelLogToggleBtn.addEventListener("click", toggleModelLogCollapsed);
+previewCaptionToggle.addEventListener("click", (e) => {
+  e.stopPropagation();
+  togglePreviewCaptionOverlayCollapsed();
+});
 modelLogClearBtn.addEventListener("click", clearModelLog);
 settingsForm.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -4241,7 +4656,7 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "a" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA" && !document.activeElement?.isContentEditable) {
     e.preventDefault();
     state.selectedPaths.clear();
-    state.images.forEach(img => state.selectedPaths.add(img.path));
+    getVisibleImageEntries().forEach(({ img }) => state.selectedPaths.add(img.path));
     updateGridSelection();
     updateMultiInfo();
     loadMultiCaptionState();
@@ -4253,13 +4668,23 @@ document.addEventListener("keydown", (e) => {
     if (activeEl === freeText || activeEl === folderInput || activeEl?.tagName === "INPUT" || activeEl?.tagName === "TEXTAREA" || activeEl?.isContentEditable) return;
     e.preventDefault();
     const dir = (e.key === "ArrowRight" || e.key === "ArrowDown") ? 1 : -1;
-    let newIdx = state.lastClickedIndex + dir;
+    const visibleEntries = getVisibleImageEntries();
+    if (visibleEntries.length === 0) return;
+    let currentIdx = getVisibleImageIndexByPath(state.lastClickedPath);
+    if (currentIdx < 0) {
+      currentIdx = getVisibleImageIndexByPath(state.previewPath);
+    }
+    let newIdx = currentIdx + dir;
+    if (currentIdx < 0) {
+      newIdx = dir > 0 ? 0 : visibleEntries.length - 1;
+    }
     if (newIdx < 0) newIdx = 0;
-    if (newIdx >= state.images.length) newIdx = state.images.length - 1;
-    if (newIdx >= 0 && newIdx < state.images.length) {
-      handleThumbClick(newIdx, e);
+    if (newIdx >= visibleEntries.length) newIdx = visibleEntries.length - 1;
+    if (newIdx >= 0 && newIdx < visibleEntries.length) {
+      const nextEntry = visibleEntries[newIdx];
+      handleThumbClick(nextEntry.index, e);
       // Scroll into view
-      const cell = fileGrid.querySelector(`[data-index="${newIdx}"]`);
+      const cell = fileGrid.querySelector(`[data-path="${CSS.escape(nextEntry.img.path)}"]`);
       if (cell) cell.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
   }

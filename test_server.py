@@ -505,6 +505,16 @@ class TestBulkCaptions:
         })
         assert resp.status_code == 400
 
+    def test_bulk_post(self, client, img_dir):
+        paths = [str(img_dir / "photo1.jpg"), str(img_dir / "photo2.png")]
+        resp = client.post("/api/captions/bulk", json={
+            "paths": paths,
+            "sentences": ["a"],
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+
 
 class TestSettingsAPI:
     def test_get_default_settings(self, client):
@@ -954,6 +964,48 @@ class TestAutoCaptionAPI:
         assert "Blue Car" in caption
         assert "Red Car" not in caption
         assert "Existing notes" in caption
+
+    def test_auto_caption_target_sentence_preserves_other_captions(self, client, single_image, monkeypatch):
+        folder = str(os.path.dirname(single_image))
+        client.post("/api/settings", json={
+            "folder": folder,
+            "sections": [{
+                "name": "",
+                "sentences": ["Moon", "Night"],
+                "groups": [{"name": "Car", "sentences": ["Red Car", "Blue Car"]}],
+            }],
+            "ollama_enable_free_text": True,
+        })
+        client.post("/api/caption/save", json={
+            "image_path": single_image,
+            "enabled_sentences": ["Night", "Red Car"],
+            "free_text": "Keep this",
+        })
+
+        def fake_generate(host, payload, timeout=120):
+            assert "Caption:" in payload["prompt"] or "Answer:" in payload["prompt"]
+            return {"response": "YES"}
+
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption", json={
+            "image_path": single_image,
+            "model": "llava",
+            "target_sentence": "Moon",
+            "enable_free_text": False,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled_sentences"] == ["Moon", "Night", "Red Car"]
+        assert data["results"][0]["type"] == "sentence"
+        assert data["results"][0]["sentence"] == "Moon"
+        assert data["free_text"].strip() == "Keep this"
+
+        caption = (Path(single_image).with_suffix(".txt")).read_text(encoding="utf-8")
+        assert "Moon" in caption
+        assert "Night" in caption
+        assert "Red Car" in caption
+        assert "Keep this" in caption
 
     def test_auto_caption_hidden_group_option_not_written(self, client, single_image, monkeypatch):
         folder = str(os.path.dirname(single_image))

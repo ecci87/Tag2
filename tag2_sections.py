@@ -235,6 +235,18 @@ def _iter_caption_targets(sections: list[dict]):
             }
 
 
+def _ordered_sentences_from_sections(sections: list[dict]) -> list[str]:
+    """Flatten all configured sentences in their display order."""
+    ordered: list[str] = []
+    for section in sections:
+        for item in _iter_section_items(section):
+            if item["type"] == "sentence":
+                ordered.append(item["sentence"])
+                continue
+            ordered.extend(item["group"].get("sentences", []) or [])
+    return ordered
+
+
 def _iter_caption_targets_with_indices(sections: list[dict]):
     """Yield caption targets in display order together with stable indices."""
     for section_index, section in enumerate(sections):
@@ -315,7 +327,8 @@ def _apply_sentence_selection(
             group_sentences = set(group.get("sentences", []))
             updated = [item for item in updated if item not in group_sentences]
         updated.append(sentence)
-    return updated
+    order_map = {value: index for index, value in enumerate(_ordered_sentences_from_sections(sections))}
+    return sorted(updated, key=lambda value: order_map.get(value, len(order_map)))
 
 
 def _normalize_enabled_sentences(enabled_sentences: list[str], sections: list[dict]) -> list[str]:

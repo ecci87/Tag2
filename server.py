@@ -544,8 +544,60 @@ class AutoCaptionRequest(BaseModel):
     free_text_only: Optional[bool] = None
     target_section_index: Optional[int] = None
     target_group_index: Optional[int] = None
+    target_sentence: Optional[str] = None
     free_text_prompt_template: Optional[str] = None
     timeout_seconds: Optional[int] = None
+
+
+def _resolve_caption_targets(
+    sections: list[dict],
+    target_section_index: int | None = None,
+    target_group_index: int | None = None,
+    target_sentence: str | None = None,
+) -> tuple[list[dict] | None, dict | None]:
+    """Resolve full or scoped caption targets for auto captioning."""
+    sentence = str(target_sentence or "").strip()
+    if sentence:
+        for target in _iter_caption_targets_with_indices(sections):
+            if target.get("type") == "sentence" and target.get("sentence") == sentence:
+                return [target], {
+                    "type": "sentence",
+                    "sentence": sentence,
+                    "section_index": target.get("section_index"),
+                    "group_index": target.get("group_index"),
+                    "section_name": target.get("section_name", ""),
+                }
+        return None, None
+
+    if target_group_index is not None:
+        target_group = _get_group_target(sections, target_section_index, target_group_index)
+        if not target_group:
+            return None, None
+        return [target_group], {
+            "type": "group",
+            "section_index": target_group.get("section_index"),
+            "group_index": target_group.get("group_index"),
+            "section_name": target_group.get("section_name", ""),
+            "group_name": target_group.get("group_name", ""),
+        }
+
+    if target_section_index is not None:
+        if target_section_index < 0 or target_section_index >= len(sections):
+            return None, None
+        scoped_targets = [
+            target
+            for target in _iter_caption_targets_with_indices(sections)
+            if target.get("section_index") == target_section_index
+        ]
+        if not scoped_targets:
+            return None, None
+        return scoped_targets, {
+            "type": "section",
+            "section_index": target_section_index,
+            "section_name": sections[target_section_index].get("name", ""),
+        }
+
+    return list(_iter_caption_targets_with_indices(sections)), {"type": "full"}
 
 
 @app.post("/api/caption/save")
@@ -587,10 +639,20 @@ async def auto_caption(data: AutoCaptionRequest):
     all_sentences = _all_sentences_from_sections(sections)
     if not all_sentences and not free_text_only:
         raise HTTPException(status_code=400, detail="No captions configured for this folder")
-    target_group = _get_group_target(sections, data.target_section_index, data.target_group_index)
-    if data.target_section_index is not None or data.target_group_index is not None:
-        if not target_group:
+    targets, target_scope = _resolve_caption_targets(
+        sections,
+        data.target_section_index,
+        data.target_group_index,
+        data.target_sentence,
+    )
+    if not free_text_only and targets is None:
+        if data.target_sentence:
+            raise HTTPException(status_code=400, detail="Invalid target sentence")
+        if data.target_group_index is not None:
             raise HTTPException(status_code=400, detail="Invalid target group")
+        if data.target_section_index is not None:
+            raise HTTPException(status_code=400, detail="Invalid target section")
+        raise HTTPException(status_code=400, detail="Invalid target")
 
     headers = _all_headers_from_sections(sections)
     existing = _read_caption_file(image_path, all_sentences, headers)
@@ -601,33 +663,7 @@ async def auto_caption(data: AutoCaptionRequest):
     loop = asyncio.get_event_loop()
     if not free_text_only:
         try:
-            if target_group:
-                payload = {
-                    "model": model,
-                    "prompt": _ollama_prompt_for_group(target_group.get("group_name", ""), target_group["sentences"], group_prompt_template),
-                    "images": [await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)],
-                    "stream": False,
-                    "options": {"temperature": 0},
-                }
-                response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
-                raw_answer = str(response.get("response") or "").strip()
-                selection_index = _parse_ollama_selection(raw_answer, target_group["sentences"])
-                selected_sentence = target_group["sentences"][selection_index - 1] if selection_index else None
-                enabled = [sentence for sentence in enabled if sentence not in target_group["sentences"]]
-                if selected_sentence:
-                    enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
-                enabled = _normalize_enabled_sentences(enabled, sections)
-                results = [{
-                    "type": "group",
-                    "section_index": target_group["section_index"],
-                    "group_index": target_group["group_index"],
-                    "group_name": target_group.get("group_name", ""),
-                    "sentences": target_group["sentences"],
-                    "selected_sentence": selected_sentence,
-                    "selection_index": selection_index,
-                    "answer": raw_answer,
-                }]
-            else:
+            if target_scope and target_scope.get("type") == "full":
                 enabled, results = await loop.run_in_executor(
                     executor,
                     _auto_caption_sections,
@@ -639,12 +675,70 @@ async def auto_caption(data: AutoCaptionRequest):
                     group_prompt_template,
                     timeout_seconds,
                 )
+            else:
+                image_b64 = await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)
+                for target in targets or []:
+                    if target["type"] == "sentence":
+                        sentence = target["sentence"]
+                        payload = {
+                            "model": model,
+                            "prompt": _ollama_prompt_for_sentence(sentence, prompt_template),
+                            "images": [image_b64],
+                            "stream": False,
+                            "options": {"temperature": 0},
+                        }
+                        response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
+                        raw_answer = str(response.get("response") or "").strip()
+                        is_match = _parse_ollama_yes_no(raw_answer)
+                        enabled = _apply_sentence_selection(enabled, sentence, sections, is_match)
+                        results.append({
+                            "type": "sentence",
+                            "section_index": target.get("section_index"),
+                            "group_index": target.get("group_index"),
+                            "section_name": target.get("section_name", ""),
+                            "sentence": sentence,
+                            "enabled": is_match,
+                            "answer": raw_answer,
+                        })
+                        continue
+
+                    group_sentences = target["sentences"]
+                    payload = {
+                        "model": model,
+                        "prompt": _ollama_prompt_for_group(target.get("group_name", ""), group_sentences, group_prompt_template),
+                        "images": [image_b64],
+                        "stream": False,
+                        "options": {"temperature": 0},
+                    }
+                    response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
+                    raw_answer = str(response.get("response") or "").strip()
+                    selection_index = _parse_ollama_selection(raw_answer, group_sentences)
+                    selected_sentence = group_sentences[selection_index - 1] if selection_index else None
+                    selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
+                    enabled = [sentence for sentence in enabled if sentence not in group_sentences]
+                    if selected_sentence:
+                        enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
+                    results.append({
+                        "type": "group",
+                        "section_index": target.get("section_index"),
+                        "group_index": target.get("group_index"),
+                        "section_name": target.get("section_name", ""),
+                        "group_name": target.get("group_name", ""),
+                        "sentences": group_sentences,
+                        "selected_sentence": selected_sentence,
+                        "selected_hidden": selected_hidden,
+                        "selection_index": selection_index,
+                        "answer": raw_answer,
+                    })
+
+                enabled = _normalize_enabled_sentences(enabled, sections)
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Auto caption failed: {e}") from e
 
-    free_text = existing_free_text if target_group else ""
+    is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "sentence"})
+    free_text = existing_free_text if is_scoped else ""
     free_text_model_output = ""
     added_free_text_lines: list[str] = []
     if enable_free_text:
@@ -739,38 +833,45 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 yield _event_bytes({"type": "error", "path": image_path, "message": "No captions configured for this folder"})
                 continue
 
-            target_group = _get_group_target(sections, data.target_section_index, data.target_group_index)
-            if data.target_section_index is not None or data.target_group_index is not None:
-                if not target_group:
-                    total_errors += 1
-                    yield _event_bytes({"type": "error", "path": image_path, "message": "Invalid target group"})
-                    continue
+            targets, target_scope = _resolve_caption_targets(
+                sections,
+                data.target_section_index,
+                data.target_group_index,
+                data.target_sentence,
+            )
+            if not free_text_only and targets is None:
+                total_errors += 1
+                message = "Invalid target"
+                if data.target_sentence:
+                    message = "Invalid target sentence"
+                elif data.target_group_index is not None:
+                    message = "Invalid target group"
+                elif data.target_section_index is not None:
+                    message = "Invalid target section"
+                yield _event_bytes({"type": "error", "path": image_path, "message": message})
+                continue
 
             headers = _all_headers_from_sections(sections)
             existing = _read_caption_file(image_path, all_sentences, headers)
-            free_text = existing.get("free_text", "") if target_group else ""
+            is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "sentence"})
+            free_text = existing.get("free_text", "") if is_scoped else ""
             enabled = list(existing.get("enabled_sentences", []))
             results = []
             image_b64 = await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)
 
-            total_targets = 0 if free_text_only else (1 if target_group else sum(1 for _ in _iter_caption_targets_with_indices(sections)))
+            total_targets = 0 if free_text_only else len(targets or [])
             yield _event_bytes({
                 "type": "image-start",
                 "path": image_path,
                 "total_sentences": len(all_sentences),
                 "total_targets": total_targets,
                 "free_text_only": free_text_only,
-                "target_group": {
-                    "section_index": target_group["section_index"],
-                    "group_index": target_group["group_index"],
-                    "group_name": target_group.get("group_name", ""),
-                } if target_group else None,
+                "target_scope": target_scope,
                 "free_text": free_text,
             })
 
             try:
                 if not free_text_only:
-                    targets = [target_group] if target_group else list(_iter_caption_targets_with_indices(sections))
                     for index, target in enumerate(targets, start=1):
                         if await request.is_disconnected():
                             return
@@ -909,6 +1010,12 @@ async def get_captions_bulk(paths: str = Query(...), sentences: str = Query(defa
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    return _get_bulk_caption_results(image_paths, predefined)
+
+
+def _get_bulk_caption_results(image_paths: list[str], predefined: list[str]) -> dict:
+    """Load caption data for multiple images."""
+
     # Load section headers (assume all images in same folder)
     cfg = _load_config()
     if image_paths:
@@ -926,6 +1033,17 @@ async def get_captions_bulk(paths: str = Query(...), sentences: str = Query(defa
             results[img_path] = {"enabled_sentences": [], "free_text": ""}
 
     return results
+
+
+class BulkCaptionsRequest(BaseModel):
+    paths: list[str]
+    sentences: list[str] = []
+
+
+@app.post("/api/captions/bulk")
+async def post_captions_bulk(payload: BulkCaptionsRequest):
+    """Get caption status for multiple images at once from a JSON body."""
+    return _get_bulk_caption_results(payload.paths or [], payload.sentences or [])
 
 
 # ===== SETTINGS API =====
