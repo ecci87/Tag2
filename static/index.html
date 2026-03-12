@@ -133,20 +133,44 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 }
 .generate-btn.running {
   background:
-    linear-gradient(rgba(70, 15, 30, 0.92), rgba(70, 15, 30, 0.92)) padding-box,
-    linear-gradient(90deg, #ff7eb6, #ff4f8b, #ff9dc1) border-box;
+    linear-gradient(rgba(18, 54, 34, 0.94), rgba(18, 54, 34, 0.94)) padding-box,
+    linear-gradient(90deg, #8be28f, #4fcb73, #b8f28c) border-box;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.04), 0 12px 26px rgba(0,0,0,0.28), 0 0 30px rgba(120, 226, 135, 0.18), inset 0 0 18px rgba(255,255,255,0.04);
 }
 .generate-btn.running .btn-label {
-  background: linear-gradient(90deg, #ffd7e7, #ff7eb6);
+  background: linear-gradient(90deg, #e4ffe5, #8be28f, #d9ffb8);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 .generate-btn.running .btn-icon {
-  filter: saturate(0.7) brightness(1.1);
+  filter: drop-shadow(0 0 8px rgba(139, 226, 143, 0.55));
+}
+.generate-btn.running .btn-icon svg {
+  animation: auto-caption-icon-spin 1.15s linear infinite, auto-caption-icon-pulse 1.6s ease-in-out infinite;
+  transform-origin: 50% 50%;
+}
+@keyframes auto-caption-icon-spin {
+  from { transform: rotate(0deg) scale(1); }
+  to { transform: rotate(360deg) scale(1); }
+}
+@keyframes auto-caption-icon-pulse {
+  0%, 100% { filter: drop-shadow(0 0 0 rgba(139, 226, 143, 0.0)); }
+  50% { filter: drop-shadow(0 0 7px rgba(139, 226, 143, 0.45)); }
 }
 #load-btn:disabled, .generate-btn:disabled, #add-section-bar button:disabled, .section-add-row button:disabled {
   opacity: 0.55; cursor: not-allowed; filter: none;
+}
+#thumb-size-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+#thumb-size-label {
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
 }
 #thumb-size-slider { width: 120px; accent-color: var(--accent); }
 #status-bar { font-size: 11px; color: var(--fg-dim); margin-left: auto; white-space: nowrap; }
@@ -323,9 +347,8 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 #crop-remove-btn:hover { filter: brightness(1.08); }
 #rotate-controls {
   position: absolute;
-  left: 50%;
+  left: 18px;
   bottom: 40px;
-  transform: translateX(-50%);
   display: none;
   gap: 10px;
   pointer-events: auto;
@@ -504,14 +527,34 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 .section-sentences > li.group-item-wrap.dragging-item {
   opacity: 0.5;
 }
-.section-sentences li .drag-handle {
+.section-sentences li .drag-handle,
+.section-header .drag-handle,
+.group-header .drag-handle {
   color: var(--fg-dim);
-  font-size: 12px;
-  line-height: 1;
   cursor: grab;
   user-select: none;
-  padding: 0 2px;
   flex-shrink: 0;
+  width: 10px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.section-sentences li .drag-handle::before,
+.section-header .drag-handle::before,
+.group-header .drag-handle::before {
+  content: "";
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translateY(-4px);
+  box-shadow:
+    0 4px 0 currentColor,
+    0 8px 0 currentColor,
+    4px 0 0 currentColor,
+    4px 4px 0 currentColor,
+    4px 8px 0 currentColor;
 }
 .section-sentences li .drag-handle:hover,
 .group-header .drag-handle:hover,
@@ -716,14 +759,6 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   font-size: 15px;
   line-height: 1;
 }
-.section-header .drag-handle {
-  color: var(--fg-dim);
-  font-size: 13px;
-  line-height: 1;
-  cursor: grab;
-  user-select: none;
-  padding: 0 2px;
-}
 .section-header .section-name {
   flex: 1; cursor: text; padding: 1px 4px; border-radius: 3px; min-width: 30px;
 }
@@ -797,15 +832,6 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   font-weight: 600;
 }
 .group-header:hover { background: rgba(249,226,175,0.08); }
-.group-header .drag-handle {
-  color: var(--fg-dim);
-  font-size: 13px;
-  line-height: 1;
-  cursor: grab;
-  user-select: none;
-  padding: 0 2px;
-  flex-shrink: 0;
-}
 .group-header.drag-over { border-bottom: 2px solid var(--accent-warn); }
 .group-header.dragging-group { opacity: 0.5; }
 .group-header .group-name {
@@ -1016,8 +1042,6 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <input type="text" id="folder-input" placeholder="/path/to/images" spellcheck="false">
     <button id="load-btn">Load</button>
     <button id="settings-btn" title="Ollama settings" aria-label="Ollama settings">⚙</button>
-    <label style="margin-left:12px">Size:</label>
-    <input type="range" id="thumb-size-slider" min="60" max="400" value="160">
     <span id="status-bar"></span>
   </div>
 
@@ -1028,6 +1052,10 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
       <div class="panel-header">
         <span id="file-count">No images</span>
         <div class="panel-header-actions">
+          <div id="thumb-size-control">
+            <label id="thumb-size-label" for="thumb-size-slider">Size</label>
+            <input type="range" id="thumb-size-slider" min="60" max="400" value="160">
+          </div>
           <button id="clear-filters-btn" type="button" title="Clear active caption filters">Clear</button>
         </div>
       </div>
@@ -1757,14 +1785,18 @@ function renderFilterActions() {
 
 function clearSentenceFilters() {
   if (state.activeSentenceFilters.size === 0) return;
+  const preferredPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
+  const previousScrollTop = fileGridContainer.scrollTop;
   state.activeSentenceFilters.clear();
   state.filterCaptionCacheKey = "";
-  renderGrid();
+  renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
   renderSentences();
   statusBar.textContent = "Filters cleared";
 }
 
 async function toggleSentenceFilter(sentence) {
+  const preferredPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
+  const previousScrollTop = fileGridContainer.scrollTop;
   const previousFilters = new Set(state.activeSentenceFilters);
   const isActive = state.activeSentenceFilters.has(sentence);
   if (isActive) {
@@ -1794,7 +1826,7 @@ async function toggleSentenceFilter(sentence) {
     statusBar.textContent = `Filter error: ${err.message}`;
   }
 
-  renderGrid();
+  renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
   renderSentences();
 }
 
@@ -2585,6 +2617,10 @@ function appendModelLog(text, kind = "") {
 }
 
 function applySettings(settings) {
+  const thumbSize = Number(settings.thumb_size || state.thumbSize || 160) || 160;
+  state.thumbSize = Math.max(60, Math.min(400, thumbSize));
+  thumbSlider.value = String(state.thumbSize);
+  document.documentElement.style.setProperty("--thumb-size", state.thumbSize + "px");
   setCropAspectRatios(settings.crop_aspect_ratios || state.cropAspectRatioLabels);
   state.ollamaServer = (settings.ollama_server || "127.0.0.1").trim();
   state.ollamaPort = Number(settings.ollama_port || 11434) || 11434;
@@ -2773,7 +2809,22 @@ function getThumbLoadSize() {
 }
 
 // ===== GRID RENDERING =====
-function renderGrid() {
+function restoreGridViewport(path, previousScrollTop = null) {
+  const targetPath = path || state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
+  if (targetPath) {
+    const cell = fileGrid.querySelector(`.thumb-cell[data-path="${CSS.escape(targetPath)}"]`);
+    if (cell) {
+      cell.scrollIntoView({ block: "nearest" });
+      return;
+    }
+  }
+  if (previousScrollTop !== null && previousScrollTop !== undefined) {
+    fileGridContainer.scrollTop = previousScrollTop;
+  }
+}
+
+function renderGrid(options = {}) {
+  const { preservePath = null, preserveScrollTop = null } = options;
   fileGrid.innerHTML = "";
   const size = state.thumbSize;
   const thumbLoadSize = getThumbLoadSize();
@@ -2834,6 +2885,8 @@ function renderGrid() {
     });
     fileGrid.appendChild(cell);
   }
+
+  restoreGridViewport(preservePath, preserveScrollTop);
 }
 
 function markCaptionIndicator(path, hasCaption) {
@@ -2984,6 +3037,7 @@ async function showPreview(path) {
     }
   }
   state.previewPath = path;
+  clearCropGuide();
 
   const loadSrc = (src) => {
     // If the image element already has this src loaded and fitted, skip
@@ -2996,7 +3050,6 @@ async function showPreview(path) {
       imgNatW = previewImg.naturalWidth;
       imgNatH = previewImg.naturalHeight;
       resetZoomPan();
-      setCropGuideToCenter();
       previewImg.style.display = "block";
       renderPreviewCaptionOverlay();
     };
@@ -3656,7 +3709,6 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
 
   const dragHandle = document.createElement("span");
   dragHandle.className = "drag-handle";
-  dragHandle.textContent = "⋮⋮";
   dragHandle.title = "Drag to reorder caption";
   dragHandle.draggable = true;
   dragHandle.addEventListener("click", (e) => e.stopPropagation());
@@ -3850,7 +3902,6 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
 
   const groupDragHandle = document.createElement("span");
   groupDragHandle.className = "drag-handle";
-  groupDragHandle.textContent = "⋮⋮";
   groupDragHandle.title = "Drag to reorder group";
   groupDragHandle.draggable = true;
   groupDragHandle.addEventListener("click", (e) => e.stopPropagation());
@@ -4107,7 +4158,6 @@ function renderSentences() {
 
     const dragHandle = document.createElement("span");
     dragHandle.className = "drag-handle";
-    dragHandle.textContent = "⋮⋮";
     dragHandle.title = "Drag to reorder section";
     header.appendChild(dragHandle);
 
@@ -4394,11 +4444,9 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         }
       } else if (event.type === "image-start") {
         const cache = ensureCaptionCache(event.path);
-        if (!event.free_text_only && (!event.target_scope || event.target_scope.type === "full")) {
-          cache.enabled_sentences = [];
-        }
+        cache.enabled_sentences = orderEnabledSentences(event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";
-        markCaptionIndicator(event.path, !!(cache.free_text && cache.free_text.trim()));
+        markCaptionIndicator(event.path, hasEffectiveCaptionContent(cache));
         refreshGridForActiveFilters();
         renderSentences();
         appendModelLog(getAutoCaptionImageStartLog(scope, event, targetSentence), "log-dim");
@@ -4406,7 +4454,8 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         const verdict = event.enabled ? "YES" : "NO";
         appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.sentence} -> ${verdict} | ${event.answer || verdict}`, event.enabled ? "log-ok" : "log-dim");
         const cache = ensureCaptionCache(event.path);
-        cache.enabled_sentences = applySentenceSelectionToList(cache.enabled_sentences, event.sentence, !!event.enabled);
+        cache.enabled_sentences = orderEnabledSentences(event.enabled_sentences || cache.enabled_sentences || []);
+        cache.free_text = event.free_text || cache.free_text || "";
         refreshGridForActiveFilters();
         if (state.selectedPaths.has(event.path)) {
           renderSentences();
@@ -4420,12 +4469,8 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           event.selected_sentence ? "log-ok" : "log-warn"
         );
         const cache = ensureCaptionCache(event.path);
-        for (const sentence of event.sentences || []) {
-          cache.enabled_sentences = applySentenceSelectionToList(cache.enabled_sentences, sentence, false);
-        }
-        if (event.selected_sentence) {
-          cache.enabled_sentences = applySentenceSelectionToList(cache.enabled_sentences, event.selected_sentence, true);
-        }
+        cache.enabled_sentences = orderEnabledSentences(event.enabled_sentences || cache.enabled_sentences || []);
+        cache.free_text = event.free_text || cache.free_text || "";
         refreshGridForActiveFilters();
         if (state.selectedPaths.has(event.path)) {
           renderSentences();
@@ -4434,6 +4479,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         markCaptionIndicator(event.path, !!hasContent);
       } else if (event.type === "free-text") {
         const cache = ensureCaptionCache(event.path);
+        cache.enabled_sentences = orderEnabledSentences(event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";
         if ((event.added_lines || []).length > 0) {
           appendModelLog(`[${getFileLabel(event.path)}] Added free text: ${(event.added_lines || []).join(" | ")}`, "log-ok");
@@ -4626,6 +4672,12 @@ thumbSlider.addEventListener("input", () => {
 
 // When slider released, reload thumbnails at appropriate resolution
 thumbSlider.addEventListener("change", () => {
+  fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thumb_size: state.thumbSize }),
+  }).catch(err => console.error("Failed to save thumbnail size:", err));
+
   const thumbLoadSize = getThumbLoadSize();
   for (const img of state.images) {
     const key = img.path + ":" + thumbLoadSize;

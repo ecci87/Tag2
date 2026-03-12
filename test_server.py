@@ -99,7 +99,12 @@ class TestSetFolderSections:
         sections = [{"name": "## A", "sentences": ["s1"], "groups": []}]
         server._set_folder_sections(cfg, "/pics", sections)
         key = os.path.normpath("/pics")
-        assert cfg["folders"][key]["sections"] == sections
+        stored_sections = cfg["folders"][key]["sections"]
+        assert len(stored_sections) == 1
+        assert stored_sections[0]["name"] == "## A"
+        assert stored_sections[0]["sentences"] == ["s1"]
+        assert stored_sections[0]["groups"] == []
+        assert stored_sections[0]["item_order"] == [{"type": "sentence", "sentence": "s1"}]
 
     def test_removes_legacy_sentences_key(self):
         key = os.path.normpath("/pics")
@@ -257,6 +262,67 @@ class TestWriteCaptionFile:
         txt_path.write_text("old content", encoding="utf-8")
         server._write_caption_file(img, [], "")
         assert txt_path.read_text(encoding="utf-8") == ""
+
+
+class TestAutoCaptionMergeDuringRun:
+    def test_stream_preserves_manual_caption_toggles(self, client, single_image, monkeypatch):
+        folder = str(Path(single_image).parent)
+        sections = [{"name": "", "sentences": ["cat", "dog"], "groups": []}]
+        server._save_config({
+            "last_folder": folder,
+            "default_sentences": [],
+            "crop_aspect_ratios": list(server.DEFAULT_CROP_ASPECT_RATIOS),
+            "image_crops": {},
+            "ollama_server": server.DEFAULT_OLLAMA_SERVER,
+            "ollama_port": server.DEFAULT_OLLAMA_PORT,
+            "ollama_timeout_seconds": 5,
+            "ollama_host": f"http://{server.DEFAULT_OLLAMA_SERVER}:{server.DEFAULT_OLLAMA_PORT}",
+            "ollama_model": "mock-model",
+            "ollama_prompt_template": server.DEFAULT_OLLAMA_PROMPT_TEMPLATE,
+            "ollama_group_prompt_template": server.DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE,
+            "ollama_enable_free_text": False,
+            "ollama_free_text_prompt_template": server.DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
+            "folders": {
+                os.path.normpath(folder): {
+                    "sections": sections,
+                }
+            },
+        })
+
+        call_count = {"value": 0}
+
+        def fake_generate(host, payload, timeout):
+            prompt = payload.get("prompt", "")
+            call_count["value"] += 1
+            if call_count["value"] == 2:
+                server._write_caption_file(single_image, ["dog"], "", sections)
+            if "Caption: cat" in prompt:
+                return {"response": "YES"}
+            if "Caption: dog" in prompt:
+                return {"response": "YES"}
+            raise AssertionError(f"Unexpected prompt: {prompt}")
+
+        monkeypatch.setattr(server, "_encode_image_for_ollama", lambda image_path: "image-bytes")
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        with client.stream(
+            "POST",
+            "/api/auto-caption/stream",
+            json={
+                "image_paths": [single_image],
+                "model": "mock-model",
+                "enable_free_text": False,
+            },
+        ) as response:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        completed = [event for event in events if event.get("type") == "image-complete"]
+        assert len(completed) == 1
+        assert completed[0]["enabled_sentences"] == ["dog"]
+
+        final_caption = server._read_caption_file(single_image, ["cat", "dog"])
+        assert final_caption["enabled_sentences"] == ["dog"]
 
     def test_skip_empty_sections(self, tmp_path):
         img = str(tmp_path / "img.jpg")
@@ -582,6 +648,7 @@ class TestSettingsAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert "last_folder" in data
+        assert data["thumb_size"] == 160
         assert data["crop_aspect_ratios"] == ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"]
         assert data["ollama_host"] == "http://127.0.0.1:11434"
         assert data["ollama_server"] == "127.0.0.1"
@@ -597,6 +664,11 @@ class TestSettingsAPI:
         client.post("/api/settings", json={"last_folder": "/my/folder"})
         resp = client.get("/api/settings")
         assert resp.json()["last_folder"] == "/my/folder"
+
+    def test_save_and_load_thumbnail_size(self, client):
+        client.post("/api/settings", json={"thumb_size": 224})
+        resp = client.get("/api/settings")
+        assert resp.json()["thumb_size"] == 224
 
     def test_save_and_load_sections(self, client, tmp_path):
         folder = str(tmp_path / "test_folder")

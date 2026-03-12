@@ -154,6 +154,7 @@ def _load_config() -> dict:
         "last_folder": "",
         # Sentences shared across all folders when a folder has no own config yet
         "default_sentences": [],
+        "thumb_size": 160,
         "crop_aspect_ratios": list(DEFAULT_CROP_ASPECT_RATIOS),
         "image_crops": {},
         # Local Ollama server settings
@@ -266,6 +267,66 @@ def _suggest_free_text(
         prompt_template=prompt_template or DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
         timeout=timeout,
     )
+
+
+def _read_live_caption_state(
+    image_path: str,
+    all_sentences: list[str],
+    headers: list[str],
+) -> tuple[list[str], str]:
+    """Read the latest caption state from disk for merge-safe auto-caption writes."""
+    current = _read_caption_file(image_path, all_sentences, headers)
+    return list(current.get("enabled_sentences", [])), current.get("free_text", "")
+
+
+def _apply_sentence_result_to_live_caption(
+    image_path: str,
+    sentence: str,
+    should_enable: bool,
+    all_sentences: list[str],
+    headers: list[str],
+    sections: list[dict],
+) -> tuple[list[str], str]:
+    """Apply a single AI sentence verdict on top of the latest on-disk caption state."""
+    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
+    enabled = _apply_sentence_selection(enabled, sentence, sections, should_enable)
+    enabled = _normalize_enabled_sentences(enabled, sections)
+    _write_caption_file(image_path, enabled, free_text, sections)
+    return enabled, free_text
+
+
+def _apply_group_result_to_live_caption(
+    image_path: str,
+    group_sentences: list[str],
+    selected_sentence: str | None,
+    all_sentences: list[str],
+    headers: list[str],
+    sections: list[dict],
+) -> tuple[list[str], str]:
+    """Apply a single AI group selection on top of the latest on-disk caption state."""
+    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
+    enabled = [sentence for sentence in enabled if sentence not in group_sentences]
+    if selected_sentence:
+        enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
+    enabled = _normalize_enabled_sentences(enabled, sections)
+    _write_caption_file(image_path, enabled, free_text, sections)
+    return enabled, free_text
+
+
+def _apply_free_text_result_to_live_caption(
+    image_path: str,
+    model_output: str,
+    all_sentences: list[str],
+    headers: list[str],
+    sections: list[dict],
+    preserve_existing: bool = False,
+) -> tuple[list[str], str, list[str]]:
+    """Merge AI free-text output with the latest on-disk caption state."""
+    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
+    base_free_text = free_text if preserve_existing else ""
+    merged_free_text, added_lines = _merge_free_text(base_free_text, model_output, enabled)
+    _write_caption_file(image_path, enabled, merged_free_text, sections)
+    return enabled, merged_free_text, added_lines
 
 
 @app.get("/api/list-images")
@@ -707,10 +768,9 @@ async def auto_caption(data: AutoCaptionRequest):
         raise HTTPException(status_code=400, detail="Invalid target")
 
     headers = _all_headers_from_sections(sections)
-    existing = _read_caption_file(image_path, all_sentences, headers)
-    existing_free_text = existing.get("free_text", "")
-    enabled = list(existing.get("enabled_sentences", []))
+    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
     results: list[dict] = []
+    is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "sentence"})
 
     loop = asyncio.get_event_loop()
     if not free_text_only:
@@ -727,6 +787,8 @@ async def auto_caption(data: AutoCaptionRequest):
                     group_prompt_template,
                     timeout_seconds,
                 )
+                free_text = free_text if is_scoped else ""
+                _write_caption_file(image_path, enabled, free_text, sections)
             else:
                 image_b64 = await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)
                 for target in targets or []:
@@ -742,7 +804,14 @@ async def auto_caption(data: AutoCaptionRequest):
                         response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
                         raw_answer = str(response.get("response") or "").strip()
                         is_match = _parse_ollama_yes_no(raw_answer)
-                        enabled = _apply_sentence_selection(enabled, sentence, sections, is_match)
+                        enabled, free_text = _apply_sentence_result_to_live_caption(
+                            image_path,
+                            sentence,
+                            is_match,
+                            all_sentences,
+                            headers,
+                            sections,
+                        )
                         results.append({
                             "type": "sentence",
                             "section_index": target.get("section_index"),
@@ -767,9 +836,14 @@ async def auto_caption(data: AutoCaptionRequest):
                     selection_index = _parse_ollama_selection(raw_answer, group_sentences)
                     selected_sentence = group_sentences[selection_index - 1] if selection_index else None
                     selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
-                    enabled = [sentence for sentence in enabled if sentence not in group_sentences]
-                    if selected_sentence:
-                        enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
+                    enabled, free_text = _apply_group_result_to_live_caption(
+                        image_path,
+                        group_sentences,
+                        selected_sentence,
+                        all_sentences,
+                        headers,
+                        sections,
+                    )
                     results.append({
                         "type": "group",
                         "section_index": target.get("section_index"),
@@ -782,18 +856,15 @@ async def auto_caption(data: AutoCaptionRequest):
                         "selection_index": selection_index,
                         "answer": raw_answer,
                     })
-
-                enabled = _normalize_enabled_sentences(enabled, sections)
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Auto caption failed: {e}") from e
 
-    is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "sentence"})
-    free_text = existing_free_text if is_scoped else ""
     free_text_model_output = ""
     added_free_text_lines: list[str] = []
     if enable_free_text:
+        enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
         caption_text = _build_caption_text(enabled, free_text, sections)
         try:
             free_text_model_output = await loop.run_in_executor(
@@ -806,13 +877,20 @@ async def auto_caption(data: AutoCaptionRequest):
                 free_text_prompt_template,
                 timeout_seconds,
             )
-            free_text, added_free_text_lines = _merge_free_text("", free_text_model_output, enabled)
+            enabled, free_text, added_free_text_lines = _apply_free_text_result_to_live_caption(
+                image_path,
+                free_text_model_output,
+                all_sentences,
+                headers,
+                sections,
+                preserve_existing=is_scoped,
+            )
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Auto caption free-text step failed: {e}") from e
 
-    _write_caption_file(image_path, enabled, free_text, sections)
+    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
     return {
         "ok": True,
         "model": model,
@@ -904,10 +982,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 continue
 
             headers = _all_headers_from_sections(sections)
-            existing = _read_caption_file(image_path, all_sentences, headers)
-            is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "sentence"})
-            free_text = existing.get("free_text", "") if is_scoped else ""
-            enabled = list(existing.get("enabled_sentences", []))
+            enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
             results = []
             image_b64 = await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)
 
@@ -919,6 +994,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 "total_targets": total_targets,
                 "free_text_only": free_text_only,
                 "target_scope": target_scope,
+                "enabled_sentences": enabled,
                 "free_text": free_text,
             })
 
@@ -939,10 +1015,16 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
                             raw_answer = str(response.get("response") or "").strip()
                             is_match = _parse_ollama_yes_no(raw_answer)
-                            enabled = _apply_sentence_selection(enabled, sentence, sections, is_match)
+                            enabled, free_text = _apply_sentence_result_to_live_caption(
+                                image_path,
+                                sentence,
+                                is_match,
+                                all_sentences,
+                                headers,
+                                sections,
+                            )
                             result = {"type": "sentence", "sentence": sentence, "enabled": is_match, "answer": raw_answer}
                             results.append(result)
-                            _write_caption_file(image_path, enabled, free_text, sections)
                             yield _event_bytes({
                                 "type": "caption-check",
                                 "path": image_path,
@@ -950,6 +1032,8 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                                 "total": total_targets,
                                 "sentence": sentence,
                                 "enabled": is_match,
+                                "enabled_sentences": enabled,
+                                "free_text": free_text,
                                 "answer": raw_answer,
                             })
                             continue
@@ -967,9 +1051,14 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                         selection_index = _parse_ollama_selection(raw_answer, group_sentences)
                         selected_sentence = group_sentences[selection_index - 1] if selection_index else None
                         selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
-                        enabled = [sentence for sentence in enabled if sentence not in group_sentences]
-                        if selected_sentence:
-                            enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
+                        enabled, free_text = _apply_group_result_to_live_caption(
+                            image_path,
+                            group_sentences,
+                            selected_sentence,
+                            all_sentences,
+                            headers,
+                            sections,
+                        )
                         result = {
                             "type": "group",
                             "section_index": target.get("section_index"),
@@ -982,7 +1071,6 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             "answer": raw_answer,
                         }
                         results.append(result)
-                        _write_caption_file(image_path, enabled, free_text, sections)
                         yield _event_bytes({
                             "type": "group-selection",
                             "path": image_path,
@@ -995,6 +1083,8 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             "selected_sentence": selected_sentence,
                             "selected_hidden": selected_hidden,
                             "selection_index": selection_index,
+                            "enabled_sentences": enabled,
+                            "free_text": free_text,
                             "answer": raw_answer,
                         })
 
@@ -1003,6 +1093,8 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 if enable_free_text:
                     if await request.is_disconnected():
                         return
+                    is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "sentence"})
+                    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
                     caption_text = _build_caption_text(enabled, free_text, sections)
                     free_payload = {
                         "model": model,
@@ -1013,17 +1105,24 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                     }
                     response = await loop.run_in_executor(executor, _ollama_generate, host, free_payload, timeout_seconds)
                     free_text_model_output = str(response.get("response") or "").strip()
-                    free_text, added_free_text_lines = _merge_free_text("", free_text_model_output, enabled)
-                    _write_caption_file(image_path, enabled, free_text, sections)
+                    enabled, free_text, added_free_text_lines = _apply_free_text_result_to_live_caption(
+                        image_path,
+                        free_text_model_output,
+                        all_sentences,
+                        headers,
+                        sections,
+                        preserve_existing=is_scoped,
+                    )
                     yield _event_bytes({
                         "type": "free-text",
                         "path": image_path,
                         "answer": free_text_model_output,
+                        "enabled_sentences": enabled,
                         "free_text": free_text,
                         "added_lines": added_free_text_lines,
                     })
 
-                _write_caption_file(image_path, enabled, free_text, sections)
+                enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
                 total_processed += 1
                 yield _event_bytes({
                     "type": "image-complete",
@@ -1104,6 +1203,7 @@ class SettingsUpdate(BaseModel):
     last_folder: Optional[str] = None
     sections: Optional[list[dict]] = None
     folder: Optional[str] = None  # which folder these sections belong to
+    thumb_size: Optional[int] = None
     crop_aspect_ratios: Optional[list[str]] = None
     ollama_host: Optional[str] = None
     ollama_server: Optional[str] = None
@@ -1122,6 +1222,7 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
     cfg = _load_config()
     result = {
         "last_folder": cfg.get("last_folder", ""),
+        "thumb_size": int(cfg.get("thumb_size", 160) or 160),
         "crop_aspect_ratios": _get_crop_aspect_ratios(cfg, DEFAULT_CROP_ASPECT_RATIOS),
         "ollama_host": _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
         "ollama_server": _get_ollama_server(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
@@ -1145,6 +1246,8 @@ async def update_settings(data: SettingsUpdate):
     cfg = _load_config()
     if data.last_folder is not None:
         cfg["last_folder"] = data.last_folder
+    if data.thumb_size is not None:
+        cfg["thumb_size"] = max(60, min(400, int(data.thumb_size)))
     if data.crop_aspect_ratios is not None:
         cfg["crop_aspect_ratios"] = [str(r).strip() for r in data.crop_aspect_ratios if str(r).strip()] or list(DEFAULT_CROP_ASPECT_RATIOS)
     if data.ollama_host is not None:

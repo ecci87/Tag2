@@ -176,10 +176,13 @@ def _all_headers_from_sections(sections: list[dict]) -> list[str]:
 def _iter_section_items(section: dict):
     """Yield mixed section items in configured display order."""
     groups = list(section.get("groups", []) or [])
+    group_keys = []
+    for index, group in enumerate(groups):
+        group_id = str(group.get("id") or "").strip()
+        group_keys.append(group_id or f"__index__:{index}")
     groups_by_id = {
-        str(group.get("id") or "").strip(): group
-        for group in groups
-        if str(group.get("id") or "").strip()
+        key: group
+        for key, group in zip(group_keys, groups)
     }
     yielded_sentences: set[str] = set()
     yielded_groups: set[str] = set()
@@ -203,9 +206,8 @@ def _iter_section_items(section: dict):
     for sentence in section.get("sentences", []) or []:
         if sentence not in yielded_sentences:
             yield {"type": "sentence", "sentence": sentence}
-    for group in groups:
-        group_id = str(group.get("id") or "").strip()
-        if group_id and group_id not in yielded_groups:
+    for group_key, group in zip(group_keys, groups):
+        if group_key not in yielded_groups:
             yield {"type": "group", "group": group}
 
 
