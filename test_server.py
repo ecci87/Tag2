@@ -133,6 +133,17 @@ class TestRenameSentenceInSections:
         assert sections[0]["groups"][0]["hidden_sentences"] == ["new-2"]
 
 
+class TestRenameSectionInSections:
+    def test_rename_section_name(self):
+        sections = [
+            {"name": "Scene", "sentences": ["old"], "groups": []},
+            {"name": "Other", "sentences": [], "groups": []},
+        ]
+        assert server._rename_section_in_sections(sections, "Scene", "Environment") is True
+        assert sections[0]["name"] == "Environment"
+        assert sections[1]["name"] == "Other"
+
+
 class TestReadCaptionFile:
     def test_no_file(self, tmp_path):
         img = str(tmp_path / "img.jpg")
@@ -408,6 +419,55 @@ class TestCaptionAPI:
         assert "New Caption" in caption
         assert "Old Caption" not in caption
         assert "Red Car" in caption
+
+    def test_rename_caption_preset_updates_free_text_occurrences(self, client, img_dir):
+        image_path = str(img_dir / "photo1.jpg")
+        client.post("/api/settings", json={
+            "folder": str(img_dir),
+            "sections": [{"name": "", "sentences": ["Old Caption"]}],
+        })
+        client.post("/api/caption/save", json={
+            "image_path": image_path,
+            "enabled_sentences": ["Old Caption"],
+            "free_text": "Old Caption appears again in notes.",
+        })
+
+        resp = client.post("/api/caption/rename-preset", json={
+            "folder": str(img_dir),
+            "old_sentence": "Old Caption",
+            "new_sentence": "New Caption",
+        })
+        assert resp.status_code == 200
+
+        caption = (img_dir / "photo1.txt").read_text(encoding="utf-8")
+        assert "New Caption appears again in notes." in caption
+        assert "Old Caption" not in caption
+
+    def test_rename_section_updates_config_and_files(self, client, img_dir):
+        image_path = str(img_dir / "photo1.jpg")
+        client.post("/api/settings", json={
+            "folder": str(img_dir),
+            "sections": [{"name": "Scene", "sentences": ["Moon"]}],
+        })
+        client.post("/api/caption/save", json={
+            "image_path": image_path,
+            "enabled_sentences": ["Moon"],
+            "free_text": "Scene appears in notes.",
+        })
+
+        resp = client.post("/api/section/rename", json={
+            "folder": str(img_dir),
+            "old_name": "Scene",
+            "new_name": "Environment",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["sections"][0]["name"] == "Environment"
+
+        caption = (img_dir / "photo1.txt").read_text(encoding="utf-8")
+        assert "Environment" in caption
+        assert "Scene" not in caption
+        assert "Moon" in caption
 
 
 class TestBatchToggle:

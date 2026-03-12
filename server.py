@@ -92,6 +92,7 @@ from tag2_sections import (
     _iter_caption_targets_with_indices,
     _normalize_enabled_sentences,
     _ordered_sections_for_output,
+    _rename_section_in_sections,
     _rename_sentence_in_sections,
     _set_folder_sections,
 )
@@ -359,6 +360,12 @@ class RenameCaptionPresetUpdate(BaseModel):
     new_sentence: str
 
 
+class RenameSectionUpdate(BaseModel):
+    folder: str
+    old_name: str
+    new_name: str
+
+
 class CropUpdate(BaseModel):
     image_path: str
     crop: Optional[dict] = None
@@ -511,7 +518,52 @@ async def rename_caption_preset(update: RenameCaptionPresetUpdate):
         data = _read_caption_file(str(entry), all_sentences_before, headers)
         enabled = [new_sentence if sentence == old_sentence else sentence for sentence in data.get("enabled_sentences", [])]
         enabled = _normalize_enabled_sentences(enabled, sections)
-        _write_caption_file(str(entry), enabled, data.get("free_text", ""), sections)
+        free_text = str(data.get("free_text", "") or "").replace(old_sentence, new_sentence)
+        _write_caption_file(str(entry), enabled, free_text, sections)
+
+    return {"ok": True, "sections": sections}
+
+
+@app.post("/api/section/rename")
+async def rename_section(update: RenameSectionUpdate):
+    """Rename a configured section and migrate existing caption files."""
+    folder = os.path.normpath(update.folder)
+    old_name = str(update.old_name or "").strip()
+    new_name = str(update.new_name or "").strip()
+    if not folder or not os.path.isdir(folder):
+        raise HTTPException(status_code=400, detail="Folder not found")
+    if old_name == new_name:
+        cfg = _load_config()
+        return {"ok": True, "sections": _get_folder_sections(cfg, folder)}
+
+    cfg = _load_config()
+    sections_before = _get_folder_sections(cfg, folder)
+    section_names_before = [str(section.get("name") or "") for section in sections_before]
+    if old_name not in section_names_before:
+        raise HTTPException(status_code=404, detail="Section not found")
+    if new_name and new_name in section_names_before:
+        raise HTTPException(status_code=400, detail="A section with that name already exists")
+
+    all_sentences = _all_sentences_from_sections(sections_before)
+    headers_before = _all_headers_from_sections(sections_before)
+    sections = _get_folder_sections(cfg, folder)
+    renamed = _rename_section_in_sections(sections, old_name, new_name)
+    if not renamed:
+        raise HTTPException(status_code=404, detail="Section not found")
+
+    _set_folder_sections(cfg, folder, sections)
+    _save_config(cfg)
+
+    folder_path = Path(folder)
+    for entry in folder_path.iterdir():
+        if not entry.is_file() or entry.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        caption_path = entry.with_suffix(".txt")
+        if not caption_path.exists():
+            continue
+        data = _read_caption_file(str(entry), all_sentences, headers_before)
+        free_text = str(data.get("free_text", "") or "").replace(old_name, new_name)
+        _write_caption_file(str(entry), list(data.get("enabled_sentences", [])), free_text, sections)
 
     return {"ok": True, "sections": sections}
 

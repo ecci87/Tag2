@@ -387,6 +387,16 @@ def _rename_sentence_in_sections(sections: list[dict], old_sentence: str, new_se
     return renamed
 
 
+def _rename_section_in_sections(sections: list[dict], old_name: str, new_name: str) -> bool:
+    """Rename a configured section header."""
+    renamed = False
+    for section in sections:
+        if str(section.get("name") or "") == old_name:
+            section["name"] = new_name
+            renamed = True
+    return renamed
+
+
 def _get_crop_aspect_ratios(cfg: dict, default_crop_aspect_ratios: list[str]) -> list[str]:
     """Get the configured list of allowed crop aspect ratios."""
     ratios = cfg.get("crop_aspect_ratios", default_crop_aspect_ratios)

@@ -163,6 +163,33 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   padding: 6px 10px; font-size: 12px; color: var(--fg-dim); border-bottom: 1px solid var(--border);
   display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
 }
+#left-panel .panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#clear-filters-btn {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(137,180,250,0.2);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  display: none;
+}
+#clear-filters-btn.visible {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+#clear-filters-btn:hover {
+  border-color: rgba(137,180,250,0.4);
+  color: var(--accent);
+}
 #file-grid-container { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--gap); }
 #file-grid {
   display: flex; flex-wrap: wrap; gap: var(--gap); align-content: flex-start;
@@ -1000,6 +1027,9 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <div id="left-panel">
       <div class="panel-header">
         <span id="file-count">No images</span>
+        <div class="panel-header-actions">
+          <button id="clear-filters-btn" type="button" title="Clear active caption filters">Clear</button>
+        </div>
       </div>
       <div id="file-grid-container">
         <div id="file-grid"></div>
@@ -1200,6 +1230,7 @@ const settingsBtn = $("#settings-btn");
 const thumbSlider = $("#thumb-size-slider");
 const statusBar = $("#status-bar");
 const fileCount = $("#file-count");
+const clearFiltersBtn = $("#clear-filters-btn");
 const fileGrid = $("#file-grid");
 const fileGridContainer = $("#file-grid-container");
 const previewImg = $("#preview-img");
@@ -1711,14 +1742,42 @@ function refreshGridForActiveFilters() {
     renderGrid();
   } else {
     updateFileCountDisplay();
+    renderFilterActions();
   }
 }
 
+function renderFilterActions() {
+  const hasFilters = state.activeSentenceFilters.size > 0;
+  clearFiltersBtn.classList.toggle("visible", hasFilters);
+  clearFiltersBtn.disabled = !hasFilters;
+  clearFiltersBtn.title = hasFilters
+    ? `Clear ${state.activeSentenceFilters.size} active filter${state.activeSentenceFilters.size === 1 ? "" : "s"}`
+    : "No active caption filters";
+}
+
+function clearSentenceFilters() {
+  if (state.activeSentenceFilters.size === 0) return;
+  state.activeSentenceFilters.clear();
+  state.filterCaptionCacheKey = "";
+  renderGrid();
+  renderSentences();
+  statusBar.textContent = "Filters cleared";
+}
+
 async function toggleSentenceFilter(sentence) {
+  const previousFilters = new Set(state.activeSentenceFilters);
   const isActive = state.activeSentenceFilters.has(sentence);
   if (isActive) {
     state.activeSentenceFilters.delete(sentence);
   } else {
+    const groupSentences = findGroupSentencesForSentence(sentence);
+    if (groupSentences) {
+      for (const groupSentence of groupSentences) {
+        if (groupSentence !== sentence) {
+          state.activeSentenceFilters.delete(groupSentence);
+        }
+      }
+    }
     state.activeSentenceFilters.add(sentence);
   }
 
@@ -1731,11 +1790,7 @@ async function toggleSentenceFilter(sentence) {
       statusBar.textContent = "Filter cleared";
     }
   } catch (err) {
-    if (isActive) {
-      state.activeSentenceFilters.add(sentence);
-    } else {
-      state.activeSentenceFilters.delete(sentence);
-    }
+    state.activeSentenceFilters = previousFilters;
     statusBar.textContent = `Filter error: ${err.message}`;
   }
 
@@ -2725,6 +2780,7 @@ function renderGrid() {
   const visibleEntries = getVisibleImageEntries();
 
   updateFileCountDisplay();
+  renderFilterActions();
 
   for (const { img, index } of visibleEntries) {
     const cell = document.createElement("div");
@@ -3420,6 +3476,43 @@ async function renameSentence(oldSentence, newSentence) {
   }
 }
 
+async function renameSection(oldName, newName) {
+  const nextName = String(newName || "").trim();
+  const currentName = String(oldName || "").trim();
+  if (nextName === currentName) {
+    renderSentences();
+    return;
+  }
+  if (!state.folder) {
+    statusBar.textContent = "No folder loaded";
+    renderSentences();
+    return;
+  }
+
+  statusBar.textContent = "Renaming section...";
+  try {
+    const resp = await fetch("/api/section/rename", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        folder: state.folder,
+        old_name: currentName,
+        new_name: nextName,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to rename section");
+    }
+    state.sections = normalizeSectionsData(data.sections || state.sections);
+    renderSentences();
+    statusBar.textContent = "Section renamed";
+  } catch (err) {
+    statusBar.textContent = `Section rename error: ${err.message}`;
+    renderSentences();
+  }
+}
+
 function addSection() {
   const name = prompt("Section name:");
   addSectionWithName(name);
@@ -4037,9 +4130,7 @@ function renderSentences() {
     nameSpan.addEventListener("click", (e) => {
       e.stopPropagation();
       beginEditableRename(nameSpan, section.name || "", (newName) => {
-        section.name = newName;
-        saveSectionsToStorage();
-        renderSentences();
+        renameSection(section.name || "", newName);
       });
     });
     nameSpan.addEventListener("mousedown", (e) => {
@@ -4604,6 +4695,7 @@ setupVerticalResize(rightHorizontalResize, sentencesSection, $("#freetext-sectio
 loadBtn.addEventListener("click", loadFolder);
 folderInput.addEventListener("keydown", (e) => { if (e.key === "Enter") loadFolder(); });
 settingsBtn.addEventListener("click", openSettingsModal);
+clearFiltersBtn.addEventListener("click", clearSentenceFilters);
 autoCaptionBtn.addEventListener("click", autoCaptionSelected);
 addFreeTextNowBtn.addEventListener("click", addFreeTextNow);
 hideAddButtonsCheckbox.addEventListener("change", () => {
