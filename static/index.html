@@ -39,8 +39,14 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 #toolbar label { font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
 #folder-input { flex: 1; max-width: 500px; padding: 6px 10px; background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; outline: none; }
 #folder-input:focus { border-color: var(--accent); }
-#load-btn { padding: 6px 16px; background: var(--accent); color: #1e1e2e; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
-#load-btn:hover { filter: brightness(1.1); }
+#load-btn, #clone-folder-btn { padding: 6px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
+#load-btn { background: var(--accent); color: #1e1e2e; }
+#clone-folder-btn {
+  background: rgba(166,227,161,0.18);
+  color: var(--accent2);
+  border: 1px solid rgba(166,227,161,0.32);
+}
+#load-btn:hover, #clone-folder-btn:hover { filter: brightness(1.1); }
 #settings-btn {
   width: 34px; height: 34px; background: var(--bg3); color: var(--fg); border: 1px solid var(--border);
   border-radius: 6px; cursor: pointer; font-size: 18px; line-height: 1; flex-shrink: 0;
@@ -158,22 +164,134 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   0%, 100% { filter: drop-shadow(0 0 0 rgba(139, 226, 143, 0.0)); }
   50% { filter: drop-shadow(0 0 7px rgba(139, 226, 143, 0.45)); }
 }
-#load-btn:disabled, .generate-btn:disabled, #add-section-bar button:disabled, .section-add-row button:disabled {
+#load-btn:disabled, #clone-folder-btn:disabled, .generate-btn:disabled, #add-section-bar button:disabled, .section-add-row button:disabled {
   opacity: 0.55; cursor: not-allowed; filter: none;
 }
 #thumb-size-control {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  margin-left: auto;
+  gap: 10px;
+  width: 100%;
 }
 #thumb-size-label {
+  font-size: 10px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+#thumb-size-slider {
+  width: 100%;
+  min-width: 72px;
+  accent-color: var(--accent);
+}
+#toolbar-status {
+  margin-left: auto;
+  min-width: 240px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  overflow: hidden;
+}
+#status-bar {
   font-size: 11px;
   color: var(--fg-dim);
   white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-#thumb-size-slider { width: 120px; accent-color: var(--accent); }
-#status-bar { font-size: 11px; color: var(--fg-dim); margin-left: auto; white-space: nowrap; }
+#thumbnail-queue-status {
+  width: 100%;
+  display: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+#thumbnail-queue-status.visible {
+  display: flex;
+}
+#upload-queue-status {
+  width: 100%;
+  display: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+#upload-queue-status.visible {
+  display: flex;
+}
+#thumbnail-queue-text {
+  width: 100%;
+  font-size: 11px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
+}
+#upload-queue-text {
+  width: 100%;
+  font-size: 11px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
+}
+#upload-queue-progress {
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.08);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+}
+#thumbnail-queue-progress {
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.08);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.03);
+}
+#thumbnail-queue-progress-fill {
+  position: relative;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(255,116,219,0.9), rgba(137,180,250,0.92));
+  transition: width 0.18s ease;
+}
+#thumbnail-queue-progress-fill.active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.32) 50%, transparent 100%);
+  animation: upload-queue-progress-shimmer 1s linear infinite;
+}
+#upload-queue-progress-fill {
+  position: relative;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(137,180,250,0.92), rgba(166,227,161,0.92));
+  transition: width 0.18s ease;
+}
+#upload-queue-progress-fill.active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.32) 50%, transparent 100%);
+  animation: upload-queue-progress-shimmer 1s linear infinite;
+}
+@keyframes upload-queue-progress-shimmer {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
 
 #main { display: flex; flex: 1; overflow: hidden; }
 
@@ -184,37 +302,115 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   position: relative;
 }
 #left-panel .panel-header {
-  padding: 6px 10px; font-size: 12px; color: var(--fg-dim); border-bottom: 1px solid var(--border);
-  display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
+  padding: 8px 10px 6px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  flex-shrink: 0;
+}
+#left-panel .panel-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+#file-count {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
 }
 #left-panel .panel-header-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  min-width: 0;
+}
+#filter-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.filter-chip {
+  min-width: 56px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid rgba(137,180,250,0.16);
+  border-radius: 999px;
+  background: rgba(20,22,34,0.38);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.filter-chip:hover {
+  border-color: rgba(137,180,250,0.4);
+  color: var(--accent);
+  background: rgba(137,180,250,0.08);
+}
+.filter-chip.active {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, rgba(137,180,250,0.2), rgba(137,180,250,0.1));
+  color: var(--accent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 0 0 1px rgba(137,180,250,0.08);
+}
+.filter-chip.missing {
+  border-color: rgba(249,226,175,0.45);
+  background: rgba(249,226,175,0.10);
+  color: var(--accent-warn);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 0 0 1px rgba(249,226,175,0.06);
 }
 #clear-filters-btn {
-  min-width: 24px;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid rgba(137,180,250,0.2);
+  min-width: 20px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(137,180,250,0.18);
   border-radius: 6px;
   background: transparent;
   color: var(--fg-dim);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  display: none;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
 }
-#clear-filters-btn.visible {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+#clear-filters-btn svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+  pointer-events: none;
 }
 #clear-filters-btn:hover {
   border-color: rgba(137,180,250,0.4);
   color: var(--accent);
+  background: rgba(137,180,250,0.08);
+}
+#clear-filters-btn.active {
+  border-color: rgba(249,226,175,0.45);
+  background: rgba(249,226,175,0.10);
+  color: var(--accent-warn);
 }
 #file-grid-container { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--gap); }
+#left-panel-footer {
+  padding: 6px 10px 8px;
+  border-top: 1px solid rgba(69,71,90,0.85);
+  flex-shrink: 0;
+}
 #file-grid {
   display: flex; flex-wrap: wrap; gap: var(--gap); align-content: flex-start;
 }
@@ -226,7 +422,7 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 }
 .thumb-cell:hover { border-color: rgba(137,180,250,0.4); }
 .thumb-cell.selected { border-color: var(--selected-border); background: var(--selected); }
-.thumb-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb-cell img { width: 100%; height: 100%; object-fit: contain; display: block; background: rgba(0,0,0,0.18); }
 .thumb-cell .thumb-name {
   position: absolute; bottom: 0; left: 0; right: 0;
   padding: 2px 4px; font-size: 10px; color: #fff;
@@ -235,16 +431,26 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 .thumb-cell .caption-dot,
 .thumb-cell .aspect-warning {
   position: absolute; top: 4px;
-  min-width: 18px; height: 18px; padding: 0 4px;
+  min-width: 22px; height: 22px; padding: 0 6px;
   border-radius: 999px;
   display: none; align-items: center; justify-content: center;
-  font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
   box-shadow: 0 1px 6px rgba(0,0,0,0.35);
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  cursor: default;
 }
 .thumb-cell .caption-dot {
   right: 4px;
   background: rgba(166,227,161,0.94);
   color: #103117;
+  transition: background 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+.thumb-cell .caption-dot:hover {
+  background: rgba(186,238,180,0.98);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.38), 0 0 0 1px rgba(166,227,161,0.28);
+  filter: brightness(1.03);
 }
 .thumb-cell .aspect-warning {
   left: 4px;
@@ -274,6 +480,32 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   cursor: grab;
 }
 #center-panel.dragging { cursor: grabbing; }
+#center-panel.file-drop-active {
+  outline: 2px dashed rgba(137,180,250,0.95);
+  outline-offset: -12px;
+  background: radial-gradient(circle at center, rgba(137,180,250,0.12), rgba(30,30,46,0.95) 65%);
+}
+#file-drop-hint {
+  position: absolute;
+  inset: 24px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  border: 2px dashed rgba(137,180,250,0.32);
+  border-radius: 16px;
+  background: rgba(15,16,25,0.58);
+  color: var(--accent);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-align: center;
+  pointer-events: none;
+  z-index: 7;
+}
+#center-panel.file-drop-active #file-drop-hint {
+  display: flex;
+}
 #preview-img {
   position: absolute;
   top: 0; left: 0;
@@ -1162,8 +1394,19 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <label>Folder:</label>
     <input type="text" id="folder-input" placeholder="/path/to/images" spellcheck="false">
     <button id="load-btn">Load</button>
+    <button id="clone-folder-btn" type="button">Clone</button>
     <button id="settings-btn" title="Ollama settings" aria-label="Ollama settings">⚙</button>
-    <span id="status-bar"></span>
+    <div id="toolbar-status">
+      <span id="status-bar"></span>
+      <div id="thumbnail-queue-status" hidden aria-live="polite">
+        <div id="thumbnail-queue-text"></div>
+        <div id="thumbnail-queue-progress"><div id="thumbnail-queue-progress-fill"></div></div>
+      </div>
+      <div id="upload-queue-status" hidden aria-live="polite">
+        <div id="upload-queue-text"></div>
+        <div id="upload-queue-progress"><div id="upload-queue-progress-fill"></div></div>
+      </div>
+    </div>
   </div>
 
   <!-- MAIN PANELS -->
@@ -1171,17 +1414,25 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <!-- LEFT: file grid -->
     <div id="left-panel">
       <div class="panel-header">
-        <span id="file-count">No images</span>
+        <div class="panel-header-top">
+          <span id="file-count">No images</span>
+        </div>
         <div class="panel-header-actions">
-          <div id="thumb-size-control">
-            <label id="thumb-size-label" for="thumb-size-slider">Size</label>
-            <input type="range" id="thumb-size-slider" min="60" max="400" value="160">
+          <div id="filter-chip-row">
+            <button id="filter-ar-btn" class="filter-chip" type="button" title="Show only images with the AR warning badge">AR</button>
+            <button id="filter-txt-btn" class="filter-chip" type="button" title="Show only images that have a txt caption file">TXT</button>
           </div>
-          <button id="clear-filters-btn" type="button" title="Clear active caption filters">Clear</button>
+          <button id="clear-filters-btn" type="button" title="Clear active filters" aria-label="Clear active filters"></button>
         </div>
       </div>
       <div id="file-grid-container">
         <div id="file-grid"></div>
+      </div>
+      <div id="left-panel-footer">
+        <div id="thumb-size-control">
+          <label id="thumb-size-label" for="thumb-size-slider">Size</label>
+          <input type="range" id="thumb-size-slider" min="60" max="400" value="160">
+        </div>
       </div>
     </div>
 
@@ -1190,6 +1441,7 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
     <!-- CENTER: image preview -->
     <div id="center-panel">
       <img id="preview-img" alt="Preview">
+      <div id="file-drop-hint">Drop image files here to add them to the upload queue</div>
       <div id="preview-caption-overlay" aria-live="polite">
           <div id="preview-caption-overlay-header">
            <button id="preview-caption-toggle" type="button" aria-expanded="true" title="Collapse enabled captions">−</button>
@@ -1218,7 +1470,7 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
           <button id="rotate-right-btn" class="rotate-btn" type="button" title="Rotate right" aria-label="Rotate right">↷</button>
         </div>
       </div>
-      <div id="preview-placeholder">Select an image to preview</div>
+      <div id="preview-placeholder">Select an image to preview<br>or<br>drop images here to upload</div>
       <div id="preview-info"></div>
     </div>
 
@@ -1360,6 +1612,10 @@ const state = {
   // Per-image caption cache: path -> {enabled_sentences: [...], free_text: ""}
   captionCache: {},
   activeSentenceFilters: new Set(),
+  activeMetaFilters: {
+    aspectState: "any",
+    captionState: "any",
+  },
   filterCaptionCacheKey: "",
   filterLoadingPromise: null,
   previewPath: null,
@@ -1386,6 +1642,7 @@ const state = {
   ollamaAvailableModels: [],
   modelLogLines: [],
   modelLogCollapsed: false,
+  cloning: false,
   aiProgress: {
     visible: false,
     scopeLabel: "",
@@ -1403,20 +1660,47 @@ const state = {
   previewCaptionOverlayCollapsed: false,
   hideAddButtons: false,
   thumbSize: 160,
+  uploading: false,
+  thumbnailProgress: {
+    visible: false,
+    label: "",
+    total: 0,
+    completed: 0,
+  },
+  uploadQueue: [],
+  uploadQueueCurrentJob: null,
+  uploadQueueCompletedImages: 0,
+  uploadQueueFailedJobs: 0,
+  uploadQueueLastSummary: "",
 };
+
+const IMAGE_FILE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"]);
+let uploadJobCounter = 0;
+let thumbnailProgressHideTimer = null;
 
 // ===== DOM REFS =====
 const $ = (s) => document.querySelector(s);
 const folderInput = $("#folder-input");
 const loadBtn = $("#load-btn");
+const cloneFolderBtn = $("#clone-folder-btn");
 const settingsBtn = $("#settings-btn");
 const thumbSlider = $("#thumb-size-slider");
 const statusBar = $("#status-bar");
+const thumbnailQueueStatus = $("#thumbnail-queue-status");
+const thumbnailQueueText = $("#thumbnail-queue-text");
+const thumbnailQueueProgressFill = $("#thumbnail-queue-progress-fill");
+const uploadQueueStatus = $("#upload-queue-status");
+const uploadQueueText = $("#upload-queue-text");
+const uploadQueueProgressFill = $("#upload-queue-progress-fill");
 const fileCount = $("#file-count");
+const filterArBtn = $("#filter-ar-btn");
+const filterTxtBtn = $("#filter-txt-btn");
 const clearFiltersBtn = $("#clear-filters-btn");
 const fileGrid = $("#file-grid");
 const fileGridContainer = $("#file-grid-container");
+const centerPanel = $("#center-panel");
 const previewImg = $("#preview-img");
+const fileDropHint = $("#file-drop-hint");
 const cropOverlay = $("#crop-overlay");
 const cropGuideV = $("#crop-guide-v");
 const cropGuideH = $("#crop-guide-h");
@@ -1559,6 +1843,11 @@ function createFilterIcon() {
   return svg;
 }
 
+function initializeFilterButtons() {
+  if (!clearFiltersBtn) return;
+  clearFiltersBtn.replaceChildren(createFilterIcon());
+}
+
 function setGenerateButtonContent(button, label, options = {}) {
   if (!button) return;
   const { iconOnly = false } = options;
@@ -1590,6 +1879,150 @@ function setGenerateButtonContent(button, label, options = {}) {
     button.setAttribute("aria-label", label);
   } else if (label) {
     button.removeAttribute("aria-label");
+  }
+}
+
+function getCloneSelectionPaths() {
+  return state.selectedPaths.size > 1 ? [...state.selectedPaths] : [];
+}
+
+function getDefaultCloneFolderName() {
+  const baseName = getFileLabel(state.folder || "folder") || "folder";
+  return `${baseName}-copy`;
+}
+
+async function cloneCurrentFolder() {
+  if (!state.folder) {
+    showErrorToast("Load a folder first.");
+    return;
+  }
+  if (state.cloning || state.autoCaptioning) {
+    showErrorToast("Finish the current operation before cloning.");
+    return;
+  }
+
+  const selectedPaths = getCloneSelectionPaths();
+  const selectionLabel = selectedPaths.length > 1
+    ? `${selectedPaths.length} selected images`
+    : "the whole folder";
+  const newFolderName = prompt(`Clone ${selectionLabel} into a new sibling folder named:`, getDefaultCloneFolderName());
+  if (newFolderName === null) return;
+  const trimmedName = String(newFolderName || "").trim();
+  if (!trimmedName) {
+    showErrorToast("Clone cancelled: folder name is required.");
+    return;
+  }
+
+  state.cloning = true;
+  updateActionButtons();
+  state.modelLogLines = [];
+  state.modelLogCollapsed = true;
+  resetAutoCaptionProgress();
+  updateAutoCaptionProgress({
+    visible: true,
+    scopeLabel: selectedPaths.length > 1 ? "Clone Selection" : "Clone Folder",
+    totalImages: 1,
+    processedImages: 0,
+    completedImages: 0,
+    errors: 0,
+    currentMessage: "Preparing clone...",
+    currentStepIndex: 0,
+    currentStepTotal: 1,
+  });
+  statusBar.textContent = `Cloning to ${trimmedName}...`;
+
+  try {
+    const resp = await fetch("/api/folder/clone/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source_folder: state.folder,
+        new_folder_name: trimmedName,
+        image_paths: selectedPaths,
+      }),
+    });
+
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.detail || "Failed to clone folder");
+    }
+
+    let targetFolder = "";
+    await readNdjsonStream(resp, (event) => {
+      if (!event || typeof event !== "object") return;
+      if (event.type === "start") {
+        targetFolder = event.target_folder || targetFolder;
+        updateAutoCaptionProgress({
+          visible: true,
+          scopeLabel: event.mode === "selected" ? "Clone Selection" : "Clone Folder",
+          totalImages: Math.max(1, Number(event.total || 0)),
+          processedImages: 0,
+          completedImages: 0,
+          errors: 0,
+          currentPath: event.target_folder || "",
+          currentMessage: "Creating folder...",
+          currentStepIndex: 0,
+          currentStepTotal: 1,
+        });
+        return;
+      }
+      if (event.type === "progress") {
+        updateAutoCaptionProgress({
+          visible: true,
+          totalImages: Math.max(1, Number(event.total || state.aiProgress.totalImages || 1)),
+          processedImages: Number(event.index || 0),
+          completedImages: Number(event.index || 0),
+          currentPath: event.path || "",
+          currentMessage: "Copied",
+          currentStepIndex: 1,
+          currentStepTotal: 1,
+        });
+        return;
+      }
+      if (event.type === "config-copied") {
+        targetFolder = event.target_folder || targetFolder;
+        updateAutoCaptionProgress({
+          currentPath: event.target_folder || "",
+          currentMessage: "Copied config",
+          currentStepIndex: 1,
+          currentStepTotal: 1,
+        });
+        return;
+      }
+      if (event.type === "done") {
+        targetFolder = event.target_folder || targetFolder;
+        updateAutoCaptionProgress({
+          visible: true,
+          totalImages: Math.max(1, Number(event.total || state.aiProgress.totalImages || 1)),
+          processedImages: Number(event.total || state.aiProgress.totalImages || 1),
+          completedImages: Number(event.total || state.aiProgress.totalImages || 1),
+          currentPath: event.target_folder || "",
+          currentMessage: "Clone complete",
+          currentStepIndex: 1,
+          currentStepTotal: 1,
+        });
+        return;
+      }
+      if (event.type === "error") {
+        throw new Error(event.message || "Clone failed");
+      }
+    });
+
+    if (!targetFolder) {
+      throw new Error("Clone finished without a target folder");
+    }
+
+    folderInput.value = targetFolder;
+    await loadFolder();
+    statusBar.textContent = `Cloned into ${getFileLabel(targetFolder)}`;
+  } catch (err) {
+    const message = err?.message || "Failed to clone folder";
+    statusBar.textContent = `Clone error: ${message}`;
+    showErrorToast(`Clone error: ${message}`);
+  } finally {
+    state.cloning = false;
+    updateActionButtons();
+    resetAutoCaptionProgress();
   }
 }
 
@@ -1855,6 +2288,21 @@ function getActiveSentenceFilters() {
   return [...state.activeSentenceFilters].filter(Boolean);
 }
 
+function getActiveMetaFilterCount() {
+  let count = 0;
+  if (state.activeMetaFilters.aspectState !== "any") count += 1;
+  if (state.activeMetaFilters.captionState !== "any") count += 1;
+  return count;
+}
+
+function getActiveFilterCount() {
+  return state.activeSentenceFilters.size + getActiveMetaFilterCount();
+}
+
+function hasAnyActiveFilters() {
+  return getActiveFilterCount() > 0;
+}
+
 function getActiveSentenceFilterKey() {
   return JSON.stringify([...getActiveSentenceFilters()].sort());
 }
@@ -1871,8 +2319,26 @@ function getEnabledSentencesForPath(path) {
   return orderEnabledSentences(enabledSentences);
 }
 
+function imageMatchesMetaFilters(image) {
+  if (!image) return false;
+  if (state.activeMetaFilters.aspectState === "has" && imageConformsToAspectRatios(image)) {
+    return false;
+  }
+  if (state.activeMetaFilters.aspectState === "missing" && !imageConformsToAspectRatios(image)) {
+    return false;
+  }
+  if (state.activeMetaFilters.captionState === "has" && !image.has_caption) {
+    return false;
+  }
+  if (state.activeMetaFilters.captionState === "missing" && image.has_caption) {
+    return false;
+  }
+  return true;
+}
+
 function imageMatchesActiveFilters(image) {
   const filters = getActiveSentenceFilters();
+  if (!imageMatchesMetaFilters(image)) return false;
   if (filters.length === 0 || !canApplyActiveSentenceFilters()) return true;
   const enabled = new Set(getEnabledSentencesForPath(image?.path));
   return filters.every(sentence => enabled.has(sentence));
@@ -1929,7 +2395,7 @@ async function ensureCaptionCacheLoadedForFiltering() {
 }
 
 function refreshGridForActiveFilters() {
-  if (state.activeSentenceFilters.size > 0) {
+  if (hasAnyActiveFilters()) {
     renderGrid();
   } else {
     updateFileCountDisplay();
@@ -1938,23 +2404,94 @@ function refreshGridForActiveFilters() {
 }
 
 function renderFilterActions() {
-  const hasFilters = state.activeSentenceFilters.size > 0;
-  clearFiltersBtn.classList.toggle("visible", hasFilters);
-  clearFiltersBtn.disabled = !hasFilters;
+  const hasFilters = hasAnyActiveFilters();
+  const filterCount = getActiveFilterCount();
+  clearFiltersBtn.classList.toggle("active", hasFilters);
+  clearFiltersBtn.setAttribute("aria-pressed", hasFilters ? "true" : "false");
+  applyTriStateFilterButton(filterArBtn, "AR", "No AR", state.activeMetaFilters.aspectState, {
+    any: "Aspect ratio filter disabled",
+    has: "Showing only images with the AR warning badge",
+    missing: "Showing only images without the AR warning badge",
+  });
+  applyTriStateFilterButton(filterTxtBtn, "TXT", "No TXT", state.activeMetaFilters.captionState, {
+    any: "TXT file filter disabled",
+    has: "Showing only images that have a txt caption file",
+    missing: "Showing only images without a txt caption file",
+  });
   clearFiltersBtn.title = hasFilters
-    ? `Clear ${state.activeSentenceFilters.size} active filter${state.activeSentenceFilters.size === 1 ? "" : "s"}`
-    : "No active caption filters";
+    ? `Clear ${filterCount} active filter${filterCount === 1 ? "" : "s"}`
+    : "No active filters";
+  clearFiltersBtn.setAttribute("aria-label", hasFilters
+    ? `Clear ${filterCount} active filter${filterCount === 1 ? "" : "s"}`
+    : "No active filters"
+  );
 }
 
 function clearSentenceFilters() {
-  if (state.activeSentenceFilters.size === 0) return;
+  if (!hasAnyActiveFilters()) return;
   const preferredPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
   const previousScrollTop = fileGridContainer.scrollTop;
   state.activeSentenceFilters.clear();
+  state.activeMetaFilters.aspectState = "any";
+  state.activeMetaFilters.captionState = "any";
   state.filterCaptionCacheKey = "";
   renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
   renderSentences();
   statusBar.textContent = "Filters cleared";
+}
+
+function getNextTriStateFilterValue(currentValue) {
+  if (currentValue === "any") return "has";
+  if (currentValue === "has") return "missing";
+  return "any";
+}
+
+function applyTriStateFilterButton(button, positiveLabel, negativeLabel, stateValue, labels) {
+  if (!button) return;
+  button.textContent = stateValue === "missing" ? negativeLabel : positiveLabel;
+  button.classList.toggle("active", stateValue === "has");
+  button.classList.toggle("missing", stateValue === "missing");
+  button.setAttribute("aria-pressed", stateValue === "any" ? "false" : "true");
+  button.title = labels[stateValue] || positiveLabel;
+  button.setAttribute("aria-label", labels[stateValue] || positiveLabel);
+}
+
+function applyFilterUiUpdate(statusMessage) {
+  const preferredPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
+  const previousScrollTop = fileGridContainer.scrollTop;
+  renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
+  renderSentences();
+  if (statusMessage) {
+    statusBar.textContent = statusMessage;
+  }
+}
+
+function toggleAspectFilter() {
+  state.activeMetaFilters.aspectState = getNextTriStateFilterValue(state.activeMetaFilters.aspectState);
+  let label = "Filters cleared";
+  if (state.activeMetaFilters.aspectState === "has") {
+    label = "Filtered by wrong aspect ratio";
+  } else if (state.activeMetaFilters.aspectState === "missing") {
+    label = "Filtered by valid aspect ratio";
+  } else if (hasAnyActiveFilters()) {
+    const count = getActiveFilterCount();
+    label = `Filtered by ${count} filter${count === 1 ? "" : "s"}`;
+  }
+  applyFilterUiUpdate(label);
+}
+
+function toggleCaptionPresenceFilter() {
+  state.activeMetaFilters.captionState = getNextTriStateFilterValue(state.activeMetaFilters.captionState);
+  let label = "Filters cleared";
+  if (state.activeMetaFilters.captionState === "has") {
+    label = "Filtered by has txt file";
+  } else if (state.activeMetaFilters.captionState === "missing") {
+    label = "Filtered by missing txt file";
+  } else if (hasAnyActiveFilters()) {
+    const count = getActiveFilterCount();
+    label = `Filtered by ${count} filter${count === 1 ? "" : "s"}`;
+  }
+  applyFilterUiUpdate(label);
 }
 
 async function toggleSentenceFilter(sentence) {
@@ -2098,6 +2635,7 @@ const thumbLoadQueue = [];
 let thumbLoadingCount = 0;
 const MAX_CONCURRENT_THUMB_LOADS = 12;
 const CROP_SNAP_HYSTERESIS_PX = 10;
+const thumbQueuedKeys = new Set();
 
 function getImageVersion(path) {
   return state.imageVersions[path] || 0;
@@ -2116,21 +2654,26 @@ function buildImageApiUrl(endpoint, path, extraParams = {}) {
 }
 
 function queueThumbLoad(path, size, priority = false) {
-  if (thumbBlobCache.has(`${path}:${size}:${getImageVersion(path)}`)) return;
-  const item = { path, size };
+  const key = `${path}:${size}:${getImageVersion(path)}`;
+  if (thumbBlobCache.has(key) || thumbQueuedKeys.has(key)) return false;
+  const item = { path, size, key };
+  thumbQueuedKeys.add(key);
   if (priority) {
     thumbLoadQueue.unshift(item);
   } else {
     thumbLoadQueue.push(item);
   }
   processThumbQueue();
+  return true;
 }
 
 async function processThumbQueue() {
   while (thumbLoadingCount < MAX_CONCURRENT_THUMB_LOADS && thumbLoadQueue.length > 0) {
-    const { path, size } = thumbLoadQueue.shift();
-    const key = `${path}:${size}:${getImageVersion(path)}`;
-    if (thumbBlobCache.has(key)) continue;
+    const { path, size, key } = thumbLoadQueue.shift();
+    if (thumbBlobCache.has(key)) {
+      thumbQueuedKeys.delete(key);
+      continue;
+    }
     thumbLoadingCount++;
     fetch(buildImageApiUrl("thumbnail", path, { size }))
       .then(r => r.ok ? r.blob() : null)
@@ -2144,7 +2687,12 @@ async function processThumbQueue() {
         }
       })
       .catch(() => {})
-      .finally(() => { thumbLoadingCount--; processThumbQueue(); });
+      .finally(() => {
+        thumbQueuedKeys.delete(key);
+        advanceThumbnailProgress();
+        thumbLoadingCount--;
+        processThumbQueue();
+      });
   }
 }
 
@@ -2218,8 +2766,9 @@ function updateFileCountDisplay() {
   }
   const captioned = state.images.filter(img => img.has_caption).length;
   const visible = getVisibleImageEntries().length;
-  const filterCount = state.activeSentenceFilters.size;
-  if (filterCount > 0 && canApplyActiveSentenceFilters()) {
+  const filterCount = getActiveFilterCount();
+  const hasCaptionFilters = state.activeSentenceFilters.size > 0;
+  if (filterCount > 0 && (!hasCaptionFilters || canApplyActiveSentenceFilters())) {
     fileCount.textContent = `${visible}/${total} images • ${captioned} captioned • ${filterCount} filter${filterCount === 1 ? "" : "s"}`;
     return;
   }
@@ -2247,8 +2796,27 @@ function refreshAspectWarning(path) {
 
 function storeThumbnailDimensions(path, width, height) {
   if (!path || !width || !height) return;
+  const image = state.images.find((item) => item.path === path) || null;
+  const previousDims = state.thumbnailDimensions[path] || null;
+  const previousWidth = Number(previousDims?.width || 0);
+  const previousHeight = Number(previousDims?.height || 0);
+  if (previousWidth === width && previousHeight === height) {
+    refreshAspectWarning(path);
+    return;
+  }
+
+  const previousAspectMatch = image ? imageMatchesMetaFilters(image) : null;
   state.thumbnailDimensions[path] = { width, height };
   refreshAspectWarning(path);
+
+  if (state.activeMetaFilters.aspectState !== "any" && image) {
+    const nextAspectMatch = imageMatchesMetaFilters(image);
+    if (previousAspectMatch !== nextAspectMatch) {
+      const preferredPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
+      const previousScrollTop = fileGridContainer.scrollTop;
+      renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
+    }
+  }
 }
 
 function updateImageDimensions(path, cropState) {
@@ -2709,8 +3277,13 @@ function updateActionButtons() {
   const hasCaptions = hasConfiguredCaptions();
   const canRunStructured = hasSelection && hasCaptions && !!state.ollamaModel.trim();
   const canRunFreeTextOnly = hasSelection && !!state.ollamaModel.trim();
-  autoCaptionBtn.disabled = !state.autoCaptioning && !canRunStructured;
-  addFreeTextNowBtn.disabled = !state.autoCaptioning && !canRunFreeTextOnly;
+  cloneFolderBtn.disabled = !state.folder || state.autoCaptioning || state.cloning || state.uploading;
+  cloneFolderBtn.textContent = state.cloning ? "Cloning..." : "Clone";
+  cloneFolderBtn.title = state.selectedPaths.size > 1
+    ? "Clone the selected images into a new sibling folder"
+    : "Clone the whole current folder into a new sibling folder";
+  autoCaptionBtn.disabled = state.uploading || (!state.autoCaptioning && !canRunStructured);
+  addFreeTextNowBtn.disabled = state.uploading || (!state.autoCaptioning && !canRunFreeTextOnly);
   autoCaptionBtn.classList.toggle("running", state.autoCaptioning);
   addFreeTextNowBtn.classList.toggle("running", state.autoCaptioning && state.autoCaptionMode === "free-text-only");
   setGenerateButtonContent(autoCaptionBtn, state.autoCaptioning && state.autoCaptionMode === "full" ? "Stop Auto Caption" : "Auto Caption");
@@ -2929,6 +3502,77 @@ function getFileLabel(path) {
   return String(path || "").split(/[\\/]/).pop() || String(path || "");
 }
 
+function getCaptionPathForImage(imagePath) {
+  const value = String(imagePath || "");
+  const lastDot = value.lastIndexOf(".");
+  if (lastDot <= 0) return `${value}.txt`;
+  return `${value.slice(0, lastDot)}.txt`;
+}
+
+function isEditableElement(element) {
+  return !!(
+    element?.tagName === "INPUT" ||
+    element?.tagName === "TEXTAREA" ||
+    element?.isContentEditable
+  );
+}
+
+async function deleteSelectedImages() {
+  if (state.selectedPaths.size === 0) return;
+  if (state.autoCaptioning) {
+    showErrorToast("Stop auto caption before deleting images.");
+    return;
+  }
+
+  const selectedPaths = [...state.selectedPaths];
+  const count = selectedPaths.length;
+  const confirmMessage = count === 1
+    ? `Delete "${getFileLabel(selectedPaths[0])}"? This also deletes its .txt caption file.`
+    : `Delete ${count} selected images? This also deletes their .txt caption files.`;
+  if (!confirm(confirmMessage)) return;
+
+  const preserveScrollTop = fileGridContainer.scrollTop;
+  statusBar.textContent = count === 1
+    ? `Deleting ${getFileLabel(selectedPaths[0])}...`
+    : `Deleting ${count} images...`;
+
+  try {
+    const resp = await fetch("/api/images/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_paths: selectedPaths }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to delete images");
+    }
+
+    for (const path of data.deleted_paths || []) {
+      invalidateImageCaches(path);
+      delete state.captionCache[path];
+      delete state.imageCrops[path];
+      delete state.imageVersions[path];
+    }
+
+    await loadFolder({ preserveScrollTop });
+
+    if (Array.isArray(data.errors) && data.errors.length > 0) {
+      const summary = data.errors.length === 1
+        ? `${data.deleted_count || 0} deleted, 1 failed: ${data.errors[0].error || "Unknown error"}`
+        : `${data.deleted_count || 0} deleted, ${data.errors.length} failed`;
+      statusBar.textContent = summary;
+      showErrorToast(summary);
+      return;
+    }
+
+    statusBar.textContent = count === 1 ? "Deleted 1 image" : `Deleted ${data.deleted_count || count} images`;
+  } catch (err) {
+    const message = err?.message || "Failed to delete images";
+    statusBar.textContent = `Delete error: ${message}`;
+    showErrorToast(`Delete error: ${message}`);
+  }
+}
+
 async function readNdjsonStream(response, onEvent) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -3005,7 +3649,8 @@ async function saveOllamaSettingsFromForm() {
 }
 
 // ===== FOLDER LOADING =====
-async function loadFolder() {
+async function loadFolder(options = {}) {
+  const { preserveScrollTop = null } = options;
   const folder = folderInput.value.trim();
   if (!folder) return;
   state.folder = folder;
@@ -3015,6 +3660,8 @@ async function loadFolder() {
   state.previewPath = null;
   state.captionCache = {};
   state.activeSentenceFilters.clear();
+  state.activeMetaFilters.aspectState = "any";
+  state.activeMetaFilters.captionState = "any";
   state.filterCaptionCacheKey = "";
   state.filterLoadingPromise = null;
   state.imageCrops = {};
@@ -3046,7 +3693,7 @@ async function loadFolder() {
       applySettings(settings);
     }
 
-    renderGrid();
+    renderGrid({ preserveScrollTop });
     hidePreview();
     renderSentences();
     freeText.value = "";
@@ -3055,12 +3702,342 @@ async function loadFolder() {
 
     // Preload all thumbnails
     const thumbSize = getThumbLoadSize();
+    let queuedThumbnailCount = 0;
     for (const img of state.images) {
-      queueThumbLoad(img.path, thumbSize);
+      if (queueThumbLoad(img.path, thumbSize)) {
+        queuedThumbnailCount += 1;
+      }
+    }
+    if (queuedThumbnailCount > 0) {
+      startThumbnailProgress(queuedThumbnailCount, `Processing thumbnails 0/${queuedThumbnailCount}`);
+    } else {
+      resetThumbnailProgress();
     }
   } catch (err) {
+    resetThumbnailProgress();
     statusBar.textContent = `Error: ${err.message}`;
   }
+}
+
+function getImageExtension(name) {
+  const normalizedName = String(name || "").trim().toLowerCase();
+  const dotIndex = normalizedName.lastIndexOf(".");
+  return dotIndex >= 0 ? normalizedName.slice(dotIndex) : "";
+}
+
+function getDroppedImageFiles(fileList) {
+  return Array.from(fileList || []).filter(file => IMAGE_FILE_EXTENSIONS.has(getImageExtension(file?.name)));
+}
+
+function cancelThumbnailProgressHide() {
+  if (thumbnailProgressHideTimer) {
+    clearTimeout(thumbnailProgressHideTimer);
+    thumbnailProgressHideTimer = null;
+  }
+}
+
+function updateThumbnailProgressBar() {
+  const progress = state.thumbnailProgress;
+  const visible = !!progress.visible;
+  thumbnailQueueStatus.hidden = !visible;
+  thumbnailQueueStatus.classList.toggle("visible", visible);
+  if (!visible) {
+    thumbnailQueueText.textContent = "";
+    thumbnailQueueProgressFill.style.width = "0%";
+    thumbnailQueueProgressFill.classList.remove("active");
+    return;
+  }
+
+  const total = Math.max(0, Number(progress.total || 0));
+  const completed = Math.max(0, Math.min(total, Number(progress.completed || 0)));
+  const percent = total > 0 ? (completed / total) * 100 : 0;
+  thumbnailQueueText.textContent = progress.label || `Processing thumbnails ${completed}/${total}`;
+  thumbnailQueueProgressFill.style.width = `${percent}%`;
+  thumbnailQueueProgressFill.classList.toggle("active", completed < total);
+}
+
+function startThumbnailProgress(total, label) {
+  cancelThumbnailProgressHide();
+  state.thumbnailProgress.visible = total > 0;
+  state.thumbnailProgress.total = Math.max(0, Number(total || 0));
+  state.thumbnailProgress.completed = 0;
+  state.thumbnailProgress.label = label || `Processing thumbnails 0/${state.thumbnailProgress.total}`;
+  updateThumbnailProgressBar();
+}
+
+function advanceThumbnailProgress() {
+  if (!state.thumbnailProgress.visible) {
+    return;
+  }
+  state.thumbnailProgress.completed = Math.min(
+    state.thumbnailProgress.total,
+    state.thumbnailProgress.completed + 1,
+  );
+  state.thumbnailProgress.label = `Processing thumbnails ${state.thumbnailProgress.completed}/${state.thumbnailProgress.total}`;
+  updateThumbnailProgressBar();
+  if (state.thumbnailProgress.completed >= state.thumbnailProgress.total) {
+    state.thumbnailProgress.label = `Processed ${state.thumbnailProgress.total} thumbnails`;
+    updateThumbnailProgressBar();
+    cancelThumbnailProgressHide();
+    thumbnailProgressHideTimer = window.setTimeout(() => {
+      state.thumbnailProgress.visible = false;
+      state.thumbnailProgress.label = "";
+      updateThumbnailProgressBar();
+      thumbnailProgressHideTimer = null;
+    }, 1200);
+  }
+}
+
+function resetThumbnailProgress() {
+  cancelThumbnailProgressHide();
+  state.thumbnailProgress.visible = false;
+  state.thumbnailProgress.label = "";
+  state.thumbnailProgress.total = 0;
+  state.thumbnailProgress.completed = 0;
+  updateThumbnailProgressBar();
+}
+
+function setFileDropActive(active) {
+  centerPanel.classList.toggle("file-drop-active", !!active);
+  if (fileDropHint) {
+    fileDropHint.hidden = !active;
+  }
+}
+
+function normalizeClientPath(path) {
+  return String(path || "").trim().replace(/\\/g, "/").replace(/\/+/g, "/").toLowerCase();
+}
+
+function isSameClientPath(left, right) {
+  return normalizeClientPath(left) === normalizeClientPath(right);
+}
+
+function getUploadQueuePendingImageCount() {
+  return state.uploadQueue.reduce((sum, job) => sum + (job?.imageFiles?.length || 0), 0);
+}
+
+function getUploadQueueTotalImageCount() {
+  return state.uploadQueueCompletedImages
+    + (state.uploadQueueCurrentJob?.imageFiles?.length || 0)
+    + getUploadQueuePendingImageCount();
+}
+
+function renderUploadQueueStatus() {
+  const hasActiveQueue = !!(state.uploading || state.uploadQueueCurrentJob || state.uploadQueue.length);
+  statusBar.hidden = hasActiveQueue;
+  uploadQueueStatus.hidden = !hasActiveQueue;
+  uploadQueueStatus.classList.toggle("visible", hasActiveQueue);
+
+  if (!hasActiveQueue) {
+    uploadQueueProgressFill.style.width = "0%";
+    uploadQueueProgressFill.classList.remove("active");
+    uploadQueueText.textContent = "";
+    return;
+  }
+
+  const currentJob = state.uploadQueueCurrentJob;
+  const waitingJobs = state.uploadQueue.length;
+  const completedImages = state.uploadQueueCompletedImages;
+  const totalImages = getUploadQueueTotalImageCount();
+  const progressPercent = totalImages > 0 ? Math.max(0, Math.min(100, (completedImages / totalImages) * 100)) : 0;
+  uploadQueueProgressFill.style.width = `${progressPercent}%`;
+  uploadQueueProgressFill.classList.toggle("active", !!currentJob);
+
+  const parts = [];
+  if (currentJob) {
+    parts.push(`Uploading ${currentJob.imageFiles.length} image${currentJob.imageFiles.length === 1 ? "" : "s"} to ${getFileLabel(currentJob.folder)}`);
+  } else if (waitingJobs > 0) {
+    parts.push(`Starting next upload job`);
+  } else {
+    parts.push(state.uploadQueueLastSummary || "Upload queue complete");
+  }
+  if (waitingJobs > 0) {
+    parts.push(`${waitingJobs} queued job${waitingJobs === 1 ? "" : "s"}`);
+  }
+  if (totalImages > 0) {
+    parts.push(`${completedImages}/${totalImages} done`);
+  }
+  if (state.uploadQueueFailedJobs > 0) {
+    parts.push(`${state.uploadQueueFailedJobs} failed`);
+  }
+  uploadQueueText.textContent = parts.join(" • ");
+}
+
+async function selectUploadedImages(paths) {
+  const uploadedPaths = Array.from(new Set((paths || []).filter(Boolean)));
+  if (!uploadedPaths.length) {
+    return;
+  }
+
+  const availablePaths = uploadedPaths.filter(path => state.images.some(img => img.path === path));
+  if (!availablePaths.length) {
+    return;
+  }
+
+  state.selectedPaths.clear();
+  for (const path of availablePaths) {
+    state.selectedPaths.add(path);
+  }
+
+  const lastPath = availablePaths[availablePaths.length - 1];
+  state.lastClickedPath = lastPath;
+  state.lastClickedIndex = state.images.findIndex(img => img.path === lastPath);
+
+  updateGridSelection();
+  renderGrid({ preservePath: lastPath, preserveScrollTop: fileGridContainer.scrollTop });
+
+  if (availablePaths.length === 1) {
+    await showPreview(lastPath);
+    await loadCaptionData(lastPath);
+    await loadCropData(lastPath);
+    freeText.disabled = false;
+  } else {
+    await showPreview(lastPath);
+    freeText.disabled = true;
+    freeText.value = "(Multiple images selected)";
+    await loadMultiCaptionState();
+    clearCropDraft();
+  }
+
+  updateMultiInfo();
+  renderSentences();
+  updateActionButtons();
+  preloadAdjacent(lastPath);
+}
+
+async function processUploadQueue() {
+  if (state.uploading) {
+    renderUploadQueueStatus();
+    return;
+  }
+  if (!state.uploadQueue.length) {
+    renderUploadQueueStatus();
+    updateActionButtons();
+    return;
+  }
+
+  state.uploading = true;
+  renderUploadQueueStatus();
+  updateActionButtons();
+
+  while (state.uploadQueue.length) {
+    const job = state.uploadQueue.shift();
+    state.uploadQueueCurrentJob = job;
+    renderUploadQueueStatus();
+
+    try {
+      const formData = new FormData();
+      formData.append("folder", job.folder);
+      for (const file of job.imageFiles) {
+        formData.append("files", file, file.name);
+      }
+
+      const resp = await fetch("/api/images/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.detail || "Upload failed");
+      }
+
+      const uploadedPaths = Array.isArray(data.uploaded)
+        ? data.uploaded.map(item => item?.path).filter(Boolean)
+        : [];
+      const uploadedCount = Number(data.uploaded_count || uploadedPaths.length || 0);
+      const renamedCount = Number(data.renamed_count || 0);
+      const serverSkippedCount = Array.isArray(data.skipped) ? data.skipped.length : Number(data.skipped_count || 0);
+      const totalSkippedCount = job.clientSkippedCount + serverSkippedCount;
+
+      state.uploadQueueCompletedImages += uploadedCount;
+
+      if (uploadedCount > 0 && isSameClientPath(state.folder, job.folder)) {
+        const preserveScrollTop = fileGridContainer.scrollTop;
+        folderInput.value = job.folder;
+        await loadFolder({ preserveScrollTop });
+        await selectUploadedImages(uploadedPaths);
+      }
+
+      const summary = [`Uploaded ${uploadedCount} image${uploadedCount === 1 ? "" : "s"} to ${getFileLabel(job.folder)}`];
+      if (renamedCount > 0) {
+        summary.push(`${renamedCount} renamed`);
+      }
+      if (totalSkippedCount > 0) {
+        summary.push(`${totalSkippedCount} skipped`);
+      }
+      if (state.uploadQueue.length > 0) {
+        summary.push(`${state.uploadQueue.length} queued`);
+      }
+      state.uploadQueueLastSummary = summary.join(" • ");
+
+      if (uploadedCount === 0 && totalSkippedCount > 0) {
+        showErrorToast(`No images were uploaded to ${getFileLabel(job.folder)}. ${totalSkippedCount} file${totalSkippedCount === 1 ? " was" : "s were"} skipped.`);
+      }
+    } catch (err) {
+      state.uploadQueueFailedJobs += 1;
+      state.uploadQueueLastSummary = `Upload error for ${getFileLabel(job.folder)}: ${err.message}`;
+      showErrorToast(`Upload failed for ${getFileLabel(job.folder)}: ${err.message}`);
+    }
+
+    state.uploadQueueCurrentJob = null;
+    renderUploadQueueStatus();
+  }
+
+  state.uploading = false;
+  renderUploadQueueStatus();
+  updateActionButtons();
+  statusBar.textContent = state.uploadQueueLastSummary || "Upload queue complete";
+  state.uploadQueueCompletedImages = 0;
+  state.uploadQueueFailedJobs = 0;
+  state.uploadQueueLastSummary = "";
+}
+
+async function uploadDroppedFiles(fileList) {
+  if (!state.folder) {
+    showErrorToast("Load a folder first, then drop images onto the preview panel.");
+    statusBar.textContent = "Upload error: no folder loaded";
+    return;
+  }
+
+  const droppedFiles = Array.from(fileList || []);
+  if (!droppedFiles.length) {
+    return;
+  }
+
+  const imageFiles = getDroppedImageFiles(droppedFiles);
+  const clientSkippedCount = Math.max(0, droppedFiles.length - imageFiles.length);
+  if (!imageFiles.length) {
+    showErrorToast("No supported image files were dropped.");
+    statusBar.textContent = clientSkippedCount > 0
+      ? `Upload skipped ${clientSkippedCount} unsupported file${clientSkippedCount === 1 ? "" : "s"}`
+      : "Upload skipped";
+    return;
+  }
+
+  if (!state.uploading && !state.uploadQueue.length && !state.uploadQueueCurrentJob) {
+    state.uploadQueueCompletedImages = 0;
+    state.uploadQueueFailedJobs = 0;
+    state.uploadQueueLastSummary = "";
+  }
+
+  state.uploadQueue.push({
+    id: ++uploadJobCounter,
+    folder: state.folder,
+    imageFiles,
+    clientSkippedCount,
+  });
+
+  renderUploadQueueStatus();
+  processUploadQueue().catch((err) => {
+    state.uploading = false;
+    state.uploadQueueCurrentJob = null;
+    state.uploadQueueFailedJobs += 1;
+    state.uploadQueueLastSummary = `Upload queue failed: ${err.message}`;
+    renderUploadQueueStatus();
+    updateActionButtons();
+    statusBar.textContent = state.uploadQueueLastSummary;
+    showErrorToast(state.uploadQueueLastSummary);
+  });
 }
 
 function getThumbLoadSize() {
@@ -3132,6 +4109,11 @@ function renderGrid(options = {}) {
     dot.textContent = "TXT";
     dot.title = "Caption text file exists";
     dot.dataset.captionDot = img.path;
+    dot.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      fetch(`/api/open-file?path=${encodeURIComponent(getCaptionPathForImage(img.path))}`);
+    });
     cell.appendChild(dot);
 
     const aspectWarning = document.createElement("div");
@@ -3358,7 +4340,56 @@ function hidePreview() {
 
 // ===== ZOOM & PAN =====
 {
-  const panel = document.getElementById("center-panel");
+  const panel = centerPanel;
+  let fileDragDepth = 0;
+
+  const eventHasFiles = (event) => {
+    const types = event?.dataTransfer?.types;
+    return Array.isArray(types) ? types.includes("Files") : !!types?.includes?.("Files");
+  };
+
+  window.addEventListener("dragover", (e) => {
+    if (!eventHasFiles(e)) return;
+    e.preventDefault();
+  });
+
+  window.addEventListener("drop", (e) => {
+    if (!eventHasFiles(e)) return;
+    e.preventDefault();
+  });
+
+  panel.addEventListener("dragenter", (e) => {
+    if (!eventHasFiles(e)) return;
+    e.preventDefault();
+    fileDragDepth += 1;
+    setFileDropActive(true);
+  });
+
+  panel.addEventListener("dragover", (e) => {
+    if (!eventHasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = state.folder ? "copy" : "none";
+    }
+    setFileDropActive(true);
+  });
+
+  panel.addEventListener("dragleave", (e) => {
+    if (!eventHasFiles(e)) return;
+    e.preventDefault();
+    fileDragDepth = Math.max(0, fileDragDepth - 1);
+    if (fileDragDepth === 0) {
+      setFileDropActive(false);
+    }
+  });
+
+  panel.addEventListener("drop", async (e) => {
+    if (!eventHasFiles(e)) return;
+    e.preventDefault();
+    fileDragDepth = 0;
+    setFileDropActive(false);
+    await uploadDroppedFiles(e.dataTransfer?.files);
+  });
 
   panel.addEventListener("contextmenu", (e) => {
     if (canEditCrop()) e.preventDefault();
@@ -4098,9 +5129,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
       && groupIdx !== null
     ) {
       e.preventDefault();
-      e.stopPropagation();
       e.dataTransfer.dropEffect = "move";
-      li.classList.add("drag-over");
       return;
     }
     const payload = getDragPayload(e, SENTENCE_DRAG_TYPE);
@@ -4131,9 +5160,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
       && groupIdx !== null
     ) {
       e.preventDefault();
-      e.stopPropagation();
       li.classList.remove("drag-over");
-      moveTopLevelSentenceIntoGroup(secIdx, topLevelPayload.item.sentence, groupIdx, sentenceIdx);
       return;
     }
     const payload = getDragPayload(e, SENTENCE_DRAG_TYPE);
@@ -5007,11 +6034,14 @@ thumbSlider.addEventListener("change", () => {
   }).catch(err => console.error("Failed to save thumbnail size:", err));
 
   const thumbLoadSize = getThumbLoadSize();
+  let queuedThumbnailCount = 0;
   for (const img of state.images) {
-    const key = img.path + ":" + thumbLoadSize;
-    if (!thumbBlobCache.has(key)) {
-      queueThumbLoad(img.path, thumbLoadSize);
+    if (queueThumbLoad(img.path, thumbLoadSize)) {
+      queuedThumbnailCount += 1;
     }
+  }
+  if (queuedThumbnailCount > 0) {
+    startThumbnailProgress(queuedThumbnailCount, `Processing thumbnails 0/${queuedThumbnailCount}`);
   }
 });
 
@@ -5073,12 +6103,13 @@ setupVerticalResize(rightHorizontalResize, sentencesSection, $("#freetext-sectio
 
 // ===== EVENT LISTENERS =====
 loadBtn.addEventListener("click", loadFolder);
+cloneFolderBtn.addEventListener("click", cloneCurrentFolder);
 folderInput.addEventListener("keydown", (e) => { if (e.key === "Enter") loadFolder(); });
 settingsBtn.addEventListener("click", openSettingsModal);
 settingsRefreshModelsBtn.addEventListener("click", refreshOllamaModelOptions);
-settingsServerInput.addEventListener("change", refreshOllamaModelOptions);
-settingsPortInput.addEventListener("change", refreshOllamaModelOptions);
 clearFiltersBtn.addEventListener("click", clearSentenceFilters);
+filterArBtn.addEventListener("click", toggleAspectFilter);
+filterTxtBtn.addEventListener("click", toggleCaptionPresenceFilter);
 autoCaptionBtn.addEventListener("click", autoCaptionSelected);
 addFreeTextNowBtn.addEventListener("click", addFreeTextNow);
 hideAddButtonsCheckbox.addEventListener("change", () => {
@@ -5114,6 +6145,7 @@ settingsModal.addEventListener("click", (e) => {
   if (e.target === settingsModal) closeSettingsModal();
 });
 renderAddButtonsVisibility();
+initializeFilterButtons();
 
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {
@@ -5127,8 +6159,13 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (settingsModal.classList.contains("open")) return;
+  if (e.key === "Delete" && !isEditableElement(document.activeElement)) {
+    e.preventDefault();
+    deleteSelectedImages();
+    return;
+  }
   // Ctrl+A to select all (when not in text input)
-  if ((e.ctrlKey || e.metaKey) && e.key === "a" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA" && !document.activeElement?.isContentEditable) {
+  if ((e.ctrlKey || e.metaKey) && e.key === "a" && !isEditableElement(document.activeElement)) {
     e.preventDefault();
     state.selectedPaths.clear();
     getVisibleImageEntries().forEach(({ img }) => state.selectedPaths.add(img.path));
@@ -5140,7 +6177,7 @@ document.addEventListener("keydown", (e) => {
   // Arrow keys for navigation
   if (e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "ArrowDown") {
     const activeEl = document.activeElement;
-    if (activeEl === freeText || activeEl === folderInput || activeEl?.tagName === "INPUT" || activeEl?.tagName === "TEXTAREA" || activeEl?.isContentEditable) return;
+    if (activeEl === freeText || activeEl === folderInput || isEditableElement(activeEl)) return;
     e.preventDefault();
     const dir = (e.key === "ArrowRight" || e.key === "ArrowDown") ? 1 : -1;
     const visibleEntries = getVisibleImageEntries();
@@ -5186,6 +6223,7 @@ initFromSettings();
 setCropAspectRatios(state.cropAspectRatioLabels);
 renderSentences();
 updateActionButtons();
+renderFilterActions();
 </script>
 </body>
 </html>

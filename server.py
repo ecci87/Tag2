@@ -8,17 +8,20 @@ import os
 import sys
 import json
 import asyncio
+import copy
 import subprocess
 import platform
+import shutil
 import urllib.error
 import urllib.request
 import warnings
 from pathlib import Path
 from io import BytesIO
+from functools import partial
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,8 +58,8 @@ from tag2_images import (
     _save_image_file,
 )
 from tag2_ollama import (
-    _auto_caption_sections as _tag2_auto_caption_sections,
-    _auto_caption_sentences as _tag2_auto_caption_sentences,
+    _auto_caption_sections,
+    _auto_caption_sentences,
     _compose_ollama_host,
     _extract_free_text_lines,
     _get_ollama_enable_free_text,
@@ -77,7 +80,7 @@ from tag2_ollama import (
     _parse_ollama_selection,
     _parse_ollama_yes_no,
     _split_ollama_host,
-    _suggest_free_text as _tag2_suggest_free_text,
+    _suggest_free_text,
 )
 from tag2_sections import (
     _all_headers_from_sections,
@@ -232,71 +235,6 @@ def _save_config(cfg: dict):
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
-def _auto_caption_sentences(
-    host: str,
-    model: str,
-    image_path: str,
-    sentences: list[str],
-    prompt_template: str | None = None,
-    timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
-) -> tuple[list[str], list[dict]]:
-    """Compatibility adapter for sentence-level auto captioning."""
-    return _tag2_auto_caption_sentences(
-        host,
-        model,
-        image_path,
-        sentences,
-        encode_image_func=_encode_image_for_ollama,
-        generate_func=_ollama_generate,
-        prompt_template=prompt_template or DEFAULT_OLLAMA_PROMPT_TEMPLATE,
-        timeout=timeout,
-    )
-
-
-def _auto_caption_sections(
-    host: str,
-    model: str,
-    image_path: str,
-    sections: list[dict],
-    prompt_template: str | None = None,
-    group_prompt_template: str | None = None,
-    timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
-) -> tuple[list[str], list[dict]]:
-    """Compatibility adapter for section-aware auto captioning."""
-    return _tag2_auto_caption_sections(
-        host,
-        model,
-        image_path,
-        sections,
-        encode_image_func=_encode_image_for_ollama,
-        generate_func=_ollama_generate,
-        prompt_template=prompt_template or DEFAULT_OLLAMA_PROMPT_TEMPLATE,
-        group_prompt_template=group_prompt_template or DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE,
-        timeout=timeout,
-    )
-
-
-def _suggest_free_text(
-    host: str,
-    model: str,
-    image_path: str,
-    caption_text: str,
-    prompt_template: str | None = None,
-    timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
-) -> str:
-    """Compatibility adapter for Ollama free-text suggestions."""
-    return _tag2_suggest_free_text(
-        host,
-        model,
-        image_path,
-        caption_text,
-        encode_image_func=_encode_image_for_ollama,
-        generate_func=_ollama_generate,
-        prompt_template=prompt_template or DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
-        timeout=timeout,
-    )
-
-
 def _read_live_caption_state(
     image_path: str,
     all_sentences: list[str],
@@ -360,9 +298,7 @@ def _apply_free_text_result_to_live_caption(
 @app.get("/api/list-images")
 async def list_images(folder: str = Query(...)):
     """List all image files in the given folder."""
-    folder_path = Path(folder)
-    if not folder_path.is_dir():
-        raise HTTPException(status_code=400, detail="Not a valid directory")
+    folder_path = _resolve_folder_path(folder)
 
     images = []
     try:
@@ -381,6 +317,68 @@ async def list_images(folder: str = Query(...)):
         raise HTTPException(status_code=403, detail="Permission denied")
 
     return {"images": images, "folder": str(folder_path.resolve())}
+
+
+@app.post("/api/images/upload")
+async def upload_images(
+    folder: str = Form(...),
+    files: Optional[list[UploadFile]] = File(default=None),
+):
+    """Upload image files into the currently loaded folder."""
+    folder_path = _resolve_folder_path(folder)
+    uploads = [upload for upload in (files or []) if upload is not None]
+    if not uploads:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    uploaded: list[dict] = []
+    skipped: list[dict] = []
+
+    for upload in uploads:
+        try:
+            original_name = _sanitize_upload_filename(upload.filename or "")
+            suffix = Path(original_name).suffix.lower()
+            if suffix not in IMAGE_EXTENSIONS:
+                skipped.append({
+                    "name": original_name,
+                    "reason": "Unsupported image file",
+                })
+                continue
+
+            destination = _get_unique_upload_path(folder_path, original_name)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            upload.file.seek(0)
+            with destination.open("wb") as handle:
+                shutil.copyfileobj(upload.file, handle)
+
+            _clear_thumbnail_cache_for_path(str(destination))
+            stat = destination.stat()
+            uploaded.append({
+                "name": destination.name,
+                "path": str(destination),
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "source_name": original_name,
+                "renamed": destination.name != original_name,
+            })
+        except HTTPException:
+            raise
+        except Exception as exc:
+            skipped.append({
+                "name": str(upload.filename or "").strip() or "(unnamed)",
+                "reason": str(exc),
+            })
+        finally:
+            await upload.close()
+
+    return {
+        "ok": len(uploaded) > 0,
+        "folder": str(folder_path),
+        "uploaded": uploaded,
+        "uploaded_count": len(uploaded),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
+        "renamed_count": sum(1 for item in uploaded if item["renamed"]),
+    }
 
 
 @app.get("/api/thumbnail")
@@ -464,6 +462,130 @@ class RotateUpdate(BaseModel):
     direction: str
 
 
+class BatchDeleteImagesRequest(BaseModel):
+    image_paths: list[str]
+
+
+class CloneFolderRequest(BaseModel):
+    source_folder: str
+    new_folder_name: str
+    image_paths: list[str] = []
+
+
+def _event_bytes(event: dict) -> bytes:
+    return (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _normalize_folder_clone_name(name: str) -> str:
+    normalized = str(name or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="New folder name is required")
+    if normalized in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid folder name")
+    if os.path.basename(normalized) != normalized:
+        raise HTTPException(status_code=400, detail="Folder name must not include path separators")
+    if any(char in normalized for char in '<>:"/\\|?*'):
+        raise HTTPException(status_code=400, detail="Folder name contains invalid characters")
+    return normalized
+
+
+def _resolve_folder_path(folder: str, *, detail: str = "Not a valid directory") -> Path:
+    folder_path = Path(str(folder or "")).resolve()
+    if not folder_path.is_dir():
+        raise HTTPException(status_code=400, detail=detail)
+    return folder_path
+
+
+def _sanitize_upload_filename(name: str) -> str:
+    raw_name = str(name or "").replace("\\", "/")
+    base_name = os.path.basename(raw_name).strip()
+    if not base_name or base_name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Upload contains an invalid filename")
+    return base_name
+
+
+def _get_unique_upload_path(folder_path: Path, file_name: str) -> Path:
+    candidate = folder_path / file_name
+    if not candidate.exists():
+        return candidate
+
+    stem = candidate.stem or "image"
+    suffix = candidate.suffix
+    counter = 1
+    while True:
+        renamed = folder_path / f"{stem} ({counter}){suffix}"
+        if not renamed.exists():
+            return renamed
+        counter += 1
+
+
+def _prepare_clone_plan(source_folder: str, requested_name: str, image_paths: list[str]) -> dict:
+    source_path = Path(source_folder).resolve()
+    if not source_path.is_dir():
+        raise HTTPException(status_code=400, detail="Source folder is not a valid directory")
+
+    target_name = _normalize_folder_clone_name(requested_name)
+    target_path = source_path.parent / target_name
+    if target_path.exists():
+        raise HTTPException(status_code=400, detail="Target folder already exists")
+
+    normalized_source = os.path.normcase(str(source_path))
+    normalized_selected: list[Path] = []
+    for raw_path in image_paths or []:
+        candidate = Path(str(raw_path or "")).resolve()
+        if not candidate.is_file():
+            raise HTTPException(status_code=400, detail=f"Image not found: {candidate}")
+        if os.path.normcase(str(candidate.parent)) != normalized_source:
+            raise HTTPException(status_code=400, detail="Selected images must belong to the current folder")
+        if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Unsupported image file: {candidate.name}")
+        if candidate not in normalized_selected:
+            normalized_selected.append(candidate)
+
+    selected_mode = len(normalized_selected) > 1
+    copy_items: list[tuple[Path, Path]] = []
+    copied_image_count = 0
+
+    if selected_mode:
+        for image_path in normalized_selected:
+            dest_image = target_path / image_path.name
+            copy_items.append((image_path, dest_image))
+            copied_image_count += 1
+            caption_path = _get_caption_path(str(image_path))
+            if caption_path.exists():
+                copy_items.append((caption_path, target_path / caption_path.name))
+    else:
+        for entry in sorted(source_path.iterdir(), key=lambda item: item.name.lower()):
+            dest_entry = target_path / entry.name
+            copy_items.append((entry, dest_entry))
+            if entry.is_file() and entry.suffix.lower() in IMAGE_EXTENSIONS:
+                copied_image_count += 1
+
+    if copied_image_count == 0:
+        raise HTTPException(status_code=400, detail="No images available to clone")
+
+    return {
+        "source_path": source_path,
+        "target_path": target_path,
+        "selected_mode": selected_mode,
+        "copy_items": copy_items,
+        "copied_image_count": copied_image_count,
+    }
+
+
+def _copy_folder_config_for_clone(source_folder: str, target_folder: str):
+    cfg = _load_config()
+    folders_cfg = cfg.setdefault("folders", {})
+    source_key = os.path.normpath(source_folder)
+    target_key = os.path.normpath(target_folder)
+    if source_key in folders_cfg:
+        folders_cfg[target_key] = copy.deepcopy(folders_cfg[source_key])
+    else:
+        sections = _get_folder_sections(cfg, source_folder)
+        _set_folder_sections(cfg, target_folder, sections)
+    _save_config(cfg)
+
+
 @app.get("/api/crop")
 async def get_crop(path: str = Query(...)):
     """Get whether an image currently has a reversible real crop applied."""
@@ -511,6 +633,121 @@ async def rotate_image(data: RotateUpdate):
         "ok": True,
         "crop": crop_state,
     }
+
+
+@app.post("/api/images/delete")
+async def delete_images(data: BatchDeleteImagesRequest):
+    """Delete image files and their local sidecar artifacts."""
+    image_paths = [str(path or "").strip() for path in data.image_paths]
+    image_paths = [path for path in image_paths if path]
+    if not image_paths:
+        raise HTTPException(status_code=400, detail="No image paths provided")
+
+    cfg = _load_config()
+    image_crops = cfg.get("image_crops") if isinstance(cfg.get("image_crops"), dict) else None
+    deleted_paths: list[str] = []
+    errors: list[dict] = []
+    config_changed = False
+
+    for image_path in image_paths:
+        normalized_path = os.path.abspath(os.path.normpath(image_path))
+        path_obj = Path(normalized_path)
+
+        if path_obj.suffix.lower() not in IMAGE_EXTENSIONS:
+            errors.append({"path": normalized_path, "error": "Unsupported image file"})
+            continue
+        if not path_obj.is_file():
+            errors.append({"path": normalized_path, "error": "File not found"})
+            continue
+
+        caption_path = _get_caption_path(normalized_path)
+        backup_path = _get_crop_backup_path(normalized_path)
+
+        try:
+            path_obj.unlink()
+            if caption_path.exists():
+                caption_path.unlink()
+            if os.path.isfile(backup_path):
+                os.remove(backup_path)
+            _clear_thumbnail_cache_for_path(normalized_path)
+            if image_crops is not None and image_crops.pop(_normalize_image_key(normalized_path), None) is not None:
+                config_changed = True
+            deleted_paths.append(normalized_path)
+        except PermissionError:
+            errors.append({"path": normalized_path, "error": "Permission denied"})
+        except OSError as exc:
+            errors.append({"path": normalized_path, "error": str(exc)})
+
+    if config_changed:
+        _save_config(cfg)
+
+    return {
+        "ok": len(errors) == 0,
+        "deleted_paths": deleted_paths,
+        "deleted_count": len(deleted_paths),
+        "errors": errors,
+    }
+
+
+@app.post("/api/folder/clone/stream")
+async def clone_folder_stream(data: CloneFolderRequest):
+    """Clone the current folder or a multi-selection into a sibling folder with progress events."""
+    plan = _prepare_clone_plan(data.source_folder, data.new_folder_name, data.image_paths or [])
+    source_path: Path = plan["source_path"]
+    target_path: Path = plan["target_path"]
+    copy_items: list[tuple[Path, Path]] = plan["copy_items"]
+    selected_mode = bool(plan["selected_mode"])
+    copied_image_count = int(plan["copied_image_count"])
+
+    async def event_stream():
+        try:
+            target_path.mkdir(parents=True, exist_ok=False)
+            yield _event_bytes({
+                "type": "start",
+                "mode": "selected" if selected_mode else "folder",
+                "source_folder": str(source_path),
+                "target_folder": str(target_path),
+                "total": len(copy_items),
+                "image_count": copied_image_count,
+            })
+
+            copied_count = 0
+            for index, (src, dest) in enumerate(copy_items, start=1):
+                if src.is_dir():
+                    shutil.copytree(src, dest)
+                else:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dest)
+                copied_count += 1
+                yield _event_bytes({
+                    "type": "progress",
+                    "index": index,
+                    "total": len(copy_items),
+                    "path": str(dest),
+                    "name": dest.name,
+                    "copied": copied_count,
+                })
+
+            _copy_folder_config_for_clone(str(source_path), str(target_path))
+            yield _event_bytes({
+                "type": "config-copied",
+                "target_folder": str(target_path),
+            })
+            yield _event_bytes({
+                "type": "done",
+                "target_folder": str(target_path),
+                "copied": copied_count,
+                "total": len(copy_items),
+                "image_count": copied_image_count,
+                "mode": "selected" if selected_mode else "folder",
+            })
+        except HTTPException:
+            raise
+        except Exception as exc:
+            shutil.rmtree(target_path, ignore_errors=True)
+            yield _event_bytes({"type": "error", "message": str(exc)})
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @app.get("/api/caption")
@@ -804,16 +1041,21 @@ async def auto_caption(data: AutoCaptionRequest):
     if not free_text_only:
         try:
             if target_scope and target_scope.get("type") == "full":
-                enabled, results = await loop.run_in_executor(
-                    executor,
+                auto_caption_call = partial(
                     _auto_caption_sections,
                     host,
                     model,
                     image_path,
                     sections,
-                    prompt_template,
-                    group_prompt_template,
-                    timeout_seconds,
+                    encode_image_func=_encode_image_for_ollama,
+                    generate_func=_ollama_generate,
+                    prompt_template=prompt_template,
+                    group_prompt_template=group_prompt_template,
+                    timeout=timeout_seconds,
+                )
+                enabled, results = await loop.run_in_executor(
+                    executor,
+                    auto_caption_call,
                 )
                 free_text = free_text if is_scoped else ""
                 _write_caption_file(image_path, enabled, free_text, sections)
@@ -895,15 +1137,20 @@ async def auto_caption(data: AutoCaptionRequest):
         enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
         caption_text = _build_caption_text(enabled, free_text, sections)
         try:
-            free_text_model_output = await loop.run_in_executor(
-                executor,
+            suggest_free_text_call = partial(
                 _suggest_free_text,
                 host,
                 model,
                 image_path,
                 caption_text,
-                free_text_prompt_template,
-                timeout_seconds,
+                encode_image_func=_encode_image_for_ollama,
+                generate_func=_ollama_generate,
+                prompt_template=free_text_prompt_template,
+                timeout=timeout_seconds,
+            )
+            free_text_model_output = await loop.run_in_executor(
+                executor,
+                suggest_free_text_call,
             )
             enabled, free_text, added_free_text_lines = _apply_free_text_result_to_live_caption(
                 image_path,
@@ -1327,20 +1574,94 @@ async def update_settings(data: SettingsUpdate):
     return {"ok": True}
 
 
+def _open_file_manager_selection(path: str):
+    """Open a file manager and select the requested file when possible."""
+    normalized_path = os.path.normpath(path)
+    system = platform.system()
+
+    if system == "Windows":
+        subprocess.Popen(["explorer", "/select,", normalized_path])
+        return
+
+    if system == "Darwin":
+        subprocess.Popen(["open", "-R", normalized_path])
+        return
+
+    directory = os.path.dirname(normalized_path)
+    file_uri = Path(normalized_path).resolve().as_uri()
+    commands: list[list[str]] = []
+
+    if shutil.which("dbus-send"):
+        commands.append([
+            "dbus-send",
+            "--session",
+            "--dest=org.freedesktop.FileManager1",
+            "--type=method_call",
+            "/org/freedesktop/FileManager1",
+            "org.freedesktop.FileManager1.ShowItems",
+            f"array:string:{file_uri}",
+            "string:",
+        ])
+    if shutil.which("nautilus"):
+        commands.append(["nautilus", "--select", normalized_path])
+    if shutil.which("dolphin"):
+        commands.append(["dolphin", "--select", normalized_path])
+    if shutil.which("thunar"):
+        commands.append(["thunar", "--select", normalized_path])
+    if shutil.which("nemo"):
+        commands.append(["nemo", normalized_path])
+    commands.append(["xdg-open", directory])
+
+    last_error: Exception | None = None
+    for command in commands:
+        try:
+            subprocess.Popen(command)
+            return
+        except Exception as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No file manager command available")
+
+
+def _open_file_direct(path: str):
+    """Open a file directly with the OS default handler."""
+    normalized_path = os.path.normpath(path)
+    system = platform.system()
+
+    if system == "Windows":
+        if not hasattr(os, "startfile"):
+            raise RuntimeError("os.startfile is not available")
+        os.startfile(normalized_path)
+        return
+
+    if system == "Darwin":
+        subprocess.Popen(["open", normalized_path])
+        return
+
+    subprocess.Popen(["xdg-open", normalized_path])
+
+
 @app.get("/api/open-in-explorer")
 async def open_in_explorer(path: str = Query(...)):
     """Open the OS file explorer with the given file selected."""
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="File not found")
     try:
-        system = platform.system()
-        if system == "Windows":
-            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
-        elif system == "Darwin":
-            subprocess.Popen(["open", "-R", path])
-        else:
-            # Linux: open the containing folder
-            subprocess.Popen(["xdg-open", os.path.dirname(path)])
+        _open_file_manager_selection(path)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/open-file")
+async def open_file(path: str = Query(...)):
+    """Open a file directly with the default OS application."""
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        _open_file_direct(path)
         return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

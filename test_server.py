@@ -49,6 +49,25 @@ def single_image(img_dir):
 
 # ===== HELPER FUNCTIONS (UNIT TESTS) =====
 
+def make_upload_file(name: str, size: tuple[int, int] = (24, 24), color: str = "blue") -> tuple[str, BytesIO, str]:
+    buffer = BytesIO()
+    image = Image.new("RGB", size, color=color)
+    extension = Path(name).suffix.lower()
+    format_name = {
+        ".jpg": "JPEG",
+        ".jpeg": "JPEG",
+        ".png": "PNG",
+        ".gif": "GIF",
+        ".bmp": "BMP",
+        ".webp": "WEBP",
+        ".tif": "TIFF",
+        ".tiff": "TIFF",
+    }.get(extension, "PNG")
+    image.save(buffer, format=format_name)
+    buffer.seek(0)
+    media_type = "image/jpeg" if format_name == "JPEG" else f"image/{format_name.lower()}"
+    return (name, buffer, media_type)
+
 class TestGetFolderSections:
     def test_default_empty(self):
         cfg = {"folders": {}}
@@ -381,6 +400,209 @@ class TestListImages:
         photo2 = next(i for i in images if i["name"] == "photo2.png")
         assert photo1["has_caption"] is True
         assert photo2["has_caption"] is False
+
+
+class TestUploadImages:
+    def test_upload_images_copies_files_into_loaded_folder(self, client, img_dir):
+        files = [
+            ("files", make_upload_file("fresh-a.jpg", color="green")),
+            ("files", make_upload_file("fresh-b.png", color="yellow")),
+        ]
+
+        resp = client.post("/api/images/upload", data={"folder": str(img_dir)}, files=files)
+        assert resp.status_code == 200
+
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["uploaded_count"] == 2
+        assert data["skipped_count"] == 0
+        uploaded_names = {item["name"] for item in data["uploaded"]}
+        assert uploaded_names == {"fresh-a.jpg", "fresh-b.png"}
+        assert (img_dir / "fresh-a.jpg").exists()
+        assert (img_dir / "fresh-b.png").exists()
+
+    def test_upload_images_auto_renames_conflicts(self, client, img_dir):
+        existing_path = img_dir / "photo1.jpg"
+        before_bytes = existing_path.read_bytes()
+
+        resp = client.post(
+            "/api/images/upload",
+            data={"folder": str(img_dir)},
+            files=[("files", make_upload_file("photo1.jpg", color="purple"))],
+        )
+        assert resp.status_code == 200
+
+        data = resp.json()
+        assert data["uploaded_count"] == 1
+        assert data["renamed_count"] == 1
+        uploaded = data["uploaded"][0]
+        assert uploaded["source_name"] == "photo1.jpg"
+        assert uploaded["name"] == "photo1 (1).jpg"
+        assert uploaded["renamed"] is True
+        assert (img_dir / "photo1 (1).jpg").exists()
+        assert existing_path.read_bytes() == before_bytes
+
+    def test_upload_images_skips_unsupported_files(self, client, img_dir):
+        resp = client.post(
+            "/api/images/upload",
+            data={"folder": str(img_dir)},
+            files=[
+                ("files", make_upload_file("valid.webp", color="orange")),
+                ("files", ("notes.txt", BytesIO(b"not-an-image"), "text/plain")),
+            ],
+        )
+        assert resp.status_code == 200
+
+        data = resp.json()
+        assert data["uploaded_count"] == 1
+        assert data["skipped_count"] == 1
+        assert data["skipped"][0]["name"] == "notes.txt"
+        assert data["skipped"][0]["reason"] == "Unsupported image file"
+        assert (img_dir / "valid.webp").exists()
+        assert not (img_dir / "notes.txt").exists()
+
+    def test_upload_images_rejects_invalid_folder(self, client):
+        resp = client.post(
+            "/api/images/upload",
+            data={"folder": "/no/such/folder"},
+            files=[("files", make_upload_file("fresh.jpg"))],
+        )
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Not a valid directory"
+
+
+class TestDeleteImages:
+    def test_delete_image_removes_sidecars_and_crop_state(self, client, img_dir):
+        image_path = str(img_dir / "photo1.jpg")
+        caption_path = img_dir / "photo1.txt"
+        caption_path.write_text("caption", encoding="utf-8")
+        backup_path = Path(server._get_crop_backup_path(image_path))
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        backup_path.write_bytes(b"backup")
+
+        cfg = server._load_config()
+        cfg["image_crops"] = {server._normalize_image_key(image_path): {"x": 1, "y": 2, "w": 3, "h": 4}}
+        server._save_config(cfg)
+
+        resp = client.post("/api/images/delete", json={"image_paths": [image_path]})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["deleted_count"] == 1
+        assert data["errors"] == []
+        assert not Path(image_path).exists()
+        assert not caption_path.exists()
+        assert not backup_path.exists()
+        assert server._normalize_image_key(image_path) not in server._load_config()["image_crops"]
+
+    def test_delete_images_requires_paths(self, client):
+        resp = client.post("/api/images/delete", json={"image_paths": []})
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "No image paths provided"
+
+
+class TestOpenInExplorer:
+    def test_linux_prefers_selection_aware_command(self, client, single_image, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(server.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(server.shutil, "which", lambda name: "cmd" if name == "dbus-send" else None)
+
+        def fake_popen(command):
+            calls.append(command)
+            return object()
+
+        monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+
+        resp = client.get("/api/open-in-explorer", params={"path": single_image})
+        assert resp.status_code == 200
+        assert calls
+        assert calls[0][0] == "dbus-send"
+        assert "org.freedesktop.FileManager1.ShowItems" in calls[0]
+
+    def test_open_file_uses_default_handler(self, client, single_image, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(server.platform, "system", lambda: "Linux")
+
+        def fake_popen(command):
+            calls.append(command)
+            return object()
+
+        monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+
+        resp = client.get("/api/open-file", params={"path": single_image})
+        assert resp.status_code == 200
+        assert calls == [["xdg-open", os.path.normpath(single_image)]]
+
+
+class TestCloneFolder:
+    def test_clone_whole_folder_stream_copies_files_and_config(self, client, img_dir):
+        source_folder = str(img_dir)
+        (img_dir / "photo1.txt").write_text("caption", encoding="utf-8")
+        (img_dir / "notes.md").write_text("hello", encoding="utf-8")
+        client.post("/api/settings", json={
+            "folder": source_folder,
+            "sections": [{"name": "", "sentences": ["bright"], "groups": []}],
+        })
+
+        with client.stream(
+            "POST",
+            "/api/folder/clone/stream",
+            json={
+                "source_folder": source_folder,
+                "new_folder_name": "images-copy",
+                "image_paths": [],
+            },
+        ) as response:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        done = next(event for event in events if event.get("type") == "done")
+        target_folder = Path(done["target_folder"])
+        assert done["mode"] == "folder"
+        assert target_folder.exists()
+        assert (target_folder / "photo1.jpg").exists()
+        assert (target_folder / "photo1.txt").exists()
+        assert (target_folder / "notes.md").exists()
+
+        cloned_settings = client.get("/api/settings", params={"folder": str(target_folder)}).json()
+        assert cloned_settings["sections"][0]["sentences"] == ["bright"]
+
+    def test_clone_selected_images_stream_copies_subset_and_config(self, client, img_dir):
+        source_folder = str(img_dir)
+        selected_a = str(img_dir / "photo1.jpg")
+        selected_b = str(img_dir / "photo2.png")
+        (img_dir / "photo1.txt").write_text("caption one", encoding="utf-8")
+        (img_dir / "photo3.txt").write_text("caption three", encoding="utf-8")
+        client.post("/api/settings", json={
+            "folder": source_folder,
+            "sections": [{"name": "Scene", "sentences": ["indoor"], "groups": []}],
+        })
+
+        with client.stream(
+            "POST",
+            "/api/folder/clone/stream",
+            json={
+                "source_folder": source_folder,
+                "new_folder_name": "images-subset",
+                "image_paths": [selected_a, selected_b],
+            },
+        ) as response:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        done = next(event for event in events if event.get("type") == "done")
+        target_folder = Path(done["target_folder"])
+        assert done["mode"] == "selected"
+        assert (target_folder / "photo1.jpg").exists()
+        assert (target_folder / "photo2.png").exists()
+        assert (target_folder / "photo1.txt").exists()
+        assert not (target_folder / "photo3.jpg").exists()
+        assert not (target_folder / "photo3.txt").exists()
+
+        cloned_settings = client.get("/api/settings", params={"folder": str(target_folder)}).json()
+        assert cloned_settings["sections"][0]["name"] == "Scene"
 
 
 class TestThumbnail:
@@ -794,8 +1016,10 @@ class TestOllamaHelpers:
             "llava",
             single_image,
             ["Moon", "Night", "Car"],
-            "Caption? {caption}",
-            17,
+            encode_image_func=server._encode_image_for_ollama,
+            generate_func=server._ollama_generate,
+            prompt_template="Caption? {caption}",
+            timeout=17,
         )
         assert enabled == ["Moon"]
         assert len(results) == 3
@@ -822,9 +1046,11 @@ class TestOllamaHelpers:
             "llava",
             single_image,
             sections,
-            "Caption: {caption}",
-            "Group: {group_name}\n{options}",
-            15,
+            encode_image_func=server._encode_image_for_ollama,
+            generate_func=server._ollama_generate,
+            prompt_template="Caption: {caption}",
+            group_prompt_template="Group: {group_name}\n{options}",
+            timeout=15,
         )
         assert enabled == ["Moon", "Blue Car"]
         assert results[0]["type"] == "sentence"
@@ -848,9 +1074,11 @@ class TestOllamaHelpers:
             "llava",
             single_image,
             sections,
-            "Caption: {caption}",
-            "Group: {group_name}\n{options}",
-            15,
+            encode_image_func=server._encode_image_for_ollama,
+            generate_func=server._ollama_generate,
+            prompt_template="Caption: {caption}",
+            group_prompt_template="Group: {group_name}\n{options}",
+            timeout=15,
         )
         assert enabled == ["Chair not in frame"]
         assert results[0]["selected_sentence"] == "Chair not in frame"
@@ -868,6 +1096,9 @@ class TestOllamaHelpers:
             "llava",
             single_image,
             "- Night",
+            encode_image_func=server._encode_image_for_ollama,
+            generate_func=server._ollama_generate,
+            prompt_template=server.DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
             timeout=9,
         )
         assert "Moon visible" in result
@@ -976,14 +1207,16 @@ class TestAutoCaptionAPI:
             "ollama_free_text_prompt_template": "Current caption text:\n{caption_text}",
         })
 
-        def fake_auto_caption(host, model, image_path, sections, prompt_template, group_prompt_template, timeout):
+        def fake_auto_caption(host, model, image_path, sections, **kwargs):
             assert host == "http://localhost:11435"
             assert model == "llava"
             assert image_path == single_image
             assert server._all_sentences_from_sections(sections) == ["Moon", "Night", "Red Car", "Blue Car"]
-            assert prompt_template == "Caption: {caption}"
-            assert group_prompt_template == "Group: {group_name}\n{options}"
-            assert timeout == 12
+            assert kwargs["encode_image_func"] is server._encode_image_for_ollama
+            assert kwargs["generate_func"] is server._ollama_generate
+            assert kwargs["prompt_template"] == "Caption: {caption}"
+            assert kwargs["group_prompt_template"] == "Group: {group_name}\n{options}"
+            assert kwargs["timeout"] == 12
             return ["Moon", "Night", "Blue Car"], [
                 {"sentence": "Moon", "enabled": True, "answer": "YES"},
                 {"sentence": "Night", "enabled": True, "answer": "YES"},
@@ -991,7 +1224,7 @@ class TestAutoCaptionAPI:
             ]
 
         monkeypatch.setattr(server, "_auto_caption_sections", fake_auto_caption)
-        monkeypatch.setattr(server, "_suggest_free_text", lambda *args: "Moon visible\nNight sky")
+        monkeypatch.setattr(server, "_suggest_free_text", lambda *args, **kwargs: "Moon visible\nNight sky")
 
         resp = client.post("/api/auto-caption", json={
             "image_path": single_image,
@@ -1033,7 +1266,7 @@ class TestAutoCaptionAPI:
             "sections": [{"name": "", "sentences": ["Moon"]}],
         })
 
-        def fake_auto_caption(host, model, image_path, sections, prompt_template, group_prompt_template, timeout):
+        def fake_auto_caption(host, model, image_path, sections, **kwargs):
             raise RuntimeError("connection refused")
 
         monkeypatch.setattr(server, "_auto_caption_sections", fake_auto_caption)
@@ -1053,7 +1286,7 @@ class TestAutoCaptionAPI:
             "free_text": "Night sky",
         })
 
-        monkeypatch.setattr(server, "_suggest_free_text", lambda *args: "Bright stars")
+        monkeypatch.setattr(server, "_suggest_free_text", lambda *args, **kwargs: "Bright stars")
 
         resp = client.post("/api/auto-caption", json={
             "image_path": single_image,
