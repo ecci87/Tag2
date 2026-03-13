@@ -1540,7 +1540,7 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 <div id="settings-modal" aria-hidden="true">
   <div id="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title">
     <div id="settings-dialog-header">
-      <div id="settings-dialog-title">Ollama Settings</div>
+      <div id="settings-dialog-title">App Settings</div>
       <button id="settings-close-btn" type="button" aria-label="Close settings">×</button>
     </div>
     <form id="settings-form">
@@ -1569,6 +1569,29 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
         <label for="settings-crop-aspect-ratios">Aspect Ratios</label>
         <input type="text" class="compact-code" id="settings-crop-aspect-ratios" placeholder="4:3, 16:9, 3:4, 1:1, 9:16, 2:3, 3:2" spellcheck="false">
         <div class="settings-help">Comma-separated list. The crop rectangle snaps to the closest allowed ratio. Images not matching these ratios will be marked with "AR" in the preview.</div>
+      </div>
+      <div class="settings-grid">
+        <div class="settings-field">
+          <label for="settings-https-certfile">HTTPS Certificate</label>
+          <input type="text" class="compact-code" id="settings-https-certfile" placeholder="certs/localhost.pem" spellcheck="false">
+        </div>
+        <div class="settings-field">
+          <label for="settings-https-keyfile">HTTPS Key</label>
+          <input type="text" class="compact-code" id="settings-https-keyfile" placeholder="certs/localhost-key.pem" spellcheck="false">
+        </div>
+        <div class="settings-field">
+          <label for="settings-https-port">HTTPS Port</label>
+          <input type="number" id="settings-https-port" min="1" max="65535" placeholder="8900" spellcheck="false">
+        </div>
+      </div>
+      <div class="settings-field">
+        <label for="settings-remote-http-mode">Remote HTTP Access</label>
+        <select id="settings-remote-http-mode">
+          <option value="redirect-to-https">Allow localhost HTTP, redirect other computers to HTTPS</option>
+          <option value="block">Allow localhost HTTP, block HTTP from other computers</option>
+          <option value="allow">Allow HTTP from other computers</option>
+        </select>
+        <div class="settings-help">When a certificate and key are configured, the server keeps HTTP on the current port for this computer and starts HTTPS on the HTTPS port for other devices. Changing these network settings requires a server restart.</div>
       </div>
       <div class="settings-field">
         <label for="settings-ollama-prompt">Caption Check Prompt</label>
@@ -1631,6 +1654,10 @@ const state = {
   cropInteraction: null,
   collapsedSections: {},
   collapsedGroups: {},
+  httpsCertFile: "",
+  httpsKeyFile: "",
+  httpsPort: 8900,
+  remoteHttpMode: "redirect-to-https",
   ollamaServer: "127.0.0.1",
   ollamaPort: 11434,
   ollamaTimeoutSeconds: 20,
@@ -1751,6 +1778,10 @@ const settingsTimeoutInput = $("#settings-ollama-timeout");
 const settingsModelInput = $("#settings-ollama-model");
 const settingsRefreshModelsBtn = $("#settings-refresh-models-btn");
 const settingsCropAspectRatiosInput = $("#settings-crop-aspect-ratios");
+const settingsHttpsCertInput = $("#settings-https-certfile");
+const settingsHttpsKeyInput = $("#settings-https-keyfile");
+const settingsHttpsPortInput = $("#settings-https-port");
+const settingsRemoteHttpModeInput = $("#settings-remote-http-mode");
 const settingsPromptInput = $("#settings-ollama-prompt");
 const settingsGroupPromptInput = $("#settings-ollama-group-prompt");
 const settingsAutoFreeTextEnabled = $("#settings-auto-free-text-enabled");
@@ -3414,6 +3445,10 @@ function applySettings(settings) {
   thumbSlider.value = String(state.thumbSize);
   document.documentElement.style.setProperty("--thumb-size", state.thumbSize + "px");
   setCropAspectRatios(settings.crop_aspect_ratios || state.cropAspectRatioLabels);
+  state.httpsCertFile = String(settings.https_certfile || "").trim();
+  state.httpsKeyFile = String(settings.https_keyfile || "").trim();
+  state.httpsPort = Number(settings.https_port || 8900) || 8900;
+  state.remoteHttpMode = String(settings.remote_http_mode || "redirect-to-https").trim() || "redirect-to-https";
   state.ollamaServer = (settings.ollama_server || "127.0.0.1").trim();
   state.ollamaPort = Number(settings.ollama_port || 11434) || 11434;
   state.ollamaTimeoutSeconds = Number(settings.ollama_timeout_seconds || 20) || 20;
@@ -3479,6 +3514,10 @@ function fillSettingsForm() {
   settingsTimeoutInput.value = String(state.ollamaTimeoutSeconds);
   populateOllamaModelSelect(state.ollamaAvailableModels || [], state.ollamaModel);
   settingsCropAspectRatiosInput.value = state.cropAspectRatioLabels.join(", ");
+  settingsHttpsCertInput.value = state.httpsCertFile;
+  settingsHttpsKeyInput.value = state.httpsKeyFile;
+  settingsHttpsPortInput.value = String(state.httpsPort);
+  settingsRemoteHttpModeInput.value = state.remoteHttpMode;
   settingsPromptInput.value = state.ollamaPromptTemplate;
   settingsGroupPromptInput.value = state.ollamaGroupPromptTemplate;
   settingsAutoFreeTextEnabled.checked = !!state.ollamaEnableFreeText;
@@ -3600,11 +3639,21 @@ async function readNdjsonStream(response, onEvent) {
 }
 
 async function saveOllamaSettingsFromForm() {
+  const previousNetworkSettings = {
+    httpsCertFile: state.httpsCertFile,
+    httpsKeyFile: state.httpsKeyFile,
+    httpsPort: state.httpsPort,
+    remoteHttpMode: state.remoteHttpMode,
+  };
   const server = settingsServerInput.value.trim() || "127.0.0.1";
   const port = Number(settingsPortInput.value || "11434") || 11434;
   const timeoutSeconds = Number(settingsTimeoutInput.value || "20") || 20;
   const model = String(settingsModelInput.value || "").trim() || "llava";
   const cropAspectRatios = settingsCropAspectRatiosInput.value.split(",").map(s => s.trim()).filter(Boolean);
+  const httpsCertFile = settingsHttpsCertInput.value.trim();
+  const httpsKeyFile = settingsHttpsKeyInput.value.trim();
+  const httpsPort = Number(settingsHttpsPortInput.value || "8900") || 8900;
+  const remoteHttpMode = String(settingsRemoteHttpModeInput.value || "redirect-to-https").trim() || "redirect-to-https";
   const promptTemplate = settingsPromptInput.value || state.ollamaPromptTemplate;
   const groupPromptTemplate = settingsGroupPromptInput.value || state.ollamaGroupPromptTemplate;
   const enableFreeText = settingsAutoFreeTextEnabled.checked;
@@ -3614,6 +3663,10 @@ async function saveOllamaSettingsFromForm() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        https_certfile: httpsCertFile,
+        https_keyfile: httpsKeyFile,
+        https_port: httpsPort,
+        remote_http_mode: remoteHttpMode,
         ollama_server: server,
         ollama_port: port,
         ollama_timeout_seconds: timeoutSeconds,
@@ -3630,6 +3683,10 @@ async function saveOllamaSettingsFromForm() {
       throw new Error(data.detail || "Failed to save settings");
     }
     applySettings({
+      https_certfile: httpsCertFile,
+      https_keyfile: httpsKeyFile,
+      https_port: httpsPort,
+      remote_http_mode: remoteHttpMode,
       ollama_server: server,
       ollama_port: port,
       ollama_timeout_seconds: timeoutSeconds,
@@ -3640,9 +3697,15 @@ async function saveOllamaSettingsFromForm() {
       ollama_enable_free_text: enableFreeText,
       ollama_free_text_prompt_template: freeTextPromptTemplate,
     });
+    const networkChanged = previousNetworkSettings.httpsCertFile !== state.httpsCertFile
+      || previousNetworkSettings.httpsKeyFile !== state.httpsKeyFile
+      || previousNetworkSettings.httpsPort !== state.httpsPort
+      || previousNetworkSettings.remoteHttpMode !== state.remoteHttpMode;
     updateActionButtons();
     closeSettingsModal();
-    statusBar.textContent = `Ollama: ${state.ollamaModel} @ ${state.ollamaServer}:${state.ollamaPort}`;
+    statusBar.textContent = networkChanged
+      ? "Settings saved. Restart the server to apply HTTP/HTTPS changes."
+      : `Ollama: ${state.ollamaModel} @ ${state.ollamaServer}:${state.ollamaPort}`;
   } catch (err) {
     statusBar.textContent = `Settings error: ${err.message}`;
   }

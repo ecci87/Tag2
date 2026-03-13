@@ -133,6 +133,44 @@ class TestSetFolderSections:
         assert "sections" in cfg["folders"][key]
 
 
+class TestHttpsConfig:
+    def test_get_https_uvicorn_kwargs_returns_empty_without_https_config(self):
+        assert server._get_https_uvicorn_kwargs({}) == {}
+
+    def test_get_https_uvicorn_kwargs_resolves_relative_paths(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.json"
+        cert_path = tmp_path / "certs" / "localhost.pem"
+        key_path = tmp_path / "certs" / "localhost-key.pem"
+        cert_path.parent.mkdir(parents=True, exist_ok=True)
+        cert_path.write_text("cert", encoding="utf-8")
+        key_path.write_text("key", encoding="utf-8")
+        monkeypatch.setattr(server, "CONFIG_PATH", str(config_path))
+
+        result = server._get_https_uvicorn_kwargs({
+            "https_certfile": os.path.join("certs", "localhost.pem"),
+            "https_keyfile": os.path.join("certs", "localhost-key.pem"),
+        })
+
+        assert result == {
+            "ssl_certfile": str(cert_path),
+            "ssl_keyfile": str(key_path),
+        }
+
+    def test_get_https_uvicorn_kwargs_requires_both_files(self):
+        with pytest.raises(RuntimeError, match="requires both https_certfile and https_keyfile"):
+            server._get_https_uvicorn_kwargs({"https_certfile": "cert.pem"})
+
+    def test_get_https_uvicorn_kwargs_rejects_missing_cert_file(self, tmp_path):
+        key_path = tmp_path / "localhost-key.pem"
+        key_path.write_text("key", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="certificate file not found"):
+            server._get_https_uvicorn_kwargs({
+                "https_certfile": str(tmp_path / "missing-cert.pem"),
+                "https_keyfile": str(key_path),
+            })
+
+
 class TestAllSentencesFromSections:
     def test_flatten(self):
         sections = [
@@ -872,6 +910,10 @@ class TestSettingsAPI:
         assert "last_folder" in data
         assert data["thumb_size"] == 160
         assert data["crop_aspect_ratios"] == ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"]
+        assert data["https_certfile"] == ""
+        assert data["https_keyfile"] == ""
+        assert data["https_port"] == 8900
+        assert data["remote_http_mode"] == "redirect-to-https"
         assert data["ollama_host"] == "http://127.0.0.1:11434"
         assert data["ollama_server"] == "127.0.0.1"
         assert data["ollama_port"] == 11434
@@ -891,6 +933,20 @@ class TestSettingsAPI:
         client.post("/api/settings", json={"thumb_size": 224})
         resp = client.get("/api/settings")
         assert resp.json()["thumb_size"] == 224
+
+    def test_save_and_load_https_settings(self, client):
+        client.post("/api/settings", json={
+            "https_certfile": "certs/localhost.pem",
+            "https_keyfile": "certs/localhost-key.pem",
+            "https_port": 9443,
+            "remote_http_mode": "block",
+        })
+        resp = client.get("/api/settings")
+        data = resp.json()
+        assert data["https_certfile"] == "certs/localhost.pem"
+        assert data["https_keyfile"] == "certs/localhost-key.pem"
+        assert data["https_port"] == 9443
+        assert data["remote_http_mode"] == "block"
 
     def test_get_ollama_models(self, client, monkeypatch):
         monkeypatch.setattr(server, "_list_ollama_models", lambda host, timeout=20: ["llava:latest", "qwen2.5vl"])
@@ -939,6 +995,44 @@ class TestSettingsAPI:
         cfg = server._load_config()
         sections = server._get_folder_sections(cfg, folder)
         assert sections[0]["sentences"] == ["s1"]
+
+    def test_remote_http_redirects_to_https_for_other_computers(self, client, monkeypatch):
+        monkeypatch.setattr(server, "_load_config", lambda: {
+            "https_certfile": "certs/localhost.pem",
+            "https_keyfile": "certs/localhost-key.pem",
+            "https_port": 9443,
+            "remote_http_mode": "redirect-to-https",
+        })
+        monkeypatch.setattr(server, "_is_local_client_host", lambda host: False)
+
+        resp = client.get("/", headers={"host": "192.168.0.50:8899"}, follow_redirects=False)
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "https://192.168.0.50:9443/"
+
+    def test_remote_http_can_be_blocked_for_other_computers(self, client, monkeypatch):
+        monkeypatch.setattr(server, "_load_config", lambda: {
+            "https_certfile": "certs/localhost.pem",
+            "https_keyfile": "certs/localhost-key.pem",
+            "https_port": 9443,
+            "remote_http_mode": "block",
+        })
+        monkeypatch.setattr(server, "_is_local_client_host", lambda host: False)
+
+        resp = client.get("/", headers={"host": "192.168.0.50:8899"}, follow_redirects=False)
+        assert resp.status_code == 403
+        assert "Use HTTPS instead" in resp.text
+
+    def test_local_http_remains_allowed_with_https_enabled(self, client, monkeypatch):
+        monkeypatch.setattr(server, "_load_config", lambda: {
+            "https_certfile": "certs/localhost.pem",
+            "https_keyfile": "certs/localhost-key.pem",
+            "https_port": 9443,
+            "remote_http_mode": "redirect-to-https",
+        })
+        monkeypatch.setattr(server, "_is_local_client_host", lambda host: True)
+
+        resp = client.get("/", follow_redirects=False)
+        assert resp.status_code == 200
 
 
 class TestConfigPersistence:

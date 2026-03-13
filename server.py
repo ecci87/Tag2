@@ -9,9 +9,11 @@ import sys
 import json
 import asyncio
 import copy
+import ipaddress
 import subprocess
 import platform
 import shutil
+import threading
 import urllib.error
 import urllib.request
 import warnings
@@ -22,7 +24,7 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -128,6 +130,11 @@ DEFAULT_OLLAMA_PORT = 11434
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 20
 DEFAULT_OLLAMA_MODEL = "llava"
 DEFAULT_CROP_ASPECT_RATIOS = ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"]
+DEFAULT_HTTPS_CERTFILE = ""
+DEFAULT_HTTPS_KEYFILE = ""
+DEFAULT_HTTPS_PORT = 8900
+DEFAULT_REMOTE_HTTP_MODE = "redirect-to-https"
+REMOTE_HTTP_MODES = {"allow", "redirect-to-https", "block"}
 DEFAULT_OLLAMA_PROMPT_TEMPLATE = (
     "You are verifying a single image caption. "
     "Reply with exactly one word: YES or NO. "
@@ -188,6 +195,10 @@ def _load_config() -> dict:
         "thumb_size": 160,
         "crop_aspect_ratios": list(DEFAULT_CROP_ASPECT_RATIOS),
         "image_crops": {},
+        "https_certfile": DEFAULT_HTTPS_CERTFILE,
+        "https_keyfile": DEFAULT_HTTPS_KEYFILE,
+        "https_port": DEFAULT_HTTPS_PORT,
+        "remote_http_mode": DEFAULT_REMOTE_HTTP_MODE,
         # Local Ollama server settings
         "ollama_server": DEFAULT_OLLAMA_SERVER,
         "ollama_port": DEFAULT_OLLAMA_PORT,
@@ -233,6 +244,104 @@ def _save_config(cfg: dict):
     """Persist config to disk with pretty formatting for easy hand-editing."""
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+
+def _resolve_config_path(path_value: str | None) -> str:
+    """Resolve a config path relative to the config file directory when needed."""
+    raw_path = str(path_value or "").strip()
+    if not raw_path:
+        return ""
+    if os.path.isabs(raw_path):
+        return raw_path
+    return os.path.abspath(os.path.join(os.path.dirname(CONFIG_PATH), raw_path))
+
+
+def _has_https_config(cfg: dict) -> bool:
+    """Return whether both HTTPS file paths are configured."""
+    return bool(str(cfg.get("https_certfile") or "").strip() and str(cfg.get("https_keyfile") or "").strip())
+
+
+def _get_https_port(cfg: dict, default_port: int = DEFAULT_HTTPS_PORT) -> int:
+    """Return the configured HTTPS listener port."""
+    try:
+        port = int(cfg.get("https_port", default_port))
+    except (TypeError, ValueError):
+        port = default_port
+    return max(1, min(65535, port))
+
+
+def _get_remote_http_mode(cfg: dict, default_mode: str = DEFAULT_REMOTE_HTTP_MODE) -> str:
+    """Return how remote HTTP requests should be handled when HTTPS is configured."""
+    mode = str(cfg.get("remote_http_mode") or default_mode).strip().lower()
+    if mode not in REMOTE_HTTP_MODES:
+        return default_mode
+    return mode
+
+
+def _is_local_client_host(host: str | None) -> bool:
+    """Return whether the request client is the local machine."""
+    value = str(host or "").strip().lower()
+    if not value:
+        return False
+    if value in {"localhost", "127.0.0.1", "::1", "testclient"}:
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def _build_https_redirect_url(request: Request, https_port: int) -> str:
+    """Build the HTTPS redirect URL for an incoming HTTP request."""
+    host = request.url.hostname or "localhost"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host if https_port == 443 else f"{host}:{https_port}"
+    return str(request.url.replace(scheme="https", netloc=netloc))
+
+
+def _get_remote_http_response(request: Request, cfg: dict):
+    """Return a response for remote HTTP requests when HTTPS is configured, else None."""
+    if request.url.scheme == "https" or not _has_https_config(cfg):
+        return None
+    if _is_local_client_host(request.client.host if request.client else None):
+        return None
+
+    mode = _get_remote_http_mode(cfg)
+    if mode == "allow":
+        return None
+    if mode == "block":
+        return PlainTextResponse("Remote HTTP access is disabled. Use HTTPS instead.", status_code=403)
+    return RedirectResponse(_build_https_redirect_url(request, _get_https_port(cfg)), status_code=307)
+
+
+def _get_https_uvicorn_kwargs(cfg: dict) -> dict:
+    """Return Uvicorn SSL kwargs for an optional local HTTPS certificate."""
+    certfile = _resolve_config_path(cfg.get("https_certfile"))
+    keyfile = _resolve_config_path(cfg.get("https_keyfile"))
+
+    if not certfile and not keyfile:
+        return {}
+    if not certfile or not keyfile:
+        raise RuntimeError("HTTPS requires both https_certfile and https_keyfile in config.json")
+    if not os.path.isfile(certfile):
+        raise RuntimeError(f"HTTPS certificate file not found: {certfile}")
+    if not os.path.isfile(keyfile):
+        raise RuntimeError(f"HTTPS key file not found: {keyfile}")
+
+    return {
+        "ssl_certfile": certfile,
+        "ssl_keyfile": keyfile,
+    }
+
+
+@app.middleware("http")
+async def enforce_remote_http_policy(request: Request, call_next):
+    """Allow local HTTP while redirecting or blocking remote HTTP when HTTPS is configured."""
+    response = _get_remote_http_response(request, _load_config())
+    if response is not None:
+        return response
+    return await call_next(request)
 
 
 def _read_live_caption_state(
@@ -1480,6 +1589,10 @@ class SettingsUpdate(BaseModel):
     folder: Optional[str] = None  # which folder these sections belong to
     thumb_size: Optional[int] = None
     crop_aspect_ratios: Optional[list[str]] = None
+    https_certfile: Optional[str] = None
+    https_keyfile: Optional[str] = None
+    https_port: Optional[int] = None
+    remote_http_mode: Optional[str] = None
     ollama_host: Optional[str] = None
     ollama_server: Optional[str] = None
     ollama_port: Optional[int] = None
@@ -1499,6 +1612,10 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
         "last_folder": cfg.get("last_folder", ""),
         "thumb_size": int(cfg.get("thumb_size", 160) or 160),
         "crop_aspect_ratios": _get_crop_aspect_ratios(cfg, DEFAULT_CROP_ASPECT_RATIOS),
+        "https_certfile": str(cfg.get("https_certfile") or ""),
+        "https_keyfile": str(cfg.get("https_keyfile") or ""),
+        "https_port": _get_https_port(cfg, DEFAULT_HTTPS_PORT),
+        "remote_http_mode": _get_remote_http_mode(cfg, DEFAULT_REMOTE_HTTP_MODE),
         "ollama_host": _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
         "ollama_server": _get_ollama_server(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
         "ollama_port": _get_ollama_port(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
@@ -1546,6 +1663,14 @@ async def update_settings(data: SettingsUpdate):
         cfg["thumb_size"] = max(60, min(400, int(data.thumb_size)))
     if data.crop_aspect_ratios is not None:
         cfg["crop_aspect_ratios"] = [str(r).strip() for r in data.crop_aspect_ratios if str(r).strip()] or list(DEFAULT_CROP_ASPECT_RATIOS)
+    if data.https_certfile is not None:
+        cfg["https_certfile"] = str(data.https_certfile or "").strip()
+    if data.https_keyfile is not None:
+        cfg["https_keyfile"] = str(data.https_keyfile or "").strip()
+    if data.https_port is not None:
+        cfg["https_port"] = max(1, min(65535, int(data.https_port)))
+    if data.remote_http_mode is not None:
+        cfg["remote_http_mode"] = _get_remote_http_mode({"remote_http_mode": data.remote_http_mode}, DEFAULT_REMOTE_HTTP_MODE)
     if data.ollama_host is not None:
         server_name, server_port = _split_ollama_host(data.ollama_host, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
         cfg["ollama_server"] = server_name
@@ -1643,6 +1768,13 @@ def _open_file_direct(path: str):
     subprocess.Popen(["xdg-open", normalized_path])
 
 
+def _run_uvicorn_instance(host: str, port: int, ssl_kwargs: dict | None = None):
+    """Run a single Uvicorn instance."""
+    import uvicorn
+
+    uvicorn.run(app, host=host, port=port, **(ssl_kwargs or {}))
+
+
 @app.get("/api/open-in-explorer")
 async def open_in_explorer(path: str = Query(...)):
     """Open the OS file explorer with the given file selected."""
@@ -1680,6 +1812,25 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 if __name__ == "__main__":
-    import uvicorn
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8899
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    cfg = _load_config()
+    http_port = int(sys.argv[1]) if len(sys.argv) > 1 else 8899
+    try:
+        https_kwargs = _get_https_uvicorn_kwargs(cfg)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    if not https_kwargs:
+        _run_uvicorn_instance("0.0.0.0", http_port)
+        raise SystemExit(0)
+
+    https_port = _get_https_port(cfg, DEFAULT_HTTPS_PORT)
+    if https_port == http_port:
+        raise SystemExit("HTTPS port must differ from the HTTP port when local HTTP is enabled")
+
+    http_thread = threading.Thread(
+        target=_run_uvicorn_instance,
+        args=("0.0.0.0", http_port),
+        kwargs={"ssl_kwargs": None},
+        daemon=True,
+    )
+    http_thread.start()
+    _run_uvicorn_instance("0.0.0.0", https_port, https_kwargs)
