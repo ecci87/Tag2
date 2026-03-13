@@ -538,6 +538,42 @@ class TestDeleteImages:
         assert resp.status_code == 400
         assert resp.json()["detail"] == "No image paths provided"
 
+    def test_delete_image_during_auto_caption_does_not_recreate_caption(self, client, img_dir, monkeypatch):
+        image_path = str(img_dir / "photo1.jpg")
+        client.post("/api/settings", json={
+            "folder": str(img_dir),
+            "sections": [{"name": "", "sentences": ["Moon"], "groups": []}],
+            "ollama_enable_free_text": False,
+        })
+
+        call_count = 0
+
+        def fake_generate(host, payload, timeout=120):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                Path(image_path).unlink()
+            return {"response": "YES"}
+
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption/stream", json={
+            "image_paths": [image_path],
+            "model": "llava",
+            "enable_free_text": False,
+        })
+
+        assert resp.status_code == 200
+        events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+        assert any(
+            event["type"] == "error" and event["message"] == "Image was deleted during auto caption"
+            for event in events
+        )
+        assert events[-1]["type"] == "done"
+        assert events[-1]["processed"] == 0
+        assert events[-1]["errors"] == 1
+        assert not (img_dir / "photo1.txt").exists()
+
 
 class TestOpenInExplorer:
     def test_linux_prefers_selection_aware_command(self, client, single_image, monkeypatch):
@@ -794,6 +830,96 @@ class TestCaptionAPI:
         assert "Environment" in caption
         assert "Scene" not in caption
         assert "Moon" in caption
+
+    def test_delete_caption_preset_updates_all_caption_files(self, client, img_dir):
+        image_paths = [str(img_dir / "photo1.jpg"), str(img_dir / "photo2.png")]
+        client.post("/api/settings", json={
+            "folder": str(img_dir),
+            "sections": [{"name": "", "sentences": ["Old Caption", "Keep Me"], "groups": []}],
+        })
+        for image_path in image_paths:
+            client.post("/api/caption/save", json={
+                "image_path": image_path,
+                "enabled_sentences": ["Old Caption", "Keep Me"],
+                "free_text": "Old Caption",
+            })
+
+        resp = client.post("/api/caption/delete-preset", json={
+            "folder": str(img_dir),
+            "sentence": "Old Caption",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["removed_sentences"] == ["Old Caption"]
+        assert data["sections"][0]["sentences"] == ["Keep Me"]
+
+        for image_path in image_paths:
+            caption = Path(image_path).with_suffix(".txt").read_text(encoding="utf-8")
+            assert "Old Caption" not in caption
+            assert "Keep Me" in caption
+
+    def test_delete_group_updates_all_caption_files(self, client, img_dir):
+        image_paths = [str(img_dir / "photo1.jpg"), str(img_dir / "photo2.png")]
+        client.post("/api/settings", json={
+            "folder": str(img_dir),
+            "sections": [{
+                "name": "",
+                "sentences": ["Keep Me"],
+                "groups": [{"name": "Car", "sentences": ["Red Car", "Blue Car"]}],
+            }],
+        })
+        for image_path in image_paths:
+            client.post("/api/caption/save", json={
+                "image_path": image_path,
+                "enabled_sentences": ["Keep Me", "Red Car"],
+                "free_text": "Red Car",
+            })
+
+        resp = client.post("/api/group/delete", json={
+            "folder": str(img_dir),
+            "section_index": 0,
+            "group_index": 0,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["removed_sentences"] == ["Red Car", "Blue Car"]
+        assert data["sections"][0]["groups"] == []
+
+        for image_path in image_paths:
+            caption = Path(image_path).with_suffix(".txt").read_text(encoding="utf-8")
+            assert "Red Car" not in caption
+            assert "Blue Car" not in caption
+            assert "Keep Me" in caption
+
+    def test_delete_section_updates_all_caption_files(self, client, img_dir):
+        image_paths = [str(img_dir / "photo1.jpg"), str(img_dir / "photo2.png")]
+        client.post("/api/settings", json={
+            "folder": str(img_dir),
+            "sections": [
+                {"name": "Scene", "sentences": ["Moon"], "groups": []},
+                {"name": "", "sentences": ["Keep Me"], "groups": []},
+            ],
+        })
+        for image_path in image_paths:
+            client.post("/api/caption/save", json={
+                "image_path": image_path,
+                "enabled_sentences": ["Moon", "Keep Me"],
+                "free_text": "Moon",
+            })
+
+        resp = client.post("/api/section/delete", json={
+            "folder": str(img_dir),
+            "section_index": 0,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["removed_sentences"] == ["Moon"]
+        assert [section["name"] for section in data["sections"]] == [""]
+
+        for image_path in image_paths:
+            caption = Path(image_path).with_suffix(".txt").read_text(encoding="utf-8")
+            assert "Moon" not in caption
+            assert "Keep Me" in caption
 
 
 class TestBatchToggle:

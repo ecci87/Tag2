@@ -24,6 +24,11 @@
   --gen-grad-b: #34e1ff;
   --gen-grad-c: #ff74db;
   --gen-surface: rgba(12, 12, 18, 0.88);
+  --txt-paper: rgba(245, 247, 252, 0.96);
+  --txt-paper-strong: rgba(255, 255, 255, 0.99);
+  --txt-paper-border: rgba(255, 255, 255, 0.42);
+  --txt-paper-shadow: rgba(255, 255, 255, 0.14);
+  --txt-paper-ink: #1f2430;
   --thumb-size: 160px;
   --gap: 6px;
 }
@@ -372,6 +377,27 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   color: var(--accent-warn);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 0 0 1px rgba(249,226,175,0.06);
 }
+#filter-txt-btn {
+  border-color: rgba(255,255,255,0.2);
+  color: rgba(255,255,255,0.82);
+}
+#filter-txt-btn:hover {
+  border-color: var(--txt-paper-border);
+  color: var(--txt-paper-strong);
+  background: rgba(255,255,255,0.08);
+}
+#filter-txt-btn.active {
+  border-color: var(--txt-paper-border);
+  background: linear-gradient(180deg, rgba(255,255,255,0.24), rgba(255,255,255,0.14));
+  color: var(--txt-paper-strong);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), 0 0 0 1px var(--txt-paper-shadow);
+}
+#filter-txt-btn.missing {
+  border-color: rgba(243,139,168,0.42);
+  background: linear-gradient(180deg, rgba(255,255,255,0.18), rgba(243,139,168,0.12));
+  color: var(--txt-paper-strong);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), 0 0 0 1px rgba(243,139,168,0.10);
+}
 #clear-filters-btn {
   min-width: 20px;
   width: 20px;
@@ -443,13 +469,13 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 }
 .thumb-cell .caption-dot {
   right: 4px;
-  background: rgba(166,227,161,0.94);
-  color: #103117;
+  background: var(--txt-paper);
+  color: var(--txt-paper-ink);
   transition: background 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
 }
 .thumb-cell .caption-dot:hover {
-  background: rgba(186,238,180,0.98);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.38), 0 0 0 1px rgba(166,227,161,0.28);
+  background: var(--txt-paper-strong);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.38), 0 0 0 1px var(--txt-paper-shadow);
   filter: brightness(1.03);
 }
 .thumb-cell .aspect-warning {
@@ -460,10 +486,10 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 .thumb-cell.has-caption .caption-dot { display: flex; }
 .thumb-cell.aspect-mismatch .aspect-warning { display: flex; }
 .thumb-cell.has-caption {
-  border-left: 3px solid var(--accent2);
+  border-left: 3px solid rgba(255,255,255,0.72);
 }
 .thumb-cell.has-caption.selected {
-  border-left: 3px solid var(--accent2);
+  border-left: 3px solid rgba(255,255,255,0.86);
 }
 
 /* Resize handle */
@@ -865,9 +891,10 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   color: var(--accent);
 }
 .section-sentences li .export-toggle-btn.active {
-  border-color: rgba(166,227,161,0.35);
-  background: rgba(166,227,161,0.10);
-  color: var(--accent2);
+  border-color: var(--txt-paper-border);
+  background: linear-gradient(180deg, rgba(255,255,255,0.24), rgba(255,255,255,0.14));
+  color: var(--txt-paper-strong);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), 0 0 0 1px var(--txt-paper-shadow);
 }
 .section-sentences li .filter-toggle-btn {
   min-width: 20px;
@@ -900,6 +927,11 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   border-color: rgba(249,226,175,0.45);
   background: rgba(249,226,175,0.10);
   color: var(--accent-warn);
+}
+.section-sentences li .filter-toggle-btn.missing {
+  border-color: rgba(243,139,168,0.42);
+  background: rgba(243,139,168,0.12);
+  color: #f38ba8;
 }
 .section-sentences li .remove-btn:focus-visible {
   outline: 2px solid rgba(243,139,168,0.45);
@@ -1126,7 +1158,15 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 }
 .section-header .section-refresh-btn,
 .section-sentences li .sentence-refresh-btn {
+  min-width: 20px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
   flex-shrink: 0;
+}
+.section-sentences li .sentence-refresh-btn .btn-icon {
+  width: 14px;
+  height: 14px;
 }
 .group-header .group-remove-btn:hover {
   color: #f5a3bb;
@@ -1183,8 +1223,19 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 .section-add-row button {
   min-width: 22px; height: 22px; padding: 0; background: var(--accent2); color: #1e1e2e;
   border: 1px solid rgba(166,227,161,0.35); border-radius: 6px; cursor: pointer;
-  display: grid; place-items: center;
+  display: inline-flex; align-items: center; justify-content: center;
   font-weight: 700; font-size: 14px; line-height: 1;
+}
+.section-add-row button .add-btn-plus {
+  width: 10px;
+  height: 10px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.section-add-row button .add-btn-suffix {
+  display: inline-block;
+  line-height: 1;
+  transform: translateY(-0.5px);
 }
 .section-add-row button:hover { filter: brightness(1.08); border-color: var(--accent2); }
 .section-add-row .section-add-group-btn {
@@ -1193,6 +1244,8 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   border: 1px solid rgba(166,227,161,0.35);
   font-size: 10px;
   letter-spacing: 0.02em;
+  gap: 1px;
+  padding: 0 4px;
 }
 .section-add-row .section-add-group-btn:hover {
   background: var(--accent-warn);
@@ -1634,7 +1687,7 @@ const state = {
   sections: [],          // [{name: "", sentences: [...], groups: [{name: "Car", sentences: [...]}]}, ...]
   // Per-image caption cache: path -> {enabled_sentences: [...], free_text: ""}
   captionCache: {},
-  activeSentenceFilters: new Set(),
+  activeSentenceFilters: new Map(),
   activeMetaFilters: {
     aspectState: "any",
     captionState: "any",
@@ -1870,6 +1923,32 @@ function createFilterIcon() {
   path.setAttribute("stroke-linejoin", "round");
   path.setAttribute("stroke-linecap", "round");
   svg.appendChild(path);
+
+  return svg;
+}
+
+function createAddPlusIcon() {
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.setAttribute("viewBox", "0 0 10 10");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  svg.classList.add("add-btn-plus");
+
+  const vertical = document.createElementNS(svgNs, "path");
+  vertical.setAttribute("d", "M5 1.5V8.5");
+  vertical.setAttribute("stroke", "currentColor");
+  vertical.setAttribute("stroke-width", "1.6");
+  vertical.setAttribute("stroke-linecap", "round");
+  svg.appendChild(vertical);
+
+  const horizontal = document.createElementNS(svgNs, "path");
+  horizontal.setAttribute("d", "M1.5 5H8.5");
+  horizontal.setAttribute("stroke", "currentColor");
+  horizontal.setAttribute("stroke-width", "1.6");
+  horizontal.setAttribute("stroke-linecap", "round");
+  svg.appendChild(horizontal);
 
   return svg;
 }
@@ -2316,7 +2395,120 @@ function getPreviewEnabledSentences(path = state.previewPath) {
 }
 
 function getActiveSentenceFilters() {
-  return [...state.activeSentenceFilters].filter(Boolean);
+  return [...state.activeSentenceFilters.keys()].filter(Boolean);
+}
+
+function getActiveSentenceFilterEntries() {
+  return [...state.activeSentenceFilters.entries()]
+    .filter(([sentence, mode]) => !!sentence && (mode === "has" || mode === "missing"));
+}
+
+function getSentenceFilterMode(sentence) {
+  const mode = state.activeSentenceFilters.get(sentence);
+  return mode === "has" || mode === "missing" ? mode : "off";
+}
+
+function getActiveSentenceFilterClauses(filters = getActiveSentenceFilterEntries()) {
+  const clauses = [];
+  const groupedClauses = new Map();
+
+  for (const [sentence, mode] of filters) {
+    const location = findSentenceLocation(sentence);
+    if (!location?.group) {
+      clauses.push({ type: "sentence", sentence, mode });
+      continue;
+    }
+
+    const groupId = String(location.group.id || `group-${location.sectionIndex}-${location.groupIndex}`);
+    const clauseKey = `${location.sectionIndex}:${groupId}`;
+    let clause = groupedClauses.get(clauseKey);
+    if (!clause) {
+      clause = { type: "group", mode: "has", sentences: [] };
+      groupedClauses.set(clauseKey, clause);
+      clauses.push(clause);
+    }
+    if (!clause.sentences.includes(sentence)) {
+      clause.sentences.push(sentence);
+    }
+  }
+
+  return clauses;
+}
+
+function formatCaptionFilterClause(clause, prefix = "  ") {
+  if (!clause) return "";
+  if (clause.type === "group") {
+    const sentences = (clause.sentences || []).filter(Boolean);
+    if (sentences.length === 0) return "";
+    if (sentences.length === 1) {
+      return `${prefix}"${sentences[0]}"`;
+    }
+    return `${prefix}(\n${sentences.map(sentence => `${prefix}  "${sentence}"`).join(" or\n")}\n${prefix})`;
+  }
+  return `${prefix}"${clause.sentence}"`;
+}
+
+function buildActiveFilterSummary() {
+  const lines = [];
+  const captionClauses = getActiveSentenceFilterClauses();
+  const hasClauses = captionClauses.filter(clause => clause.type === "group" || clause.mode !== "missing");
+  const missingClauses = captionClauses.filter(clause => clause.type !== "group" && clause.mode === "missing");
+
+  if (hasClauses.length > 0) {
+    lines.push("Has:");
+    hasClauses.forEach((clause, index) => {
+      const text = formatCaptionFilterClause(clause, "  ");
+      if (!text) return;
+      if (index > 0) {
+        lines.push("  and");
+      }
+      lines.push(text);
+    });
+  }
+
+  if (missingClauses.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Has not:");
+    missingClauses.forEach((clause, index) => {
+      const text = formatCaptionFilterClause(clause, "  ");
+      if (!text) return;
+      if (index > 0) {
+        lines.push("  or");
+      }
+      lines.push(text);
+    });
+  }
+
+  const metaHas = [];
+  const metaMissing = [];
+  if (state.activeMetaFilters.aspectState === "has") metaHas.push("AR warning");
+  if (state.activeMetaFilters.aspectState === "missing") metaMissing.push("AR warning");
+  if (state.activeMetaFilters.captionState === "has") metaHas.push("TXT file");
+  if (state.activeMetaFilters.captionState === "missing") metaMissing.push("TXT file");
+
+  if (metaHas.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Other has:");
+    metaHas.forEach((label, index) => {
+      if (index > 0) {
+        lines.push("  and");
+      }
+      lines.push(`  ${label}`);
+    });
+  }
+
+  if (metaMissing.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Other has not:");
+    metaMissing.forEach((label, index) => {
+      if (index > 0) {
+        lines.push("  or");
+      }
+      lines.push(`  ${label}`);
+    });
+  }
+
+  return lines.join("\n").trim();
 }
 
 function getActiveMetaFilterCount() {
@@ -2327,7 +2519,7 @@ function getActiveMetaFilterCount() {
 }
 
 function getActiveFilterCount() {
-  return state.activeSentenceFilters.size + getActiveMetaFilterCount();
+  return getActiveSentenceFilterEntries().length + getActiveMetaFilterCount();
 }
 
 function hasAnyActiveFilters() {
@@ -2335,11 +2527,15 @@ function hasAnyActiveFilters() {
 }
 
 function getActiveSentenceFilterKey() {
-  return JSON.stringify([...getActiveSentenceFilters()].sort());
+  return JSON.stringify(
+    getActiveSentenceFilterEntries()
+      .map(([sentence, mode]) => [sentence, mode])
+      .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]))
+  );
 }
 
 function canApplyActiveSentenceFilters() {
-  const filters = getActiveSentenceFilters();
+  const filters = getActiveSentenceFilterEntries();
   if (filters.length === 0) return false;
   if (state.filterCaptionCacheKey !== getActiveSentenceFilterKey()) return false;
   return state.images.every(img => !!state.captionCache[img.path]);
@@ -2368,11 +2564,19 @@ function imageMatchesMetaFilters(image) {
 }
 
 function imageMatchesActiveFilters(image) {
-  const filters = getActiveSentenceFilters();
+  const filters = getActiveSentenceFilterEntries();
   if (!imageMatchesMetaFilters(image)) return false;
   if (filters.length === 0 || !canApplyActiveSentenceFilters()) return true;
+  const clauses = getActiveSentenceFilterClauses(filters);
   const enabled = new Set(getEnabledSentencesForPath(image?.path));
-  return filters.every(sentence => enabled.has(sentence));
+  return clauses.every((clause) => {
+    if (clause.type === "group") {
+      return clause.sentences.some(sentence => enabled.has(sentence));
+    }
+    return clause.mode === "missing"
+      ? !enabled.has(clause.sentence)
+      : enabled.has(clause.sentence);
+  });
 }
 
 function getVisibleImageEntries() {
@@ -2437,6 +2641,7 @@ function refreshGridForActiveFilters() {
 function renderFilterActions() {
   const hasFilters = hasAnyActiveFilters();
   const filterCount = getActiveFilterCount();
+  const filterSummary = buildActiveFilterSummary();
   clearFiltersBtn.classList.toggle("active", hasFilters);
   clearFiltersBtn.setAttribute("aria-pressed", hasFilters ? "true" : "false");
   applyTriStateFilterButton(filterArBtn, "AR", "No AR", state.activeMetaFilters.aspectState, {
@@ -2450,10 +2655,10 @@ function renderFilterActions() {
     missing: "Showing only images without a txt caption file",
   });
   clearFiltersBtn.title = hasFilters
-    ? `Clear ${filterCount} active filter${filterCount === 1 ? "" : "s"}`
+    ? `Clear ${filterCount} active filter${filterCount === 1 ? "" : "s"}\n\n${filterSummary}`
     : "No active filters";
   clearFiltersBtn.setAttribute("aria-label", hasFilters
-    ? `Clear ${filterCount} active filter${filterCount === 1 ? "" : "s"}`
+    ? `Clear ${filterCount} active filter${filterCount === 1 ? "" : "s"}. ${filterSummary.replace(/\s+/g, " ").trim()}`
     : "No active filters"
   );
 }
@@ -2528,20 +2733,23 @@ function toggleCaptionPresenceFilter() {
 async function toggleSentenceFilter(sentence) {
   const preferredPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
   const previousScrollTop = fileGridContainer.scrollTop;
-  const previousFilters = new Set(state.activeSentenceFilters);
-  const isActive = state.activeSentenceFilters.has(sentence);
-  if (isActive) {
-    state.activeSentenceFilters.delete(sentence);
-  } else {
-    const groupSentences = findGroupSentencesForSentence(sentence);
-    if (groupSentences) {
-      for (const groupSentence of groupSentences) {
-        if (groupSentence !== sentence) {
-          state.activeSentenceFilters.delete(groupSentence);
-        }
-      }
+  const previousFilters = new Map(state.activeSentenceFilters);
+  const isGroupSentence = !!findGroupForSentence(sentence);
+  const currentMode = getSentenceFilterMode(sentence);
+  if (isGroupSentence) {
+    if (currentMode === "has") {
+      state.activeSentenceFilters.delete(sentence);
+    } else {
+      state.activeSentenceFilters.set(sentence, "has");
     }
-    state.activeSentenceFilters.add(sentence);
+  } else {
+    if (currentMode === "off") {
+      state.activeSentenceFilters.set(sentence, "has");
+    } else if (currentMode === "has") {
+      state.activeSentenceFilters.set(sentence, "missing");
+    } else {
+      state.activeSentenceFilters.delete(sentence);
+    }
   }
 
   try {
@@ -2798,7 +3006,7 @@ function updateFileCountDisplay() {
   const captioned = state.images.filter(img => img.has_caption).length;
   const visible = getVisibleImageEntries().length;
   const filterCount = getActiveFilterCount();
-  const hasCaptionFilters = state.activeSentenceFilters.size > 0;
+  const hasCaptionFilters = getActiveSentenceFilterEntries().length > 0;
   if (filterCount > 0 && (!hasCaptionFilters || canApplyActiveSentenceFilters())) {
     fileCount.textContent = `${visible}/${total} images • ${captioned} captioned • ${filterCount} filter${filterCount === 1 ? "" : "s"}`;
     return;
@@ -3558,10 +3766,6 @@ function isEditableElement(element) {
 
 async function deleteSelectedImages() {
   if (state.selectedPaths.size === 0) return;
-  if (state.autoCaptioning) {
-    showErrorToast("Stop auto caption before deleting images.");
-    return;
-  }
 
   const selectedPaths = [...state.selectedPaths];
   const count = selectedPaths.length;
@@ -4666,6 +4870,41 @@ function saveSectionsToStorage() {
   }, 300);
 }
 
+function applyRemovedSentencesToLocalState(removedSentences = []) {
+  const removed = new Set((removedSentences || []).filter(Boolean));
+  if (removed.size === 0) return;
+  for (const sentence of [...state.activeSentenceFilters.keys()]) {
+    if (removed.has(sentence)) {
+      state.activeSentenceFilters.delete(sentence);
+    }
+  }
+  for (const caption of Object.values(state.captionCache)) {
+    if (!caption?.enabled_sentences) continue;
+    caption.enabled_sentences = caption.enabled_sentences.filter(sentence => !removed.has(sentence));
+    if (typeof caption.free_text === "string") {
+      caption.free_text = caption.free_text
+        .split(/\r?\n/)
+        .filter(line => !removed.has(line.trim()))
+        .join("\n");
+    }
+  }
+  state.filterCaptionCacheKey = getActiveSentenceFilterKey();
+}
+
+async function refreshCaptionsAfterSchemaChange() {
+  refreshGridForActiveFilters();
+  if (state.selectedPaths.size === 1) {
+    const path = [...state.selectedPaths][0];
+    await loadCaptionData(path);
+    return;
+  }
+  if (state.selectedPaths.size > 1) {
+    await loadMultiCaptionState();
+    return;
+  }
+  renderSentences();
+}
+
 const SECTION_DRAG_TYPE = "application/x-tag2-section";
 const GROUP_DRAG_TYPE = "application/x-tag2-group";
 const SENTENCE_DRAG_TYPE = "application/x-tag2-sentence";
@@ -4798,19 +5037,34 @@ function addSentenceToSection(secIdx, text, groupIdx = null) {
   renderSentences();
 }
 
-function removeSentence(sentence) {
-  state.activeSentenceFilters.delete(sentence);
-  for (const sec of state.sections) {
-    sec.sentences = sec.sentences.filter(s => s !== sentence);
-    sec.item_order = (sec.item_order || []).filter(item => !(item?.type === "sentence" && item.sentence === sentence));
-    for (const group of sec.groups || []) {
-      group.sentences = group.sentences.filter(s => s !== sentence);
-      group.hidden_sentences = (group.hidden_sentences || []).filter(s => s !== sentence);
-    }
+async function removeSentence(sentence) {
+  if (!state.folder) {
+    statusBar.textContent = "No folder loaded";
+    return;
   }
-  saveSectionsToStorage();
-  refreshGridForActiveFilters();
-  renderSentences();
+
+  statusBar.textContent = "Deleting caption...";
+  try {
+    const resp = await fetch("/api/caption/delete-preset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        folder: state.folder,
+        sentence,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to delete caption");
+    }
+    state.sections = normalizeSectionsData(data.sections || state.sections);
+    applyRemovedSentencesToLocalState(data.removed_sentences || [sentence]);
+    await refreshCaptionsAfterSchemaChange();
+    statusBar.textContent = "Caption deleted";
+  } catch (err) {
+    statusBar.textContent = `Delete caption error: ${err.message}`;
+    renderSentences();
+  }
 }
 
 function toggleSentenceHiddenOnExport(sentence) {
@@ -4865,8 +5119,11 @@ async function renameSentence(oldSentence, newSentence) {
       caption.enabled_sentences = [...new Set(caption.enabled_sentences.map(sentence => sentence === oldSentence ? nextSentence : sentence))];
     }
     if (state.activeSentenceFilters.has(oldSentence)) {
+      const mode = state.activeSentenceFilters.get(oldSentence);
       state.activeSentenceFilters.delete(oldSentence);
-      state.activeSentenceFilters.add(nextSentence);
+      if (mode === "has" || mode === "missing") {
+        state.activeSentenceFilters.set(nextSentence, mode);
+      }
     }
     state.filterCaptionCacheKey = getActiveSentenceFilterKey();
     refreshGridForActiveFilters();
@@ -4952,27 +5209,72 @@ function addGroupWithName(secIdx, name) {
   renderSentences();
 }
 
-function deleteSection(index) {
+async function deleteSection(index) {
   const sec = state.sections[index];
   const label = sec.name || "(General)";
   if (!confirm(`Delete section "${label}" and its ${countSectionSentences(sec)} caption(s)?`)) return;
-  state.sections.splice(index, 1);
-  if (state.sections.length === 0) {
-    state.sections.push(createEmptySection(""));
+  if (!state.folder) {
+    statusBar.textContent = "No folder loaded";
+    return;
   }
-  saveSectionsToStorage();
-  renderSentences();
+
+  statusBar.textContent = "Deleting section...";
+  try {
+    const resp = await fetch("/api/section/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        folder: state.folder,
+        section_index: index,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to delete section");
+    }
+    state.sections = normalizeSectionsData(data.sections || state.sections);
+    applyRemovedSentencesToLocalState(data.removed_sentences || []);
+    await refreshCaptionsAfterSchemaChange();
+    statusBar.textContent = "Section deleted";
+  } catch (err) {
+    statusBar.textContent = `Delete section error: ${err.message}`;
+    renderSentences();
+  }
 }
 
-function deleteGroup(secIdx, groupIdx) {
+async function deleteGroup(secIdx, groupIdx) {
   const group = state.sections[secIdx]?.groups?.[groupIdx];
   if (!group) return;
   const label = group.name || "(Group)";
   if (!confirm(`Delete group "${label}" and its ${(group.sentences || []).length} caption(s)?`)) return;
-  state.sections[secIdx].groups.splice(groupIdx, 1);
-  state.sections[secIdx].item_order = (state.sections[secIdx].item_order || []).filter(item => !(item?.type === "group" && item.group_id === group.id));
-  saveSectionsToStorage();
-  renderSentences();
+  if (!state.folder) {
+    statusBar.textContent = "No folder loaded";
+    return;
+  }
+
+  statusBar.textContent = "Deleting group...";
+  try {
+    const resp = await fetch("/api/group/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        folder: state.folder,
+        section_index: secIdx,
+        group_index: groupIdx,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to delete group");
+    }
+    state.sections = normalizeSectionsData(data.sections || state.sections);
+    applyRemovedSentencesToLocalState(data.removed_sentences || []);
+    await refreshCaptionsAfterSchemaChange();
+    statusBar.textContent = "Group deleted";
+  } catch (err) {
+    statusBar.textContent = `Delete group error: ${err.message}`;
+    renderSentences();
+  }
 }
 
 function beginEditableRename(targetEl, currentValue, onCommit, highlightColor = "var(--accent)") {
@@ -5056,7 +5358,9 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const sentenceIdx = Number.isInteger(options.sentenceIdx) ? options.sentenceIdx : -1;
   const topLevelMix = !!options.topLevelMix;
   const canRefreshSentence = groupIdx === null;
-  const isFilterActive = state.activeSentenceFilters.has(sentence);
+  const isGroupSentence = groupIdx !== null;
+  const filterMode = getSentenceFilterMode(sentence);
+  const isFilterActive = filterMode !== "off";
   const { isChecked, isPartial } = getSentenceSelectionState(sentence, selectedPaths);
   const li = document.createElement("li");
   li.dataset.sentence = sentence;
@@ -5131,14 +5435,25 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
 
   const filterToggleBtn = document.createElement("button");
   filterToggleBtn.type = "button";
-  filterToggleBtn.className = `filter-toggle-btn${isFilterActive ? " active" : ""}`;
-  filterToggleBtn.title = isFilterActive
-    ? "Remove this caption from the thumbnail filter"
-    : "Filter thumbnails to images that include this caption";
+  filterToggleBtn.className = `filter-toggle-btn${filterMode === "has" ? " active" : ""}${filterMode === "missing" ? " missing" : ""}`;
+  if (isGroupSentence) {
+    filterToggleBtn.title = isFilterActive
+      ? "Remove this group caption from the thumbnail filter"
+      : "Filter thumbnails to images that include this group caption";
+    filterToggleBtn.setAttribute("aria-label", isFilterActive
+      ? "Remove this group caption from the thumbnail filter"
+      : "Filter thumbnails to images that include this group caption");
+  } else {
+    const spokenMode = filterMode === "missing" ? "Doesn't Have" : filterMode === "has" ? "Has" : "Off";
+    const buttonTitle = filterMode === "has"
+      ? "Filter thumbnails to images that include this caption"
+      : filterMode === "missing"
+        ? "Filter thumbnails to images that do not include this caption"
+        : "Caption filter is off";
+    filterToggleBtn.title = `${buttonTitle}. Click to cycle Off, Has, Doesn't Have.`;
+    filterToggleBtn.setAttribute("aria-label", `Caption filter state: ${spokenMode}`);
+  }
   filterToggleBtn.setAttribute("aria-pressed", isFilterActive ? "true" : "false");
-  filterToggleBtn.setAttribute("aria-label", isFilterActive
-    ? "Remove this caption from the thumbnail filter"
-    : "Filter thumbnails to images that include this caption");
   filterToggleBtn.appendChild(createFilterIcon());
   filterToggleBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
@@ -5435,7 +5750,8 @@ function createAddSentenceRow(secIdx, groupIdx = null, placeholder = "Add captio
   addInput.placeholder = placeholder;
   addInput.spellcheck = false;
   const addBtn = document.createElement("button");
-  addBtn.textContent = "+";
+  addBtn.type = "button";
+  addBtn.appendChild(createAddPlusIcon());
   const submit = () => {
     const text = addInput.value.trim();
     if (!text) return;
@@ -5452,7 +5768,12 @@ function createAddSentenceRow(secIdx, groupIdx = null, placeholder = "Add captio
     const addGroupBtn = document.createElement("button");
     addGroupBtn.type = "button";
     addGroupBtn.className = "section-add-group-btn";
-    addGroupBtn.textContent = "+G";
+    const addGroupPlus = createAddPlusIcon();
+    const addGroupSuffix = document.createElement("span");
+    addGroupSuffix.className = "add-btn-suffix";
+    addGroupSuffix.textContent = "G";
+    addGroupBtn.appendChild(addGroupPlus);
+    addGroupBtn.appendChild(addGroupSuffix);
     addGroupBtn.title = "Create group from this text";
     addGroupBtn.addEventListener("click", () => {
       const text = addInput.value.trim();

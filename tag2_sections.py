@@ -389,6 +389,87 @@ def _rename_sentence_in_sections(sections: list[dict], old_sentence: str, new_se
     return renamed
 
 
+def _remove_sentence_from_sections(sections: list[dict], sentence_to_remove: str) -> bool:
+    """Remove a configured sentence from sections and groups."""
+    removed = False
+    for section in sections:
+        section_sentences = list(section.get("sentences", []))
+        if sentence_to_remove in section_sentences:
+            removed = True
+        section["sentences"] = [sentence for sentence in section_sentences if sentence != sentence_to_remove]
+        section["item_order"] = [
+            {
+                "type": "sentence",
+                "sentence": str(item.get("sentence") or "").strip(),
+            }
+            if str(item.get("type") or "").strip().lower() == "sentence"
+            else {
+                "type": "group",
+                "group_id": str(item.get("group_id") or "").strip(),
+            }
+            for item in (section.get("item_order", []) or [])
+            if isinstance(item, dict)
+            and not (
+                str(item.get("type") or "").strip().lower() == "sentence"
+                and str(item.get("sentence") or "").strip() == sentence_to_remove
+            )
+        ]
+        for group in section.get("groups", []) or []:
+            group_sentences = list(group.get("sentences", []))
+            if sentence_to_remove in group_sentences:
+                removed = True
+            group["sentences"] = [sentence for sentence in group_sentences if sentence != sentence_to_remove]
+            group["hidden_sentences"] = [
+                sentence
+                for sentence in _group_hidden_sentences(group)
+                if sentence != sentence_to_remove and sentence in group["sentences"]
+            ]
+    return removed
+
+
+def _remove_group_from_sections(sections: list[dict], section_index: int, group_index: int) -> list[str] | None:
+    """Remove a configured group and return the removed group sentences."""
+    if section_index < 0 or section_index >= len(sections):
+        return None
+    groups = sections[section_index].get("groups", []) or []
+    if group_index < 0 or group_index >= len(groups):
+        return None
+    removed_group = groups.pop(group_index)
+    removed_group_id = str(removed_group.get("id") or "").strip()
+    sections[section_index]["groups"] = groups
+    sections[section_index]["item_order"] = [
+        {
+            "type": "sentence",
+            "sentence": str(item.get("sentence") or "").strip(),
+        }
+        if str(item.get("type") or "").strip().lower() == "sentence"
+        else {
+            "type": "group",
+            "group_id": str(item.get("group_id") or "").strip(),
+        }
+        for item in (sections[section_index].get("item_order", []) or [])
+        if isinstance(item, dict)
+        and not (
+            str(item.get("type") or "").strip().lower() == "group"
+            and str(item.get("group_id") or "").strip() == removed_group_id
+        )
+    ]
+    return list(removed_group.get("sentences", []) or [])
+
+
+def _remove_section_from_sections(sections: list[dict], section_index: int) -> tuple[list[dict], list[str]] | tuple[None, None]:
+    """Remove a configured section and return the updated sections with removed sentences."""
+    if section_index < 0 or section_index >= len(sections):
+        return None, None
+    removed_section = sections.pop(section_index)
+    removed_sentences = list(removed_section.get("sentences", []) or [])
+    for group in removed_section.get("groups", []) or []:
+        removed_sentences.extend(group.get("sentences", []) or [])
+    if not sections:
+        sections.append({"name": "", "sentences": [], "groups": [], "item_order": []})
+    return sections, removed_sentences
+
+
 def _rename_section_in_sections(sections: list[dict], old_name: str, new_name: str) -> bool:
     """Rename a configured section header."""
     renamed = False

@@ -99,6 +99,9 @@ from tag2_sections import (
     _iter_caption_targets_with_indices,
     _normalize_enabled_sentences,
     _ordered_sections_for_output,
+    _remove_group_from_sections,
+    _remove_section_from_sections,
+    _remove_sentence_from_sections,
     _rename_section_in_sections,
     _rename_sentence_in_sections,
     _set_folder_sections,
@@ -350,6 +353,8 @@ def _read_live_caption_state(
     headers: list[str],
 ) -> tuple[list[str], str]:
     """Read the latest caption state from disk for merge-safe auto-caption writes."""
+    if not os.path.isfile(image_path):
+        raise FileNotFoundError(f"Image not found: {image_path}")
     current = _read_caption_file(image_path, all_sentences, headers)
     return list(current.get("enabled_sentences", [])), current.get("free_text", "")
 
@@ -562,6 +567,22 @@ class RenameSectionUpdate(BaseModel):
     new_name: str
 
 
+class DeleteCaptionPresetUpdate(BaseModel):
+    folder: str
+    sentence: str
+
+
+class DeleteGroupUpdate(BaseModel):
+    folder: str
+    section_index: int
+    group_index: int
+
+
+class DeleteSectionUpdate(BaseModel):
+    folder: str
+    section_index: int
+
+
 class CropUpdate(BaseModel):
     image_path: str
     crop: Optional[dict] = None
@@ -693,6 +714,49 @@ def _copy_folder_config_for_clone(source_folder: str, target_folder: str):
         sections = _get_folder_sections(cfg, source_folder)
         _set_folder_sections(cfg, target_folder, sections)
     _save_config(cfg)
+
+
+def _iter_folder_image_entries(folder: str):
+    """Yield image files in a folder."""
+    folder_path = Path(folder)
+    for entry in folder_path.iterdir():
+        if entry.is_file() and entry.suffix.lower() in IMAGE_EXTENSIONS:
+            yield entry
+
+
+def _remove_deleted_caption_lines(free_text: str, removed_sentences: set[str]) -> str:
+    """Drop free-text lines that exactly match deleted captions."""
+    if not removed_sentences:
+        return str(free_text or "")
+    filtered_lines = [
+        line
+        for line in str(free_text or "").splitlines()
+        if line.strip() not in removed_sentences
+    ]
+    return "\n".join(filtered_lines)
+
+
+def _remove_sentences_from_caption_files(folder: str, sections_before: list[dict], sections_after: list[dict], removed_sentences: list[str]):
+    """Rewrite caption files in a folder after configured captions are deleted."""
+    removed_set = {sentence for sentence in removed_sentences if sentence}
+    if not removed_set:
+        return
+
+    all_sentences_before = _all_sentences_from_sections(sections_before)
+    headers_before = _all_headers_from_sections(sections_before)
+
+    for entry in _iter_folder_image_entries(folder):
+        caption_path = entry.with_suffix(".txt")
+        if not caption_path.exists():
+            continue
+        data = _read_caption_file(str(entry), all_sentences_before, headers_before)
+        enabled = [
+            sentence for sentence in data.get("enabled_sentences", [])
+            if sentence not in removed_set
+        ]
+        enabled = _normalize_enabled_sentences(enabled, sections_after)
+        free_text = _remove_deleted_caption_lines(str(data.get("free_text", "") or ""), removed_set)
+        _write_caption_file(str(entry), enabled, free_text, sections_after)
 
 
 @app.get("/api/crop")
@@ -1003,6 +1067,72 @@ async def rename_section(update: RenameSectionUpdate):
     return {"ok": True, "sections": sections}
 
 
+@app.post("/api/caption/delete-preset")
+async def delete_caption_preset(update: DeleteCaptionPresetUpdate):
+    """Delete a configured caption and remove it from caption files in the folder."""
+    folder = os.path.normpath(update.folder)
+    sentence = str(update.sentence or "").strip()
+    if not folder or not os.path.isdir(folder):
+        raise HTTPException(status_code=400, detail="Folder not found")
+    if not sentence:
+        raise HTTPException(status_code=400, detail="Caption text is required")
+
+    cfg = _load_config()
+    sections_before = _get_folder_sections(cfg, folder)
+    if sentence not in _all_sentences_from_sections(sections_before):
+        raise HTTPException(status_code=404, detail="Caption not found")
+
+    sections = _get_folder_sections(cfg, folder)
+    removed = _remove_sentence_from_sections(sections, sentence)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Caption not found")
+
+    _set_folder_sections(cfg, folder, sections)
+    _save_config(cfg)
+    _remove_sentences_from_caption_files(folder, sections_before, sections, [sentence])
+    return {"ok": True, "sections": sections, "removed_sentences": [sentence]}
+
+
+@app.post("/api/group/delete")
+async def delete_group(update: DeleteGroupUpdate):
+    """Delete a configured group and remove its captions from caption files in the folder."""
+    folder = os.path.normpath(update.folder)
+    if not folder or not os.path.isdir(folder):
+        raise HTTPException(status_code=400, detail="Folder not found")
+
+    cfg = _load_config()
+    sections_before = _get_folder_sections(cfg, folder)
+    sections = _get_folder_sections(cfg, folder)
+    removed_sentences = _remove_group_from_sections(sections, update.section_index, update.group_index)
+    if removed_sentences is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    _set_folder_sections(cfg, folder, sections)
+    _save_config(cfg)
+    _remove_sentences_from_caption_files(folder, sections_before, sections, removed_sentences)
+    return {"ok": True, "sections": sections, "removed_sentences": removed_sentences}
+
+
+@app.post("/api/section/delete")
+async def delete_section(update: DeleteSectionUpdate):
+    """Delete a configured section and remove its captions from caption files in the folder."""
+    folder = os.path.normpath(update.folder)
+    if not folder or not os.path.isdir(folder):
+        raise HTTPException(status_code=400, detail="Folder not found")
+
+    cfg = _load_config()
+    sections_before = _get_folder_sections(cfg, folder)
+    sections = _get_folder_sections(cfg, folder)
+    updated_sections, removed_sentences = _remove_section_from_sections(sections, update.section_index)
+    if updated_sections is None or removed_sentences is None:
+        raise HTTPException(status_code=404, detail="Section not found")
+
+    _set_folder_sections(cfg, folder, updated_sections)
+    _save_config(cfg)
+    _remove_sentences_from_caption_files(folder, sections_before, updated_sections, removed_sentences)
+    return {"ok": True, "sections": updated_sections, "removed_sentences": removed_sentences}
+
+
 @app.post("/api/caption/save-free-text")
 async def save_free_text(data: BatchFreeTextUpdate):
     """Save free text for a single image, preserving predefined sentences."""
@@ -1167,6 +1297,8 @@ async def auto_caption(data: AutoCaptionRequest):
                     auto_caption_call,
                 )
                 free_text = free_text if is_scoped else ""
+                if not os.path.isfile(image_path):
+                    raise FileNotFoundError(f"Image not found: {image_path}")
                 _write_caption_file(image_path, enabled, free_text, sections)
             else:
                 image_b64 = await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)
@@ -1237,6 +1369,8 @@ async def auto_caption(data: AutoCaptionRequest):
                     })
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
+        except FileNotFoundError:
+            raise HTTPException(status_code=409, detail="Image was deleted during auto caption") from None
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Auto caption failed: {e}") from e
 
@@ -1271,6 +1405,8 @@ async def auto_caption(data: AutoCaptionRequest):
             )
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
+        except FileNotFoundError:
+            raise HTTPException(status_code=409, detail="Image was deleted during auto caption") from None
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Auto caption free-text step failed: {e}") from e
 
@@ -1519,6 +1655,9 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
             except RuntimeError as e:
                 total_errors += 1
                 yield _event_bytes({"type": "error", "path": image_path, "message": f"Ollama error: {e}"})
+            except FileNotFoundError:
+                total_errors += 1
+                yield _event_bytes({"type": "error", "path": image_path, "message": "Image was deleted during auto caption"})
             except Exception as e:
                 total_errors += 1
                 yield _event_bytes({"type": "error", "path": image_path, "message": f"Auto caption failed: {e}"})
