@@ -51,8 +51,13 @@ def single_image(img_dir):
 
 def make_upload_file(name: str, size: tuple[int, int] = (24, 24), color: str = "blue") -> tuple[str, BytesIO, str]:
     buffer = BytesIO()
-    image = Image.new("RGB", size, color=color)
     extension = Path(name).suffix.lower()
+    if extension in {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"}:
+        buffer.write(b"fake-video-bytes")
+        buffer.seek(0)
+        return (name, buffer, "video/mp4")
+
+    image = Image.new("RGB", size, color=color)
     format_name = {
         ".jpg": "JPEG",
         ".jpeg": "JPEG",
@@ -359,7 +364,7 @@ class TestAutoCaptionMergeDuringRun:
                 return {"response": "YES"}
             raise AssertionError(f"Unexpected prompt: {prompt}")
 
-        monkeypatch.setattr(server, "_encode_image_for_ollama", lambda image_path: "image-bytes")
+        monkeypatch.setattr(server, "_encode_media_for_ollama", lambda image_path, **kwargs: ["image-bytes"])
         monkeypatch.setattr(server, "_ollama_generate", fake_generate)
 
         with client.stream(
@@ -439,6 +444,14 @@ class TestListImages:
         assert photo1["has_caption"] is True
         assert photo2["has_caption"] is False
 
+    def test_list_images_includes_videos(self, client, img_dir):
+        (img_dir / "clip.mp4").write_bytes(b"fake-video-bytes")
+        resp = client.get("/api/list-images", params={"folder": str(img_dir)})
+        assert resp.status_code == 200
+        images = resp.json()["images"]
+        clip = next(item for item in images if item["name"] == "clip.mp4")
+        assert clip["media_type"] == "video"
+
 
 class TestUploadImages:
     def test_upload_images_copies_files_into_loaded_folder(self, client, img_dir):
@@ -480,6 +493,21 @@ class TestUploadImages:
         assert (img_dir / "photo1 (1).jpg").exists()
         assert existing_path.read_bytes() == before_bytes
 
+    def test_upload_images_accepts_video_files(self, client, img_dir):
+        resp = client.post(
+            "/api/images/upload",
+            data={"folder": str(img_dir)},
+            files=[("files", make_upload_file("clip.mp4"))],
+        )
+        assert resp.status_code == 200
+
+        data = resp.json()
+        assert data["uploaded_count"] == 1
+        uploaded = data["uploaded"][0]
+        assert uploaded["name"] == "clip.mp4"
+        assert uploaded["media_type"] == "video"
+        assert (img_dir / "clip.mp4").exists()
+
     def test_upload_images_skips_unsupported_files(self, client, img_dir):
         resp = client.post(
             "/api/images/upload",
@@ -495,7 +523,7 @@ class TestUploadImages:
         assert data["uploaded_count"] == 1
         assert data["skipped_count"] == 1
         assert data["skipped"][0]["name"] == "notes.txt"
-        assert data["skipped"][0]["reason"] == "Unsupported image file"
+        assert data["skipped"][0]["reason"] == "Unsupported media file"
         assert (img_dir / "valid.webp").exists()
         assert not (img_dir / "notes.txt").exists()
 
@@ -507,6 +535,94 @@ class TestUploadImages:
         )
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Not a valid directory"
+
+
+class TestVideoAPI:
+    def test_get_video_meta(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        monkeypatch.setattr(server, "_probe_video_info", lambda path, ffprobe_path="ffprobe": {"width": 1920, "height": 1080, "duration": 12.5})
+
+        resp = client.get("/api/video/meta", params={"path": str(video_path)})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["width"] == 1920
+        assert data["height"] == 1080
+        assert data["duration"] == 12.5
+
+    def test_get_video_frame(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        monkeypatch.setattr(server, "_resolve_ffmpeg_binaries", lambda cfg: ("ffmpeg", "ffprobe"))
+        monkeypatch.setattr(server, "_extract_video_frame", lambda *args, **kwargs: b"jpeg-bytes")
+
+        resp = client.get("/api/video/frame", params={"path": str(video_path), "time_seconds": 1.25})
+        assert resp.status_code == 200
+        assert resp.content == b"jpeg-bytes"
+        assert resp.headers["content-type"].startswith("image/jpeg")
+
+    def test_enqueue_video_crop_job(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        monkeypatch.setattr(server, "_enqueue_video_job", lambda job: {"id": "job-1", **job, "status": "queued"})
+
+        resp = client.post("/api/video/jobs/crop", json={
+            "video_path": str(video_path),
+            "crop": {"x": 10, "y": 12, "w": 300, "h": 200, "ratio": "3:2"},
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["job"]["type"] == "crop"
+        assert data["job"]["video_path"] == str(video_path)
+        assert Path(data["job"]["output_path"]).name.startswith("clip__crop_")
+
+    def test_enqueue_video_clip_job(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        monkeypatch.setattr(server, "_enqueue_video_job", lambda job: {"id": "job-2", **job, "status": "queued"})
+
+        resp = client.post("/api/video/jobs/clip", json={
+            "video_path": str(video_path),
+            "start_seconds": 1.5,
+            "end_seconds": 4.0,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["job"]["type"] == "clip"
+        assert "clip" in data["job"]["id"] or data["job"]["id"] == "job-2"
+        assert Path(data["job"]["output_path"]).name.startswith("clip__")
+
+    def test_enqueue_video_clip_job_accepts_crop(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        monkeypatch.setattr(server, "_enqueue_video_job", lambda job: {"id": "job-3", **job, "status": "queued"})
+
+        resp = client.post("/api/video/jobs/clip", json={
+            "video_path": str(video_path),
+            "start_seconds": 1.5,
+            "end_seconds": 4.0,
+            "crop": {"x": 10, "y": 12, "w": 300, "h": 200, "ratio": "3:2"},
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["job"]["type"] == "clip"
+        assert data["job"]["crop"]["w"] == 300
+        assert "__crop_" in Path(data["job"]["output_path"]).name
+
+    def test_enqueue_video_clip_job_rejects_invalid_range(self, client, img_dir):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+
+        resp = client.post("/api/video/jobs/clip", json={
+            "video_path": str(video_path),
+            "start_seconds": 5.0,
+            "end_seconds": 5.0,
+        })
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "Clip end time must be greater than start time"
 
 
 class TestDeleteImages:
@@ -566,7 +682,7 @@ class TestDeleteImages:
         assert resp.status_code == 200
         events = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
         assert any(
-            event["type"] == "error" and event["message"] == "Image was deleted during auto caption"
+            event["type"] == "error" and event["message"] == "Media was deleted during auto caption"
             for event in events
         )
         assert events[-1]["type"] == "done"
@@ -1040,6 +1156,10 @@ class TestSettingsAPI:
         assert data["https_keyfile"] == ""
         assert data["https_port"] == 8900
         assert data["remote_http_mode"] == "redirect-to-https"
+        assert data["ffmpeg_path"] == ""
+        assert data["ffmpeg_threads"] >= 1
+        assert data["ffmpeg_hwaccel"] == "auto"
+        assert data["processing_reserved_cores"] >= 0
         assert data["ollama_host"] == "http://127.0.0.1:11434"
         assert data["ollama_server"] == "127.0.0.1"
         assert data["ollama_port"] == 11434
@@ -1073,6 +1193,25 @@ class TestSettingsAPI:
         assert data["https_keyfile"] == "certs/localhost-key.pem"
         assert data["https_port"] == 9443
         assert data["remote_http_mode"] == "block"
+
+    def test_save_and_load_ffmpeg_path(self, client):
+        client.post("/api/settings", json={"ffmpeg_path": "/usr/bin/ffmpeg"})
+        resp = client.get("/api/settings")
+        assert resp.status_code == 200
+        assert resp.json()["ffmpeg_path"] == "/usr/bin/ffmpeg"
+
+    def test_save_and_load_ffmpeg_processing_settings(self, client):
+        client.post("/api/settings", json={
+            "ffmpeg_threads": 12,
+            "ffmpeg_hwaccel": "off",
+            "processing_reserved_cores": 3,
+        })
+        resp = client.get("/api/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ffmpeg_threads"] == 12
+        assert data["ffmpeg_hwaccel"] == "off"
+        assert data["processing_reserved_cores"] == 3
 
     def test_get_ollama_models(self, client, monkeypatch):
         monkeypatch.setattr(server, "_list_ollama_models", lambda host, timeout=20: ["llava:latest", "qwen2.5vl"])
@@ -1225,18 +1364,20 @@ class TestOllamaHelpers:
     def test_auto_caption_sentences(self, single_image, monkeypatch):
         def fake_generate(host, payload, timeout=120):
             assert timeout == 17
+            assert payload["images"] == ["image-bytes"]
             prompt = payload["prompt"]
             if "Moon" in prompt:
                 return {"response": "YES"}
             return {"response": "NO"}
 
+        monkeypatch.setattr(server, "_encode_media_for_ollama", lambda path, **kwargs: ["image-bytes"])
         monkeypatch.setattr(server, "_ollama_generate", fake_generate)
         enabled, results = server._auto_caption_sentences(
             "http://127.0.0.1:11434",
             "llava",
             single_image,
             ["Moon", "Night", "Car"],
-            encode_image_func=server._encode_image_for_ollama,
+            encode_image_func=server._encode_media_for_ollama,
             generate_func=server._ollama_generate,
             prompt_template="Caption? {caption}",
             timeout=17,
@@ -1248,6 +1389,7 @@ class TestOllamaHelpers:
 
     def test_auto_caption_sections(self, single_image, monkeypatch):
         def fake_generate(host, payload, timeout=120):
+            assert payload["images"] == ["image-bytes"]
             prompt = payload["prompt"]
             if "Caption:" in prompt:
                 return {"response": "YES" if "Moon" in prompt else "NO"}
@@ -1255,6 +1397,7 @@ class TestOllamaHelpers:
                 return {"response": "2"}
             raise AssertionError("unexpected prompt")
 
+        monkeypatch.setattr(server, "_encode_media_for_ollama", lambda path, **kwargs: ["image-bytes"])
         monkeypatch.setattr(server, "_ollama_generate", fake_generate)
         sections = [{
             "name": "",
@@ -1266,7 +1409,7 @@ class TestOllamaHelpers:
             "llava",
             single_image,
             sections,
-            encode_image_func=server._encode_image_for_ollama,
+            encode_image_func=server._encode_media_for_ollama,
             generate_func=server._ollama_generate,
             prompt_template="Caption: {caption}",
             group_prompt_template="Group: {group_name}\n{options}",
@@ -1283,6 +1426,7 @@ class TestOllamaHelpers:
                 return {"response": "2"}
             return {"response": "NO"}
 
+        monkeypatch.setattr(server, "_encode_media_for_ollama", lambda path, **kwargs: ["image-bytes"])
         monkeypatch.setattr(server, "_ollama_generate", fake_generate)
         sections = [{
             "name": "",
@@ -1294,7 +1438,7 @@ class TestOllamaHelpers:
             "llava",
             single_image,
             sections,
-            encode_image_func=server._encode_image_for_ollama,
+            encode_image_func=server._encode_media_for_ollama,
             generate_func=server._ollama_generate,
             prompt_template="Caption: {caption}",
             group_prompt_template="Group: {group_name}\n{options}",
@@ -1308,15 +1452,17 @@ class TestOllamaHelpers:
         def fake_generate(host, payload, timeout=120):
             assert timeout == 9
             assert "Current caption text" in payload["prompt"]
+            assert payload["images"] == ["image-bytes"]
             return {"response": "Moon visible\nBright stars"}
 
+        monkeypatch.setattr(server, "_encode_media_for_ollama", lambda path, **kwargs: ["image-bytes"])
         monkeypatch.setattr(server, "_ollama_generate", fake_generate)
         result = server._suggest_free_text(
             "http://127.0.0.1:11434",
             "llava",
             single_image,
             "- Night",
-            encode_image_func=server._encode_image_for_ollama,
+            encode_image_func=server._encode_media_for_ollama,
             generate_func=server._ollama_generate,
             prompt_template=server.DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
             timeout=9,
@@ -1432,7 +1578,7 @@ class TestAutoCaptionAPI:
             assert model == "llava"
             assert image_path == single_image
             assert server._all_sentences_from_sections(sections) == ["Moon", "Night", "Red Car", "Blue Car"]
-            assert kwargs["encode_image_func"] is server._encode_image_for_ollama
+            assert kwargs["encode_image_func"].func is server._encode_media_for_ollama
             assert kwargs["generate_func"] is server._ollama_generate
             assert kwargs["prompt_template"] == "Caption: {caption}"
             assert kwargs["group_prompt_template"] == "Group: {group_name}\n{options}"
@@ -1469,6 +1615,62 @@ class TestAutoCaptionAPI:
         assert "Night" in caption
         assert "Blue Car" in caption
         assert "Moon visible" in caption
+
+    def test_auto_caption_video_uses_sampled_frames(self, client, img_dir, monkeypatch):
+        video_path = str(img_dir / "clip.mp4")
+        Path(video_path).write_bytes(b"fake-video-bytes")
+        folder = str(img_dir)
+        client.post("/api/settings", json={
+            "folder": folder,
+            "sections": [{"name": "", "sentences": ["Walking"], "groups": []}],
+            "ollama_model": "llava",
+            "ollama_enable_free_text": False,
+        })
+
+        monkeypatch.setattr(server, "_encode_media_for_ollama", lambda path, **kwargs: ["frame-a", "frame-b", "frame-c"])
+
+        def fake_generate(host, payload, timeout=120):
+            assert payload["images"] == ["frame-a", "frame-b", "frame-c"]
+            return {"response": "YES"}
+
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption", json={
+            "media_path": video_path,
+            "model": "llava",
+            "enable_free_text": False,
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["enabled_sentences"] == ["Walking"]
+        assert Path(video_path).with_suffix(".txt").read_text(encoding="utf-8").strip() == "Walking"
+
+    def test_auto_caption_stream_accepts_video_media_paths(self, client, img_dir, monkeypatch):
+        video_path = str(img_dir / "clip.mp4")
+        Path(video_path).write_bytes(b"fake-video-bytes")
+        folder = str(img_dir)
+        client.post("/api/settings", json={
+            "folder": folder,
+            "sections": [{"name": "", "sentences": ["Walking"], "groups": []}],
+            "ollama_model": "llava",
+            "ollama_enable_free_text": False,
+        })
+
+        monkeypatch.setattr(server, "_encode_media_for_ollama", lambda path, **kwargs: ["frame-a", "frame-b"])
+        monkeypatch.setattr(server, "_ollama_generate", lambda host, payload, timeout=120: {"response": "YES"})
+
+        with client.stream(
+            "POST",
+            "/api/auto-caption/stream",
+            json={"media_paths": [video_path], "model": "llava", "enable_free_text": False},
+        ) as response:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        assert events[0]["type"] == "start"
+        completed = [event for event in events if event.get("type") == "image-complete"]
+        assert len(completed) == 1
+        assert completed[0]["enabled_sentences"] == ["Walking"]
 
     def test_auto_caption_requires_sentences(self, client, single_image):
         folder = str(os.path.dirname(single_image))

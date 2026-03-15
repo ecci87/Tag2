@@ -8,6 +8,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
+from tag2_images import _is_video_path
+
 from tag2_sections import (
     _apply_sentence_selection,
     _is_hidden_group_sentence,
@@ -135,6 +137,24 @@ def _ollama_prompt_for_free_text(caption_text: str, template: str) -> str:
     )
 
 
+def _normalize_ollama_images(encoded_media: str | list[str] | tuple[str, ...]) -> list[str]:
+    """Normalize one or more encoded vision inputs into the Ollama images payload shape."""
+    if isinstance(encoded_media, str):
+        return [encoded_media] if encoded_media else []
+    return [item for item in list(encoded_media or []) if item]
+
+
+def _apply_media_prompt_context(prompt: str, media_path: str) -> str:
+    """Inject extra guidance when a prompt is evaluating sampled video frames."""
+    if not _is_video_path(media_path):
+        return prompt
+    prefix = (
+        "The attached visual input contains multiple representative frames sampled from one video clip. "
+        "Base your answer on the overall clip content across all provided frames.\n\n"
+    )
+    return prefix + prompt
+
+
 def _ollama_generate(host: str, payload: dict, timeout: int = 120) -> dict:
     """Call the local Ollama generate API."""
     url = f"{host.rstrip('/')}/api/generate"
@@ -255,15 +275,15 @@ def _auto_caption_sentences(
     timeout: int,
 ) -> tuple[list[str], list[dict]]:
     """Ask Ollama about each caption candidate and return enabled sentences."""
-    image_b64 = encode_image_func(image_path)
+    image_payload = _normalize_ollama_images(encode_image_func(image_path))
     enabled: list[str] = []
     results: list[dict] = []
 
     for sentence in sentences:
         payload = {
             "model": model,
-            "prompt": _ollama_prompt_for_sentence(sentence, prompt_template),
-            "images": [image_b64],
+            "prompt": _apply_media_prompt_context(_ollama_prompt_for_sentence(sentence, prompt_template), image_path),
+            "images": image_payload,
             "stream": False,
             "options": {"temperature": 0},
         }
@@ -294,7 +314,7 @@ def _auto_caption_sections(
     timeout: int,
 ) -> tuple[list[str], list[dict]]:
     """Ask Ollama about configured captions, including exclusive groups."""
-    image_b64 = encode_image_func(image_path)
+    image_payload = _normalize_ollama_images(encode_image_func(image_path))
     enabled: list[str] = []
     results: list[dict] = []
 
@@ -303,8 +323,8 @@ def _auto_caption_sections(
             sentence = target["sentence"]
             payload = {
                 "model": model,
-                "prompt": _ollama_prompt_for_sentence(sentence, prompt_template),
-                "images": [image_b64],
+                "prompt": _apply_media_prompt_context(_ollama_prompt_for_sentence(sentence, prompt_template), image_path),
+                "images": image_payload,
                 "stream": False,
                 "options": {"temperature": 0},
             }
@@ -323,12 +343,15 @@ def _auto_caption_sections(
         group_sentences = target["sentences"]
         payload = {
             "model": model,
-            "prompt": _ollama_prompt_for_group(
-                target.get("group_name", ""),
-                group_sentences,
-                group_prompt_template,
+            "prompt": _apply_media_prompt_context(
+                _ollama_prompt_for_group(
+                    target.get("group_name", ""),
+                    group_sentences,
+                    group_prompt_template,
+                ),
+                image_path,
             ),
-            "images": [image_b64],
+            "images": image_payload,
             "stream": False,
             "options": {"temperature": 0},
         }
@@ -365,11 +388,11 @@ def _suggest_free_text(
     timeout: int,
 ) -> str:
     """Ask Ollama for additional free-text image details."""
-    image_b64 = encode_image_func(image_path)
+    image_payload = _normalize_ollama_images(encode_image_func(image_path))
     payload = {
         "model": model,
-        "prompt": _ollama_prompt_for_free_text(caption_text, prompt_template),
-        "images": [image_b64],
+        "prompt": _apply_media_prompt_context(_ollama_prompt_for_free_text(caption_text, prompt_template), image_path),
+        "images": image_payload,
         "stream": False,
         "options": {"temperature": 0},
     }

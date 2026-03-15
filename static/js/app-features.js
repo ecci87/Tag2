@@ -19,7 +19,7 @@ async function cloneCurrentFolder() {
 
   const selectedPaths = getCloneSelectionPaths();
   const selectionLabel = selectedPaths.length > 1
-    ? `${selectedPaths.length} selected images`
+    ? `${selectedPaths.length} selected media files`
     : "the whole folder";
   const newFolderName = prompt(`Clone ${selectionLabel} into a new sibling folder named:`, getDefaultCloneFolderName());
   if (newFolderName === null) return;
@@ -652,13 +652,13 @@ function renderFilterActions() {
   clearFiltersBtn.setAttribute("aria-pressed", hasFilters ? "true" : "false");
   applyTriStateFilterButton(filterArBtn, "AR", "No AR", state.activeMetaFilters.aspectState, {
     any: "Aspect ratio filter disabled",
-    has: "Showing only images with the AR warning badge",
-    missing: "Showing only images without the AR warning badge",
+    has: "Showing only media files with the AR warning badge",
+    missing: "Showing only media files without the AR warning badge",
   });
   applyTriStateFilterButton(filterTxtBtn, "TXT", "No TXT", state.activeMetaFilters.captionState, {
     any: "TXT file filter disabled",
-    has: "Showing only images that have a txt caption file",
-    missing: "Showing only images without a txt caption file",
+    has: "Showing only media files that have a txt caption file",
+    missing: "Showing only media files without a txt caption file",
   });
   clearFiltersBtn.title = hasFilters
     ? `Clear ${filterCount} active filter${filterCount === 1 ? "" : "s"}\n\n${filterSummary}`
@@ -896,12 +896,12 @@ function renderPreviewCaptionOverlay() {
   previewCaptionToggle.title = state.previewCaptionOverlayCollapsed ? "Expand enabled captions" : "Collapse enabled captions";
 
   const sentences = getPreviewEnabledSentences();
-  if (!state.previewPath || !imgNatW || !imgNatH || previewImg.style.display === "none" || sentences.length === 0) {
+  if (!state.previewPath || !imgNatW || !imgNatH || !isPreviewVisible() || sentences.length === 0) {
     previewCaptionList.replaceChildren();
     return;
   }
 
-  const panel = $("#center-panel");
+  const panel = previewStage;
   const maxWidth = Math.max(220, panel.clientWidth - 16);
 
   previewCaptionOverlay.style.maxWidth = `${maxWidth}px`;
@@ -1013,6 +1013,10 @@ function preloadPreview(path) {
         previewCache.set(path, url);
         // If currently selected, swap in the higher-quality preview
         if (state.previewPath === path) {
+          if (state.previewMediaType === "video") {
+            previewVideo.poster = url;
+            return;
+          }
           const oldNatW = imgNatW;
           const oldNatH = imgNatH;
           const oldZoom = zoomLevel;
@@ -1027,7 +1031,7 @@ function preloadPreview(path) {
               const scaleRatio = oldNatW / imgNatW;
               zoomLevel = oldZoom * scaleRatio;
               // Adjust pan: the image center that was on screen should stay there
-              const panel = $("#center-panel");
+              const panel = previewStage;
               const pw = panel.clientWidth;
               const ph = panel.clientHeight;
               // The point at the center of the panel in old image coords:
@@ -1063,7 +1067,7 @@ function preloadPreview(path) {
 function updateFileCountDisplay() {
   const total = state.images.length;
   if (total === 0) {
-    fileCount.textContent = "No images";
+    fileCount.textContent = "No media files";
     return;
   }
   const captioned = state.images.filter(img => img.has_caption).length;
@@ -1071,10 +1075,10 @@ function updateFileCountDisplay() {
   const filterCount = getActiveFilterCount();
   const hasCaptionFilters = getActiveSentenceFilterEntries().length > 0;
   if (filterCount > 0 && (!hasCaptionFilters || canApplyActiveSentenceFilters())) {
-    fileCount.textContent = `${visible}/${total} images • ${captioned} captioned • ${filterCount} filter${filterCount === 1 ? "" : "s"}`;
+    fileCount.textContent = `${visible}/${total} media files • ${captioned} captioned • ${filterCount} filter${filterCount === 1 ? "" : "s"}`;
     return;
   }
-  fileCount.textContent = `${total} images • ${captioned} captioned`;
+  fileCount.textContent = `${total} media files • ${captioned} captioned`;
 }
 
 function imageConformsToAspectRatios(image, tolerance = 5) {
@@ -1154,7 +1158,23 @@ function invalidateImageCaches(path) {
     URL.revokeObjectURL(previewCache.get(path));
     previewCache.delete(path);
   }
+  const timelineCache = state.videoTimelineCache[path];
+  if (timelineCache?.frames) {
+    timelineCache.frames.forEach((frame) => {
+      if (frame?.objectUrl) {
+        URL.revokeObjectURL(frame.objectUrl);
+      }
+    });
+  }
+  const timelineFetches = state.ui.videoTimelineFetches.get(path);
+  if (timelineFetches) {
+    timelineFetches.forEach((entry) => entry.controller?.abort());
+    state.ui.videoTimelineFetches.delete(path);
+  }
   delete state.thumbnailDimensions[path];
+  delete state.videoTimelineCache[path];
+  delete state.videoTimelineUi[path];
+  delete state.videoMeta[path];
   for (const key of [...thumbBlobCache.keys()]) {
     if (key.startsWith(path + ":")) {
       URL.revokeObjectURL(thumbBlobCache.get(key));
@@ -1168,10 +1188,17 @@ function clearCropDraft() {
   state.cropDirty = false;
   state.cropInteraction = null;
   renderCropOverlay();
+  renderVideoEditPanel();
 }
 
 function canEditCrop() {
-  return state.selectedPaths.size === 1 && !!state.previewPath && imgNatW > 0 && imgNatH > 0;
+  if (state.selectedPaths.size !== 1 || !state.previewPath || !imgNatW || !imgNatH) {
+    return false;
+  }
+  if (isImageMediaPath(state.previewPath)) {
+    return true;
+  }
+  return isVideoMediaPath(state.previewPath);
 }
 
 function getCurrentCropState() {
@@ -1223,7 +1250,7 @@ function updateCropGuideFromClient(clientX, clientY) {
     clearCropGuide();
     return;
   }
-  const panelRect = document.getElementById("center-panel").getBoundingClientRect();
+  const panelRect = previewStage.getBoundingClientRect();
   const px = clientX - panelRect.left;
   const py = clientY - panelRect.top;
   const imgLeft = panX;
@@ -1242,10 +1269,13 @@ function updateCropGuideFromClient(clientX, clientY) {
 function updateCropButtons() {
   const editable = canEditCrop();
   const hasDraft = !!state.cropDraft;
-  cropRemoveBtn.classList.toggle("visible", editable && !hasDraft && hasAppliedCrop());
+  const videoCrop = state.previewMediaType === "video";
+  cropRemoveBtn.classList.toggle("visible", !videoCrop && editable && !hasDraft && hasAppliedCrop());
   cropCancelBtn.classList.toggle("visible", editable && hasDraft);
-  cropApplyBtn.classList.toggle("visible", editable && hasDraft && state.cropDirty);
-  rotateControls.classList.toggle("visible", editable && !hasDraft);
+  cropCancelBtn.textContent = videoCrop ? "Clear Crop" : "Cancel";
+  cropApplyBtn.classList.toggle("visible", !videoCrop && editable && hasDraft && state.cropDirty);
+  cropApplyBtn.textContent = "Apply";
+  rotateControls.classList.toggle("visible", !videoCrop && editable && !hasDraft);
 }
 
 function renderCropOverlay() {
@@ -1279,7 +1309,7 @@ function renderCropOverlay() {
 }
 
 function screenToImage(clientX, clientY) {
-  const panelRect = document.getElementById("center-panel").getBoundingClientRect();
+  const panelRect = previewStage.getBoundingClientRect();
   const px = clientX - panelRect.left;
   const py = clientY - panelRect.top;
   return {
@@ -1447,6 +1477,13 @@ function resizeCropFromHandle(baseCrop, handle, currentX, currentY, stickyChoice
 }
 
 async function loadCropData(path) {
+  if (!isImageMediaPath(path)) {
+    state.imageCrops[path] = null;
+    if (state.previewPath === path) {
+      updateCropButtons();
+    }
+    return;
+  }
   try {
     const resp = await fetch(`/api/crop?path=${encodeURIComponent(path)}`);
     if (!resp.ok) throw new Error("Failed to load crop");
@@ -1482,6 +1519,13 @@ async function applyCropDraftWithOptions(options = {}) {
   if (!state.previewPath || !state.cropDraft || !state.cropDirty) return;
   const { reopenPreview = true } = options;
   const path = state.previewPath;
+  if (isVideoMediaPath(path)) {
+    state.cropDirty = false;
+    renderCropOverlay();
+    renderVideoEditPanel();
+    statusBar.textContent = "Crop selection updated";
+    return;
+  }
   statusBar.textContent = "Applying crop...";
   try {
     const resp = await fetch("/api/crop", {
@@ -1577,12 +1621,13 @@ async function removeCrop() {
 function updateActionButtons() {
   const hasSelection = state.selectedPaths.size > 0;
   const hasCaptions = hasConfiguredCaptions();
-  const canRunStructured = hasSelection && hasCaptions && !!state.ollamaModel.trim();
-  const canRunFreeTextOnly = hasSelection && !!state.ollamaModel.trim();
+  const selectionSupportsVision = hasSelection;
+  const canRunStructured = selectionSupportsVision && hasCaptions && !!state.ollamaModel.trim();
+  const canRunFreeTextOnly = selectionSupportsVision && !!state.ollamaModel.trim();
   cloneFolderBtn.disabled = !state.folder || state.autoCaptioning || state.cloning || state.uploading;
   cloneFolderBtn.textContent = state.cloning ? "Cloning..." : "Clone";
   cloneFolderBtn.title = state.selectedPaths.size > 1
-    ? "Clone the selected images into a new sibling folder"
+    ? "Clone the selected media files into a new sibling folder"
     : "Clone the whole current folder into a new sibling folder";
   autoCaptionBtn.disabled = state.uploading || (!state.autoCaptioning && !canRunStructured);
   addFreeTextNowBtn.disabled = state.uploading || (!state.autoCaptioning && !canRunFreeTextOnly);
@@ -1593,15 +1638,16 @@ function updateActionButtons() {
     addFreeTextNowBtn,
     state.autoCaptioning && state.autoCaptionMode === "free-text-only"
       ? "Stop free-text enhancement"
-      : "Ask Ollama to add only free-text details for the selected image(s)",
+      : "Ask Ollama to add only free-text details for the selected media",
     { iconOnly: true }
   );
   autoCaptionBtn.title = state.autoCaptioning && state.autoCaptionMode === "full"
     ? "Stop the running auto caption operation"
-    : "Use Ollama to verify captions for the selected image(s)";
+    : "Use Ollama to verify captions for the selected media";
   addFreeTextNowBtn.title = state.autoCaptioning && state.autoCaptionMode === "free-text-only"
     ? "Stop the running free-text enhancement"
-    : "Ask Ollama to add only free-text details for the selected image(s)";
+    : "Ask Ollama to add only free-text details for the selected media";
+  renderVideoEditPanel();
 }
 
 function resetAutoCaptionProgress() {
@@ -1628,7 +1674,8 @@ function updateAutoCaptionProgress(patch = {}) {
 
 function renderToolbarStatusVisibility() {
   const hasActiveUpload = !!(state.uploading || state.uploadQueueCurrentJob || state.uploadQueue.length);
-  const hasVisibleProgress = !!state.thumbnailProgress.visible || hasActiveUpload || !!state.aiProgress.visible;
+  const hasVideoJobs = !!(state.videoJobs?.activeJob || state.videoJobs?.queuedJobs?.length);
+  const hasVisibleProgress = !!state.thumbnailProgress.visible || hasActiveUpload || hasVideoJobs || !!state.aiProgress.visible;
   statusBar.hidden = hasVisibleProgress;
 }
 
@@ -1736,6 +1783,10 @@ function applySettings(settings) {
   state.httpsKeyFile = String(settings.https_keyfile || "").trim();
   state.httpsPort = Number(settings.https_port || 8900) || 8900;
   state.remoteHttpMode = String(settings.remote_http_mode || "redirect-to-https").trim() || "redirect-to-https";
+  state.ffmpegPath = String(settings.ffmpeg_path || "").trim();
+  state.ffmpegThreads = Math.max(0, Number(settings.ffmpeg_threads || 0) || 0);
+  state.ffmpegHwaccel = String(settings.ffmpeg_hwaccel || "auto").trim() || "auto";
+  state.processingReservedCores = Math.max(0, Number(settings.processing_reserved_cores || 0) || 0);
   state.ollamaServer = (settings.ollama_server || "127.0.0.1").trim();
   state.ollamaPort = Number(settings.ollama_port || 11434) || 11434;
   state.ollamaTimeoutSeconds = Number(settings.ollama_timeout_seconds || 20) || 20;
@@ -1805,14 +1856,34 @@ function fillSettingsForm() {
   settingsHttpsKeyInput.value = state.httpsKeyFile;
   settingsHttpsPortInput.value = String(state.httpsPort);
   settingsRemoteHttpModeInput.value = state.remoteHttpMode;
+  settingsFfmpegPathInput.value = state.ffmpegPath;
+  settingsProcessingReservedCoresInput.value = String(state.processingReservedCores);
+  settingsFfmpegThreadsInput.value = String(state.ffmpegThreads);
+  settingsFfmpegHwaccelInput.value = state.ffmpegHwaccel;
   settingsPromptInput.value = state.ollamaPromptTemplate;
   settingsGroupPromptInput.value = state.ollamaGroupPromptTemplate;
   settingsAutoFreeTextEnabled.checked = !!state.ollamaEnableFreeText;
   settingsFreeTextPromptInput.value = state.ollamaFreeTextPromptTemplate;
 }
 
+function setActiveSettingsTab(tabName = "auto-captioning") {
+  const nextTab = String(tabName || "auto-captioning").trim() || "auto-captioning";
+  settingsTabButtons.forEach((button) => {
+    const isActive = button.dataset.settingsTab === nextTab;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+    button.tabIndex = isActive ? 0 : -1;
+  });
+  settingsPanels.forEach((panel) => {
+    const isActive = panel.dataset.settingsPanel === nextTab;
+    panel.classList.toggle("active", isActive);
+    panel.hidden = !isActive;
+  });
+}
+
 async function openSettingsModal() {
   fillSettingsForm();
+  setActiveSettingsTab("auto-captioning");
   settingsModal.classList.add("open");
   settingsModal.setAttribute("aria-hidden", "false");
   settingsServerInput.focus();
@@ -1826,6 +1897,880 @@ function closeSettingsModal() {
 
 function getFileLabel(path) {
   return String(path || "").split(/[\\/]/).pop() || String(path || "");
+}
+
+function getMediaItem(path) {
+  return state.images.find((item) => item.path === path) || null;
+}
+
+function getMediaType(path = state.previewPath) {
+  const item = getMediaItem(path);
+  if (item?.media_type) return item.media_type;
+  const extension = getImageExtension(path);
+  if (IMAGE_FILE_EXTENSIONS.has(extension)) return "image";
+  if (VIDEO_FILE_EXTENSIONS.has(extension)) return "video";
+  return "other";
+}
+
+function isImageMediaPath(path) {
+  return getMediaType(path) === "image";
+}
+
+function isVideoMediaPath(path) {
+  return getMediaType(path) === "video";
+}
+
+function isSelectionImagesOnly() {
+  if (state.selectedPaths.size === 0) return false;
+  return [...state.selectedPaths].every((path) => isImageMediaPath(path));
+}
+
+function getActivePreviewElement() {
+  return state.previewMediaType === "video" ? previewVideo : previewImg;
+}
+
+function isPreviewVisible() {
+  const element = getActivePreviewElement();
+  return !!element && element.style.display !== "none";
+}
+
+function applyPreviewVideoAudioState() {
+  previewVideo.muted = !!state.previewVideoMuted;
+  previewVideo.volume = clamp(Number(state.previewVideoVolume || 0), 0, 1);
+}
+
+function stopPreviewVideo({ clearSource = false } = {}) {
+  previewVideo.pause();
+  previewVideo.style.display = "none";
+  previewVideo.currentTime = 0;
+  previewVideo.removeAttribute("poster");
+  if (clearSource) {
+    previewVideo.removeAttribute("src");
+    previewVideo.load();
+  }
+  syncPreviewVideoPlaybackState();
+}
+
+function resetPreviewVideoElement() {
+  stopPreviewVideo({ clearSource: true });
+  previewVideo.onloadedmetadata = null;
+  previewVideo.onloadeddata = null;
+  previewVideo.removeAttribute("data-path");
+}
+
+function syncPreviewVideoPlaybackState() {
+  const isActiveVideo = state.previewMediaType === "video" && !!state.previewPath;
+  const meta = isActiveVideo ? getCurrentVideoMeta(state.previewPath) : null;
+  const duration = Math.max(0, Number(meta?.duration || previewVideo.duration || 0));
+  const currentTime = Math.max(0, Number(previewVideo.currentTime || 0));
+  applyPreviewVideoAudioState();
+  videoPlayToggleBtn.disabled = !isActiveVideo || previewVideo.readyState < 1;
+  videoMuteBtn.disabled = !isActiveVideo || previewVideo.readyState < 1;
+  videoVolumeSlider.disabled = !isActiveVideo || previewVideo.readyState < 1;
+  videoPlayToggleBtn.textContent = previewVideo.paused ? "Play" : "Pause";
+  const isMuted = previewVideo.muted || previewVideo.volume <= 0;
+  videoMuteBtn.textContent = isMuted ? "🔇" : "🔊";
+  videoMuteBtn.setAttribute("aria-label", isMuted ? "Unmute preview audio" : "Mute preview audio");
+  videoMuteBtn.title = isMuted ? "Unmute preview audio" : "Mute preview audio";
+  videoMuteBtn.setAttribute("aria-pressed", previewVideo.muted ? "true" : "false");
+  videoVolumeSlider.value = String(Math.round(clamp(Number(state.previewVideoVolume || 0), 0, 1) * 100));
+  videoPlaybackLabel.textContent = isActiveVideo
+    ? `${formatDurationSeconds(currentTime)} / ${formatDurationSeconds(duration)}`
+    : "";
+
+  const frames = isActiveVideo ? getVideoTimelineFrames(state.previewPath) : [];
+  const frameNodes = videoTimelineStrip.querySelectorAll(".video-timeline-frame");
+  renderVideoTimelineOverlay(isActiveVideo ? state.previewPath : null);
+  updateVideoTimeRangeLabel(isActiveVideo ? state.previewPath : null);
+  if (!frames.length || !frameNodes.length || !(duration > 0)) {
+    frameNodes.forEach((node) => node.classList.remove("active"));
+    return;
+  }
+
+  let activeIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  frames.forEach((frame, index) => {
+    const distance = Math.abs(Number(frame.timeSeconds || 0) - currentTime);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      activeIndex = index;
+    }
+  });
+  frameNodes.forEach((node, index) => node.classList.toggle("active", index === activeIndex));
+}
+
+function getPreviewVideoLoopRange(path = state.previewPath) {
+  if (!path || !isVideoMediaPath(path)) return null;
+  const duration = getEffectiveVideoDuration(path);
+  if (!(duration > 0)) return null;
+  const draft = getVideoClipDraft(path);
+  const startSeconds = clamp(duration * Number(draft.startFraction || 0), 0, duration);
+  const endSeconds = clamp(duration * Number(draft.endFraction || 1), startSeconds, duration);
+  return {
+    startSeconds,
+    endSeconds,
+    duration,
+  };
+}
+
+function snapPreviewVideoIntoLoopRange(options = {}) {
+  const { forceStart = false } = options;
+  const range = getPreviewVideoLoopRange();
+  if (!range || previewVideo.readyState < 1) return null;
+
+  const epsilon = Math.min(0.08, Math.max(0.02, range.duration / 1000));
+  const currentTime = Math.max(0, Number(previewVideo.currentTime || 0));
+  let nextTime = currentTime;
+
+  if (forceStart) {
+    nextTime = range.startSeconds;
+  } else if (currentTime < range.startSeconds) {
+    nextTime = range.startSeconds;
+  } else if (currentTime >= Math.max(range.startSeconds, range.endSeconds - epsilon)) {
+    nextTime = range.startSeconds;
+  }
+
+  if (Math.abs(nextTime - currentTime) > 0.001) {
+    previewVideo.currentTime = nextTime;
+  }
+  return range;
+}
+
+function handlePreviewVideoTimeUpdate() {
+  if (state.previewMediaType !== "video" || !state.previewPath) {
+    syncPreviewVideoPlaybackState();
+    return;
+  }
+  if (!previewVideo.paused) {
+    snapPreviewVideoIntoLoopRange();
+  }
+  syncPreviewVideoPlaybackState();
+}
+
+function handlePreviewVideoEnded() {
+  const range = snapPreviewVideoIntoLoopRange({ forceStart: true });
+  if (range && state.previewMediaType === "video" && state.previewPath) {
+    previewVideo.play().catch(() => {
+      syncPreviewVideoPlaybackState();
+    });
+    return;
+  }
+  syncPreviewVideoPlaybackState();
+}
+
+function togglePreviewVideoPlayback() {
+  if (state.previewMediaType !== "video" || !state.previewPath || previewVideo.readyState < 1) {
+    return;
+  }
+  if (previewVideo.paused) {
+    snapPreviewVideoIntoLoopRange();
+    previewVideo.play().catch(() => {
+      syncPreviewVideoPlaybackState();
+    });
+  } else {
+    previewVideo.pause();
+  }
+  syncPreviewVideoPlaybackState();
+}
+
+function togglePreviewVideoMute() {
+  if (state.previewVideoMuted || state.previewVideoVolume <= 0) {
+    const restoredVolume = clamp(Number(state.previewVideoLastVolume || 1), 0.05, 1);
+    state.previewVideoVolume = restoredVolume;
+    state.previewVideoMuted = false;
+  } else {
+    state.previewVideoLastVolume = clamp(Number(state.previewVideoVolume || 1), 0.05, 1);
+    state.previewVideoMuted = true;
+  }
+  applyPreviewVideoAudioState();
+  syncPreviewVideoPlaybackState();
+}
+
+function setPreviewVideoVolumeFromSlider(value) {
+  const normalized = clamp(Number(value || 0) / 100, 0, 1);
+  state.previewVideoVolume = normalized;
+  if (normalized > 0) {
+    state.previewVideoLastVolume = normalized;
+  }
+  state.previewVideoMuted = normalized <= 0;
+  applyPreviewVideoAudioState();
+  syncPreviewVideoPlaybackState();
+}
+
+function seekPreviewVideoTo(timeSeconds) {
+  if (state.previewMediaType !== "video" || !state.previewPath || previewVideo.readyState < 1) {
+    return;
+  }
+  const duration = getEffectiveVideoDuration(state.previewPath);
+  previewVideo.currentTime = clamp(Number(timeSeconds || 0), 0, Math.max(0, duration));
+  syncPreviewVideoPlaybackState();
+}
+
+function formatDurationSeconds(totalSeconds) {
+  const seconds = Math.max(0, Number(totalSeconds || 0));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const wholeSeconds = Math.floor(seconds % 60);
+  const millis = Math.round((seconds - Math.floor(seconds)) * 1000);
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+  }
+  return `${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+}
+
+function getCurrentVideoMeta(path = state.previewPath) {
+  return state.videoMeta[path] || null;
+}
+
+function getEffectiveVideoDuration(path = state.previewPath) {
+  const metaDuration = Number(getCurrentVideoMeta(path)?.duration || 0);
+  const elementDuration = Number(previewVideo.duration || 0);
+  return Math.max(0, metaDuration || elementDuration || 0);
+}
+
+function getVideoTimelineFrames(path = state.previewPath) {
+  const cache = state.videoTimelineCache[path];
+  if (Array.isArray(cache)) return cache;
+  if (cache && Array.isArray(cache.frames)) return cache.frames;
+  return [];
+}
+
+function getVideoTimelineUi(path = state.previewPath) {
+  if (!path) {
+    return { zoom: 1, offsetFraction: 0 };
+  }
+  if (!state.videoTimelineUi[path]) {
+    state.videoTimelineUi[path] = { zoom: 1, offsetFraction: 0 };
+  }
+  const ui = state.videoTimelineUi[path];
+  ui.zoom = clamp(Number(ui.zoom || 1), 1, 8);
+  ui.offsetFraction = clamp(Number(ui.offsetFraction || 0), 0, 1);
+  return ui;
+}
+
+function getVideoTimelineMetrics(path = state.previewPath) {
+  const viewportWidth = Math.max(videoTimelineViewport?.clientWidth || 0, 280);
+  const ui = getVideoTimelineUi(path);
+  const trackWidth = Math.max(viewportWidth, Math.round(viewportWidth * ui.zoom));
+  const maxOffset = Math.max(0, trackWidth - viewportWidth);
+  const offsetPx = maxOffset * ui.offsetFraction;
+  return { ui, viewportWidth, trackWidth, maxOffset, offsetPx, zoom: ui.zoom };
+}
+
+function getVideoTimelineFrameCount(path = state.previewPath) {
+  const metrics = getVideoTimelineMetrics(path);
+  return Math.max(10, Math.min(72, Math.ceil(metrics.trackWidth / 72)));
+}
+
+function setVideoTimelineOffsetPx(path, nextOffsetPx) {
+  const metrics = getVideoTimelineMetrics(path);
+  metrics.ui.offsetFraction = metrics.maxOffset > 0
+    ? clamp(nextOffsetPx / metrics.maxOffset, 0, 1)
+    : 0;
+}
+
+function setVideoTimelineZoom(path, nextZoom, anchorViewportRatio = 0.5) {
+  const previousMetrics = getVideoTimelineMetrics(path);
+  const anchorX = clamp(Number(anchorViewportRatio || 0.5), 0, 1) * previousMetrics.viewportWidth;
+  const anchorContentRatio = previousMetrics.trackWidth > 0
+    ? clamp((previousMetrics.offsetPx + anchorX) / previousMetrics.trackWidth, 0, 1)
+    : 0;
+
+  const ui = getVideoTimelineUi(path);
+  ui.zoom = clamp(Number(nextZoom || 1), 1, 8);
+
+  const nextMetrics = getVideoTimelineMetrics(path);
+  const targetOffsetPx = clamp(anchorContentRatio * nextMetrics.trackWidth - anchorX, 0, nextMetrics.maxOffset);
+  ui.offsetFraction = nextMetrics.maxOffset > 0 ? targetOffsetPx / nextMetrics.maxOffset : 0;
+}
+
+function getVideoClipDraft(path = state.previewPath) {
+  const existing = state.videoClipDrafts[path];
+  if (existing) return existing;
+  return { startFraction: 0, endFraction: 1 };
+}
+
+function setVideoClipDraft(path, patch = {}) {
+  const current = getVideoClipDraft(path);
+  const next = {
+    startFraction: clamp(Number(patch.startFraction ?? current.startFraction ?? 0), 0, 1),
+    endFraction: clamp(Number(patch.endFraction ?? current.endFraction ?? 1), 0, 1),
+  };
+  if (next.endFraction < next.startFraction) {
+    const midpoint = next.startFraction;
+    next.startFraction = Math.min(midpoint, next.endFraction);
+    next.endFraction = Math.max(midpoint, next.endFraction);
+  }
+  state.videoClipDrafts[path] = next;
+  return next;
+}
+
+function buildVideoFrameUrl(path, timeSeconds, width = 160, height = 90) {
+  return buildImageApiUrl("video/frame", path, {
+    time_seconds: Number(timeSeconds || 0).toFixed(3),
+    width,
+    height,
+  });
+}
+
+function getVideoTimelineFetchMap(path) {
+  let fetchMap = state.ui.videoTimelineFetches.get(path);
+  if (!fetchMap) {
+    fetchMap = new Map();
+    state.ui.videoTimelineFetches.set(path, fetchMap);
+  }
+  return fetchMap;
+}
+
+function abortInvisibleVideoTimelineFetches(path, keepIndexes = new Set()) {
+  const fetchMap = state.ui.videoTimelineFetches.get(path);
+  if (!fetchMap) return;
+  for (const [index, entry] of fetchMap.entries()) {
+    if (keepIndexes.has(index)) continue;
+    entry.controller?.abort();
+    fetchMap.delete(index);
+    const cache = state.videoTimelineCache[path];
+    const frame = cache?.frames?.[index];
+    if (frame && frame.status === "loading") {
+      frame.status = "idle";
+    }
+  }
+  if (fetchMap.size === 0) {
+    state.ui.videoTimelineFetches.delete(path);
+  }
+}
+
+async function ensureVisibleVideoTimelineFrames(path, visibleIndexes = []) {
+  const cache = state.videoTimelineCache[path];
+  if (!cache?.frames?.length) return;
+  const keepIndexes = new Set(visibleIndexes);
+  abortInvisibleVideoTimelineFetches(path, keepIndexes);
+  const fetchMap = getVideoTimelineFetchMap(path);
+  const requestVersion = Number(cache.requestVersion || 0);
+
+  visibleIndexes.forEach((index) => {
+    const frame = cache.frames[index];
+    if (!frame || frame.status === "loaded" || frame.status === "loading") return;
+    const controller = new AbortController();
+    frame.status = "loading";
+    fetchMap.set(index, { controller, requestVersion });
+
+    fetch(frame.requestUrl, { signal: controller.signal })
+      .then((resp) => {
+        if (!resp.ok) {
+          throw new Error(`Failed to load timeline frame (${resp.status})`);
+        }
+        return resp.blob();
+      })
+      .then((blob) => {
+        const activeCache = state.videoTimelineCache[path];
+        const activeEntry = state.ui.videoTimelineFetches.get(path)?.get(index);
+        if (!activeCache || activeCache.requestVersion !== requestVersion || !activeEntry || activeEntry.controller !== controller) {
+          return;
+        }
+        if (frame.objectUrl) {
+          URL.revokeObjectURL(frame.objectUrl);
+        }
+        frame.objectUrl = URL.createObjectURL(blob);
+        frame.status = "loaded";
+        state.ui.videoTimelineFetches.get(path)?.delete(index);
+        if (state.previewPath === path) {
+          renderVideoTimelineStrip(path);
+          syncPreviewVideoPlaybackState();
+        }
+      })
+      .catch((err) => {
+        if (err?.name === "AbortError") {
+          return;
+        }
+        frame.status = "idle";
+      })
+      .finally(() => {
+        const activeMap = state.ui.videoTimelineFetches.get(path);
+        if (activeMap?.get(index)?.controller === controller && frame.status !== "loaded") {
+          activeMap.delete(index);
+        }
+        if (activeMap && activeMap.size === 0) {
+          state.ui.videoTimelineFetches.delete(path);
+        }
+      });
+  });
+}
+
+async function ensureVideoMetaLoaded(path) {
+  if (!path || !isVideoMediaPath(path)) return null;
+  if (state.videoMeta[path]) return state.videoMeta[path];
+  const resp = await fetch(`/api/video/meta?path=${encodeURIComponent(path)}`);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.detail || "Failed to load video metadata");
+  }
+  state.videoMeta[path] = data;
+  return data;
+}
+
+function renderVideoTimelineStrip(path = state.previewPath) {
+  if (!path || !isVideoMediaPath(path)) {
+    videoTimelineStrip.replaceChildren();
+    videoTimelineStrip.style.width = "0px";
+    videoTimelineStrip.style.transform = "translateX(0px)";
+    videoTimelineOverlay.style.width = "0px";
+    videoTimelineOverlay.style.transform = "translateX(0px)";
+    return;
+  }
+  const frames = getVideoTimelineFrames(path);
+  if (!frames.length) {
+    videoTimelineStrip.replaceChildren();
+    videoTimelineStrip.style.width = "0px";
+    videoTimelineStrip.style.transform = "translateX(0px)";
+    videoTimelineOverlay.style.width = "0px";
+    videoTimelineOverlay.style.transform = "translateX(0px)";
+    return;
+  }
+  const metrics = getVideoTimelineMetrics(path);
+  const frameWidth = Math.max(48, Math.ceil(metrics.trackWidth / Math.max(1, frames.length)));
+  const startIndex = Math.max(0, Math.floor(metrics.offsetPx / frameWidth) - 2);
+  const endIndex = Math.min(frames.length - 1, Math.ceil((metrics.offsetPx + metrics.viewportWidth) / frameWidth) + 2);
+  const visibleIndexes = [];
+  const nodes = [];
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    const frame = frames[index];
+    if (!frame) continue;
+    visibleIndexes.push(index);
+    const frameNode = document.createElement("div");
+    frameNode.className = "video-timeline-frame";
+    frameNode.setAttribute("role", "img");
+    frameNode.setAttribute("aria-label", `Timeline frame at ${formatDurationSeconds(frame.timeSeconds)}`);
+    frameNode.dataset.timeSeconds = String(frame.timeSeconds);
+    frameNode.style.width = `${frameWidth}px`;
+    frameNode.style.left = `${index * frameWidth}px`;
+
+    const img = document.createElement("img");
+    img.className = "video-timeline-frame-image";
+    img.alt = "";
+    img.loading = "lazy";
+    if (frame.objectUrl) {
+      img.src = frame.objectUrl;
+      frameNode.classList.add("loaded");
+    } else {
+      frameNode.classList.add("loading");
+    }
+
+    const loader = document.createElement("div");
+    loader.className = "video-timeline-frame-loader";
+    loader.setAttribute("aria-hidden", "true");
+
+    frameNode.append(img, loader);
+    nodes.push(frameNode);
+  }
+  videoTimelineStrip.replaceChildren(...nodes);
+  videoTimelineStrip.style.width = `${metrics.trackWidth}px`;
+  videoTimelineStrip.style.transform = `translateX(${-metrics.offsetPx}px)`;
+  videoTimelineOverlay.style.width = `${metrics.trackWidth}px`;
+  videoTimelineOverlay.style.transform = `translateX(${-metrics.offsetPx}px)`;
+  ensureVisibleVideoTimelineFrames(path, visibleIndexes).catch(() => {});
+}
+
+async function ensureVideoTimelineLoaded(path) {
+  if (!path || !isVideoMediaPath(path)) return;
+  const meta = await ensureVideoMetaLoaded(path);
+  const frameCount = getVideoTimelineFrameCount(path);
+  const cached = state.videoTimelineCache[path];
+  if (cached?.frameCount === frameCount) {
+    renderVideoTimelineStrip(path);
+    return;
+  }
+  const duration = Math.max(0, Number(meta?.duration || 0));
+  const frames = [];
+  for (let index = 0; index < frameCount; index += 1) {
+    const ratio = frameCount <= 1 ? 0 : index / (frameCount - 1);
+    const timeSeconds = duration <= 0 ? 0 : ratio * Math.max(duration - 0.05, 0);
+    frames.push({
+      timeSeconds,
+      requestUrl: buildVideoFrameUrl(path, timeSeconds, 160, 90),
+      objectUrl: null,
+      status: "idle",
+    });
+  }
+  if (cached?.frames) {
+    cached.frames.forEach((frame) => {
+      if (frame?.objectUrl) {
+        URL.revokeObjectURL(frame.objectUrl);
+      }
+    });
+  }
+  abortInvisibleVideoTimelineFetches(path, new Set());
+  state.videoTimelineCache[path] = {
+    frameCount,
+    frames,
+    requestVersion: (Number(cached?.requestVersion || 0) + 1),
+  };
+  renderVideoTimelineStrip(path);
+}
+
+function renderVideoTimelineOverlay(path = state.previewPath) {
+  if (!path || !isVideoMediaPath(path)) {
+    videoTimelineSelection.style.width = "0px";
+    videoTimelineStartHandle.style.left = "0px";
+    videoTimelineEndHandle.style.left = "0px";
+    videoTimelinePlayhead.style.left = "0px";
+    return;
+  }
+  const duration = getEffectiveVideoDuration(path);
+  const draft = getVideoClipDraft(path);
+  const metrics = getVideoTimelineMetrics(path);
+  const startX = draft.startFraction * metrics.trackWidth;
+  const endX = draft.endFraction * metrics.trackWidth;
+  const playheadFraction = duration > 0
+    ? clamp(Number(previewVideo.currentTime || 0) / duration, 0, 1)
+    : 0;
+  const playheadX = playheadFraction * metrics.trackWidth;
+  videoTimelineSelection.style.left = `${startX}px`;
+  videoTimelineSelection.style.width = `${Math.max(0, endX - startX)}px`;
+  videoTimelineStartHandle.style.left = `${startX}px`;
+  videoTimelineEndHandle.style.left = `${endX}px`;
+  videoTimelinePlayhead.style.left = `${playheadX}px`;
+}
+
+function updateVideoTimeRangeLabel(path = state.previewPath) {
+  if (!path || !isVideoMediaPath(path)) {
+    videoTimeRangeLabel.textContent = "";
+    videoTimelineZoomLabel.textContent = "";
+    return;
+  }
+  const duration = getEffectiveVideoDuration(path);
+  const draft = getVideoClipDraft(path);
+  const startSeconds = duration * draft.startFraction;
+  const endSeconds = duration * draft.endFraction;
+  videoTimeRangeLabel.textContent = `${formatDurationSeconds(startSeconds)} - ${formatDurationSeconds(endSeconds)}`;
+  videoTimelineZoomLabel.textContent = `Zoom ${getVideoTimelineMetrics(path).zoom.toFixed(1)}x`;
+}
+
+function getVideoTimelineFractionFromClientX(clientX, path = state.previewPath) {
+  if (!path || !isVideoMediaPath(path)) return 0;
+  const rect = videoTimelineViewport.getBoundingClientRect();
+  const metrics = getVideoTimelineMetrics(path);
+  const localX = clamp(clientX - rect.left, 0, rect.width || metrics.viewportWidth);
+  return clamp((metrics.offsetPx + localX) / Math.max(1, metrics.trackWidth), 0, 1);
+}
+
+function syncVideoTimelineState(path = state.previewPath) {
+  updateVideoTimeRangeLabel(path);
+  renderVideoTimelineOverlay(path);
+  const hasPreviewSize = !!(imgNatW && imgNatH);
+  const hasDuration = getEffectiveVideoDuration(path) > 0;
+  const draft = getVideoClipDraft(path);
+  const clipValid = draft.endFraction > draft.startFraction;
+  videoClipBtn.disabled = false;
+  videoTimelineStartHandle.disabled = !hasDuration;
+  videoTimelineEndHandle.disabled = !hasDuration;
+  videoTimelinePlayhead.disabled = !hasDuration;
+  videoTimelineViewport.classList.toggle("disabled", !hasDuration);
+}
+
+function setVideoClipFractions(path, startFraction, endFraction, seekFraction = null) {
+  if (!path || !isVideoMediaPath(path)) return;
+  const next = setVideoClipDraft(path, { startFraction, endFraction });
+  updateVideoTimeRangeLabel(path);
+  renderVideoTimelineOverlay(path);
+  syncVideoTimelineState(path);
+  if (seekFraction != null) {
+    const duration = getEffectiveVideoDuration(path);
+    seekPreviewVideoTo(duration * clamp(seekFraction, 0, 1));
+  } else if (state.previewPath === path) {
+    snapPreviewVideoIntoLoopRange();
+    syncPreviewVideoPlaybackState();
+  }
+}
+
+function beginVideoTimelineInteraction(mode, event) {
+  if (!state.previewPath || !isVideoMediaPath(state.previewPath)) return;
+  const path = state.previewPath;
+  const metrics = getVideoTimelineMetrics(path);
+  const draft = getVideoClipDraft(path);
+  videoTimelineInteraction = {
+    mode,
+    path,
+    startClientX: event.clientX,
+    startOffsetPx: metrics.offsetPx,
+    startFraction: getVideoTimelineFractionFromClientX(event.clientX, path),
+    startStartFraction: draft.startFraction,
+    startEndFraction: draft.endFraction,
+    moved: false,
+  };
+  if (mode === "pan") {
+    videoTimelineViewport.classList.add("dragging");
+  }
+  event.preventDefault();
+}
+
+function updateVideoTimelineInteraction(clientX) {
+  const interaction = videoTimelineInteraction;
+  if (!interaction) return;
+  const path = interaction.path;
+  const dx = clientX - interaction.startClientX;
+  if (!interaction.moved && Math.abs(dx) > 2) {
+    interaction.moved = true;
+  }
+
+  if (interaction.mode === "pan") {
+    setVideoTimelineOffsetPx(path, interaction.startOffsetPx - dx);
+    renderVideoTimelineStrip(path);
+    syncVideoTimelineState(path);
+    syncPreviewVideoPlaybackState();
+    return;
+  }
+
+  const nextFraction = getVideoTimelineFractionFromClientX(clientX, path);
+  if (interaction.mode === "start") {
+    setVideoClipFractions(path, nextFraction, interaction.startEndFraction, nextFraction);
+    return;
+  }
+  if (interaction.mode === "end") {
+    setVideoClipFractions(path, interaction.startStartFraction, nextFraction, nextFraction);
+    return;
+  }
+  if (interaction.mode === "playhead") {
+    const duration = getEffectiveVideoDuration(path);
+    seekPreviewVideoTo(duration * nextFraction);
+  }
+}
+
+function finishVideoTimelineInteraction(clientX = null) {
+  const interaction = videoTimelineInteraction;
+  if (!interaction) return;
+  if (interaction.mode === "pan" && !interaction.moved && clientX != null) {
+    const duration = getEffectiveVideoDuration(interaction.path);
+    seekPreviewVideoTo(duration * getVideoTimelineFractionFromClientX(clientX, interaction.path));
+  }
+  videoTimelineViewport.classList.remove("dragging");
+  videoTimelineInteraction = null;
+}
+
+function renderVideoEditPanel() {
+  const videoVisible = state.previewMediaType === "video" && !!state.previewPath && state.selectedPaths.size === 1;
+  const visible = videoVisible;
+  videoEditPanel.classList.toggle("visible", visible);
+  videoEditPanel.classList.toggle("crop-mode", false);
+  if (!visible) {
+    videoDownloadBtn.disabled = true;
+    syncPreviewVideoPlaybackState();
+    return;
+  }
+  videoClipBtn.disabled = false;
+  videoDownloadBtn.disabled = false;
+  renderVideoTimelineStrip(state.previewPath);
+  syncVideoTimelineState(state.previewPath);
+  syncPreviewVideoPlaybackState();
+}
+
+function downloadCurrentVideo() {
+  if (!state.previewPath || !isVideoMediaPath(state.previewPath)) return;
+  const path = state.previewPath;
+  const link = document.createElement("a");
+  link.href = buildImageApiUrl("media", path);
+  link.download = getFileLabel(path);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  statusBar.textContent = `Downloading ${getFileLabel(path)}...`;
+}
+
+async function queueCurrentVideoClip() {
+  statusBar.textContent = "Preparing clip...";
+  if (!state.previewPath || !isVideoMediaPath(state.previewPath)) return;
+  let duration = getEffectiveVideoDuration(state.previewPath);
+  if (!(duration > 0)) {
+    const meta = getCurrentVideoMeta(state.previewPath) || await ensureVideoMetaLoaded(state.previewPath);
+    duration = Math.max(0, Number(meta?.duration || 0));
+  }
+  if (!(duration > 0)) {
+    showErrorToast("Video duration is not ready yet.");
+    return;
+  }
+  const draft = getVideoClipDraft(state.previewPath);
+  const startSeconds = duration * draft.startFraction;
+  const endSeconds = duration * draft.endFraction;
+  const crop = state.cropDraft ? buildCropPayload(state.cropDraft) : null;
+  if (!(endSeconds > startSeconds)) {
+    showErrorToast("Select a valid clip range first.");
+    return;
+  }
+  statusBar.textContent = crop ? "Queueing crop + clip..." : "Queueing clip...";
+  try {
+    await enqueueVideoClipJob(state.previewPath, startSeconds, endSeconds, crop);
+    await pollVideoJobStatus();
+    if (crop) {
+      state.cropDirty = false;
+    }
+    statusBar.textContent = `Queued ${crop ? "crop + clip" : "clip"} for ${getFileLabel(state.previewPath)}`;
+  } catch (err) {
+    statusBar.textContent = `Clip error: ${err.message}`;
+    showErrorToast(`Clip error: ${err.message}`);
+  }
+}
+
+async function enqueueVideoCropJob(path, crop) {
+  const resp = await fetch("/api/video/jobs/crop", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ video_path: path, crop }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.detail || "Failed to queue video crop job");
+  }
+  return data.job || null;
+}
+
+async function enqueueVideoClipJob(path, startSeconds, endSeconds, crop = null) {
+  const resp = await fetch("/api/video/jobs/clip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      video_path: path,
+      start_seconds: startSeconds,
+      end_seconds: endSeconds,
+      crop,
+    }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.detail || "Failed to queue video clip job");
+  }
+  return data.job || null;
+}
+
+function syncVideoJobBatchState(unseenFinished = []) {
+  const activeJob = state.videoJobs.activeJob;
+  const queuedJobs = Array.isArray(state.videoJobs.queuedJobs) ? state.videoJobs.queuedJobs : [];
+  const batch = state.videoJobs.batch;
+  const currentIds = new Set([
+    ...(activeJob?.id ? [activeJob.id] : []),
+    ...queuedJobs.map((job) => job?.id).filter(Boolean),
+  ]);
+  const visible = currentIds.size > 0;
+
+  if (!visible) {
+    batch.active = false;
+    batch.total = 0;
+    batch.completed = 0;
+    batch.jobIds.clear();
+    return;
+  }
+
+  if (!batch.active) {
+    batch.active = true;
+    batch.total = 0;
+    batch.completed = 0;
+    batch.jobIds.clear();
+  }
+
+  currentIds.forEach((id) => {
+    if (!batch.jobIds.has(id)) {
+      batch.jobIds.add(id);
+      batch.total += 1;
+    }
+  });
+
+  unseenFinished.forEach((job) => {
+    if (!job?.id || !batch.jobIds.has(job.id)) return;
+    batch.completed = Math.min(batch.total, batch.completed + 1);
+  });
+}
+
+function renderVideoJobStatus() {
+  const activeJob = state.videoJobs.activeJob;
+  const queuedCount = Array.isArray(state.videoJobs.queuedJobs) ? state.videoJobs.queuedJobs.length : 0;
+  const running = !!activeJob;
+  const visible = running || queuedCount > 0;
+  videoJobStatus.hidden = !visible;
+  videoJobStatus.classList.toggle("visible", visible);
+  renderToolbarStatusVisibility();
+  if (!visible) {
+    videoJobText.textContent = "";
+    videoJobProgressFill.style.width = "0%";
+    videoJobProgressFill.classList.remove("active");
+    return;
+  }
+
+  const total = Math.max(1, Number(state.videoJobs.batch.total || 0));
+  const completed = Math.max(0, Number(state.videoJobs.batch.completed || 0));
+  const activeFraction = running ? Math.max(0, Math.min(1, Number(activeJob.progress || 0))) : 0;
+  const percent = Math.max(0, Math.min(100, ((completed + activeFraction) / total) * 100));
+  const parts = [];
+  if (activeJob) {
+    parts.push(`${activeJob.type === "clip" ? "Clipping" : "Cropping"} ${getFileLabel(activeJob.video_path)}`);
+    if (activeJob.message) parts.push(activeJob.message);
+  }
+  if (queuedCount > 0) {
+    parts.push(`${queuedCount} queued`);
+  }
+  parts.push(`${completed}/${total} done`);
+  videoJobText.textContent = parts.join(" • ");
+  videoJobProgressFill.style.width = `${percent}%`;
+  videoJobProgressFill.classList.toggle("active", running);
+}
+
+async function handleCompletedVideoJobs(jobs) {
+  const relevantJobs = (jobs || []).filter((job) => String(job.folder || "") === String(state.folder || ""));
+  if (!relevantJobs.length) return;
+  const generatedOutputPaths = relevantJobs
+    .filter((job) => job.status === "completed" && (job.type === "clip" || job.type === "crop") && job.output_path)
+    .map((job) => job.output_path);
+  if (generatedOutputPaths.length) {
+    resetPreviewVideoElement();
+    previewImg.style.display = "none";
+    previewInfo.style.display = "none";
+    previewPlaceholder.style.display = "flex";
+  }
+  const preserveScrollTop = fileGridContainer.scrollTop;
+  await loadFolder({ preserveScrollTop });
+  if (generatedOutputPaths.length) {
+    await selectUploadedImages([generatedOutputPaths[generatedOutputPaths.length - 1]]);
+  }
+}
+
+async function pollVideoJobStatus() {
+  try {
+    const resp = await fetch("/api/video/jobs/status");
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to load video job status");
+    }
+    state.videoJobs.activeJob = data.active_job || null;
+    state.videoJobs.queuedJobs = Array.isArray(data.queued_jobs) ? data.queued_jobs : [];
+    state.videoJobs.recentJobs = Array.isArray(data.recent_jobs) ? data.recent_jobs : [];
+    state.videoJobs.summary = data.summary || state.videoJobs.summary;
+
+    const unseenFinished = state.videoJobs.recentJobs.filter((job) => {
+      if (!job?.id || state.videoJobs.seenFinishedIds.has(job.id)) return false;
+      return job.status === "completed" || job.status === "error";
+    });
+    syncVideoJobBatchState(unseenFinished);
+    renderVideoJobStatus();
+    unseenFinished.forEach((job) => state.videoJobs.seenFinishedIds.add(job.id));
+    if (unseenFinished.length > 0) {
+      const completed = unseenFinished.filter((job) => job.status === "completed");
+      const failed = unseenFinished.filter((job) => job.status === "error");
+      if (failed.length > 0) {
+        showErrorToast(failed[0].error || `${failed[0].type === "clip" ? "Clip" : "Crop"} job failed`);
+      }
+      if (completed.length > 0) {
+        await handleCompletedVideoJobs(completed);
+      }
+    }
+  } catch (err) {
+    console.error("Failed to poll video jobs:", err);
+  }
+}
+
+function startVideoJobPolling() {
+  if (state.ui.videoJobPollTimer) return;
+  pollVideoJobStatus().catch(() => {});
+  state.ui.videoJobPollTimer = window.setInterval(() => {
+    pollVideoJobStatus().catch(() => {});
+  }, 1200);
 }
 
 function getCaptionPathForImage(imagePath) {
@@ -1843,6 +2788,29 @@ function isEditableElement(element) {
   );
 }
 
+async function releasePreviewMediaForDeletion(paths) {
+  const targets = new Set((paths || []).filter(Boolean));
+  if (!targets.size) return;
+  if (!state.previewPath || !targets.has(state.previewPath)) return;
+
+  if (state.previewMediaType === "video") {
+    stopPreviewVideo({ clearSource: true });
+    previewInfo.style.display = "none";
+    previewPlaceholder.style.display = "flex";
+    state.previewPath = null;
+    state.previewMediaType = null;
+    imgNatW = 0;
+    imgNatH = 0;
+    clearCropDraft();
+    renderPreviewCaptionOverlay();
+    renderVideoEditPanel();
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+    return;
+  }
+
+  hidePreview();
+}
+
 async function deleteSelectedImages() {
   if (state.selectedPaths.size === 0) return;
 
@@ -1850,15 +2818,16 @@ async function deleteSelectedImages() {
   const count = selectedPaths.length;
   const confirmMessage = count === 1
     ? `Delete "${getFileLabel(selectedPaths[0])}"? This also deletes its .txt caption file.`
-    : `Delete ${count} selected images? This also deletes their .txt caption files.`;
+    : `Delete ${count} selected media files? This also deletes their .txt caption files.`;
   if (!confirm(confirmMessage)) return;
 
   const preserveScrollTop = fileGridContainer.scrollTop;
   statusBar.textContent = count === 1
     ? `Deleting ${getFileLabel(selectedPaths[0])}...`
-    : `Deleting ${count} images...`;
+    : `Deleting ${count} media files...`;
 
   try {
+    await releasePreviewMediaForDeletion(selectedPaths);
     const resp = await fetch("/api/images/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1887,7 +2856,7 @@ async function deleteSelectedImages() {
       return;
     }
 
-    statusBar.textContent = count === 1 ? "Deleted 1 image" : `Deleted ${data.deleted_count || count} images`;
+    statusBar.textContent = count === 1 ? "Deleted 1 media file" : `Deleted ${data.deleted_count || count} media files`;
   } catch (err) {
     const message = err?.message || "Failed to delete images";
     statusBar.textContent = `Delete error: ${message}`;
@@ -1937,6 +2906,10 @@ async function saveOllamaSettingsFromForm() {
   const httpsKeyFile = settingsHttpsKeyInput.value.trim();
   const httpsPort = Number(settingsHttpsPortInput.value || "8900") || 8900;
   const remoteHttpMode = String(settingsRemoteHttpModeInput.value || "redirect-to-https").trim() || "redirect-to-https";
+  const ffmpegPath = settingsFfmpegPathInput.value.trim();
+  const processingReservedCores = Math.max(0, Number(settingsProcessingReservedCoresInput.value || "0") || 0);
+  const ffmpegThreads = Math.max(0, Number(settingsFfmpegThreadsInput.value || "0") || 0);
+  const ffmpegHwaccel = String(settingsFfmpegHwaccelInput.value || "auto").trim() || "auto";
   const promptTemplate = settingsPromptInput.value || state.ollamaPromptTemplate;
   const groupPromptTemplate = settingsGroupPromptInput.value || state.ollamaGroupPromptTemplate;
   const enableFreeText = settingsAutoFreeTextEnabled.checked;
@@ -1950,6 +2923,10 @@ async function saveOllamaSettingsFromForm() {
         https_keyfile: httpsKeyFile,
         https_port: httpsPort,
         remote_http_mode: remoteHttpMode,
+        ffmpeg_path: ffmpegPath,
+        processing_reserved_cores: processingReservedCores,
+        ffmpeg_threads: ffmpegThreads,
+        ffmpeg_hwaccel: ffmpegHwaccel,
         ollama_server: server,
         ollama_port: port,
         ollama_timeout_seconds: timeoutSeconds,
@@ -1970,6 +2947,10 @@ async function saveOllamaSettingsFromForm() {
       https_keyfile: httpsKeyFile,
       https_port: httpsPort,
       remote_http_mode: remoteHttpMode,
+      ffmpeg_path: ffmpegPath,
+      processing_reserved_cores: processingReservedCores,
+      ffmpeg_threads: ffmpegThreads,
+      ffmpeg_hwaccel: ffmpegHwaccel,
       ollama_server: server,
       ollama_port: port,
       ollama_timeout_seconds: timeoutSeconds,
@@ -1988,7 +2969,7 @@ async function saveOllamaSettingsFromForm() {
     closeSettingsModal();
     statusBar.textContent = networkChanged
       ? "Settings saved. Restart the server to apply HTTP/HTTPS changes."
-      : `Ollama: ${state.ollamaModel} @ ${state.ollamaServer}:${state.ollamaPort}`;
+      : `Settings saved. ffmpeg ${state.ffmpegHwaccel === "off" ? "CPU" : "auto GPU"}, threads ${state.ffmpegThreads || "auto"}, reserve ${state.processingReservedCores}`;
   } catch (err) {
     statusBar.textContent = `Settings error: ${err.message}`;
   }
@@ -2024,7 +3005,7 @@ async function loadFolder(options = {}) {
     state.imageVersions = Object.fromEntries((state.images || []).map(img => [img.path, img.mtime || 0]));
     folderInput.value = data.folder;
     updateFileCountDisplay();
-    statusBar.textContent = `Loaded ${state.images.length} images`;
+    statusBar.textContent = `Loaded ${state.images.length} media files`;
 
     // Save last_folder and load per-folder sentences
     fetch("/api/settings", {
@@ -2072,7 +3053,7 @@ function getImageExtension(name) {
 }
 
 function getDroppedImageFiles(fileList) {
-  return Array.from(fileList || []).filter(file => IMAGE_FILE_EXTENSIONS.has(getImageExtension(file?.name)));
+  return Array.from(fileList || []).filter(file => MEDIA_FILE_EXTENSIONS.has(getImageExtension(file?.name)));
 }
 
 function cancelThumbnailProgressHide() {
@@ -2145,7 +3126,7 @@ function resetThumbnailProgress() {
 }
 
 function setFileDropActive(active) {
-  centerPanel.classList.toggle("file-drop-active", !!active);
+  previewStage.classList.toggle("file-drop-active", !!active);
   if (fileDropHint) {
     fileDropHint.hidden = !active;
   }
@@ -2192,7 +3173,7 @@ function renderUploadQueueStatus() {
 
   const parts = [];
   if (currentJob) {
-    parts.push(`Uploading ${currentJob.imageFiles.length} image${currentJob.imageFiles.length === 1 ? "" : "s"} to ${getFileLabel(currentJob.folder)}`);
+    parts.push(`Uploading ${currentJob.imageFiles.length} media file${currentJob.imageFiles.length === 1 ? "" : "s"} to ${getFileLabel(currentJob.folder)}`);
   } else if (waitingJobs > 0) {
     parts.push(`Starting next upload job`);
   } else {
@@ -2306,6 +3287,7 @@ async function processUploadQueue() {
       }
 
       const summary = [`Uploaded ${uploadedCount} image${uploadedCount === 1 ? "" : "s"} to ${getFileLabel(job.folder)}`];
+      summary[0] = `Uploaded ${uploadedCount} media file${uploadedCount === 1 ? "" : "s"} to ${getFileLabel(job.folder)}`;
       if (renamedCount > 0) {
         summary.push(`${renamedCount} renamed`);
       }
@@ -2318,7 +3300,7 @@ async function processUploadQueue() {
       state.uploadQueueLastSummary = summary.join(" • ");
 
       if (uploadedCount === 0 && totalSkippedCount > 0) {
-        showErrorToast(`No images were uploaded to ${getFileLabel(job.folder)}. ${totalSkippedCount} file${totalSkippedCount === 1 ? " was" : "s were"} skipped.`);
+        showErrorToast(`No media files were uploaded to ${getFileLabel(job.folder)}. ${totalSkippedCount} file${totalSkippedCount === 1 ? " was" : "s were"} skipped.`);
       }
     } catch (err) {
       state.uploadQueueFailedJobs += 1;
@@ -2341,7 +3323,7 @@ async function processUploadQueue() {
 
 async function uploadDroppedFiles(fileList) {
   if (!state.folder) {
-    showErrorToast("Load a folder first, then drop images onto the preview panel.");
+    showErrorToast("Load a folder first, then drop media files onto the preview panel.");
     statusBar.textContent = "Upload error: no folder loaded";
     return;
   }
@@ -2354,7 +3336,7 @@ async function uploadDroppedFiles(fileList) {
   const imageFiles = getDroppedImageFiles(droppedFiles);
   const clientSkippedCount = Math.max(0, droppedFiles.length - imageFiles.length);
   if (!imageFiles.length) {
-    showErrorToast("No supported image files were dropped.");
+    showErrorToast("No supported media files were dropped.");
     statusBar.textContent = clientSkippedCount > 0
       ? `Upload skipped ${clientSkippedCount} unsupported file${clientSkippedCount === 1 ? "" : "s"}`
       : "Upload skipped";
@@ -2430,6 +3412,7 @@ function renderGrid(options = {}) {
     cell.style.height = size + "px";
     cell.dataset.index = index;
     cell.dataset.path = img.path;
+    cell.dataset.mediaType = img.media_type || getMediaType(img.path);
 
     const imgEl = document.createElement("img");
     imgEl.dataset.path = img.path;
@@ -2454,7 +3437,7 @@ function renderGrid(options = {}) {
     const dot = document.createElement("div");
     dot.className = "caption-dot";
     dot.textContent = "TXT";
-    dot.title = "Caption text file exists";
+    dot.title = `${img.media_type === "video" ? "Video" : "Media"} caption text file exists`;
     dot.dataset.captionDot = img.path;
     dot.addEventListener("dblclick", (e) => {
       e.preventDefault();
@@ -2466,7 +3449,7 @@ function renderGrid(options = {}) {
     const aspectWarning = document.createElement("div");
     aspectWarning.className = "aspect-warning";
     aspectWarning.textContent = "AR";
-    aspectWarning.title = "Image aspect ratio does not match the configured aspect ratio list";
+    aspectWarning.title = "Media aspect ratio does not match the configured aspect ratio list";
     cell.appendChild(aspectWarning);
 
     cell.addEventListener("click", (e) => handleThumbClick(index, e));
@@ -2592,6 +3575,7 @@ let zoomLevel = 1;
 let panX = 0, panY = 0;
 let imgNatW = 0, imgNatH = 0;
 let userHasZoomed = false; // tracks if user manually zoomed/panned
+let videoTimelineInteraction = null;
 
 function resetZoomPan() {
   userHasZoomed = false;
@@ -2600,7 +3584,7 @@ function resetZoomPan() {
 
 function fitImageToPanel() {
   if (!imgNatW || !imgNatH) return;
-  const panel = $("#center-panel");
+  const panel = previewStage;
   const pw = panel.clientWidth;
   const ph = panel.clientHeight;
   const scale = Math.min(pw / imgNatW, ph / imgNatH);
@@ -2611,9 +3595,11 @@ function fitImageToPanel() {
 }
 
 function applyTransform() {
-  previewImg.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
-  previewImg.style.width = imgNatW + "px";
-  previewImg.style.height = imgNatH + "px";
+  const previewEl = getActivePreviewElement();
+  if (!previewEl) return;
+  previewEl.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
+  previewEl.style.width = imgNatW + "px";
+  previewEl.style.height = imgNatH + "px";
   renderCropOverlay();
   renderPreviewCaptionOverlay();
 }
@@ -2621,73 +3607,139 @@ function applyTransform() {
 async function showPreview(path) {
   const previousPath = state.previewPath;
   if (previousPath && previousPath !== path && state.cropDraft) {
-    if (state.cropDirty) {
+    if (isVideoMediaPath(previousPath)) {
+      clearCropDraft();
+    } else if (state.cropDirty) {
       await applyCropDraftWithOptions({ reopenPreview: false });
     } else {
       clearCropDraft();
     }
   }
   state.previewPath = path;
+  state.previewMediaType = getMediaType(path);
   clearCropGuide();
 
-  const loadSrc = (src) => {
-    // If the image element already has this src loaded and fitted, skip
-    if (previewImg.src === src && imgNatW) {
-      return;
-    }
-    // Hide until loaded & positioned to prevent flash in wrong spot
+  if (state.previewMediaType === "video") {
+    clearCropDraft();
+  }
+
+  const cachedPreview = previewCache.get(path);
+  const thumbLoadSize = getThumbLoadSize();
+  const cachedThumb = thumbBlobCache.get(`${path}:${thumbLoadSize}:${getImageVersion(path)}`);
+
+  if (state.previewMediaType === "video") {
     previewImg.style.display = "none";
-    previewImg.onload = () => {
-      imgNatW = previewImg.naturalWidth;
-      imgNatH = previewImg.naturalHeight;
-      resetZoomPan();
-      previewImg.style.display = "block";
+    const videoSrc = buildImageApiUrl("media", path);
+    const posterSrc = cachedPreview || cachedThumb || buildImageApiUrl("preview", path);
+    previewVideo.style.display = "none";
+    previewVideo.removeAttribute("poster");
+    previewVideo.dataset.path = path;
+    const finishVideoPreviewLoad = () => {
+      if (state.previewPath !== path || state.previewMediaType !== "video") {
+        return;
+      }
+      previewVideo.style.display = "block";
+      syncPreviewVideoPlaybackState();
       renderPreviewCaptionOverlay();
     };
-    previewImg.src = src;
-  };
-
-  // 1) If we have a preview-quality cached version, show it immediately
-  const cachedPreview = previewCache.get(path);
-  if (cachedPreview) {
-    loadSrc(cachedPreview);
-  } else {
-    // 2) Show the thumbnail instantly as a blurry placeholder
-    const thumbLoadSize = getThumbLoadSize();
-    const cachedThumb = thumbBlobCache.get(`${path}:${thumbLoadSize}:${getImageVersion(path)}`);
-    if (cachedThumb) {
-      loadSrc(cachedThumb);
-    } else {
-      // 3) Nothing cached at all — load preview URL directly
-      loadSrc(buildImageApiUrl("preview", path));
+    previewVideo.onloadedmetadata = () => {
+      if (state.previewPath !== path || state.previewMediaType !== "video") {
+        return;
+      }
+      imgNatW = previewVideo.videoWidth || 0;
+      imgNatH = previewVideo.videoHeight || 0;
+      resetZoomPan();
+      ensureVideoMetaLoaded(path)
+        .then(() => ensureVideoTimelineLoaded(path))
+        .then(() => renderVideoEditPanel())
+        .catch((err) => showErrorToast(err.message || "Failed to load video editing metadata"));
+      syncPreviewVideoPlaybackState();
+      renderPreviewCaptionOverlay();
+      if (previewVideo.readyState >= 2) {
+        finishVideoPreviewLoad();
+      }
+    };
+    previewVideo.onloadeddata = finishVideoPreviewLoad;
+    if (previewVideo.currentSrc !== videoSrc && previewVideo.src !== videoSrc) {
+      previewVideo.pause();
+      previewVideo.removeAttribute("src");
+      previewVideo.load();
+      previewVideo.poster = posterSrc;
+      previewVideo.src = videoSrc;
+      previewVideo.load();
+    } else if (previewVideo.readyState >= 1) {
+      previewVideo.poster = posterSrc;
+      imgNatW = previewVideo.videoWidth || 0;
+      imgNatH = previewVideo.videoHeight || 0;
+      resetZoomPan();
+      if (previewVideo.readyState >= 2) {
+        finishVideoPreviewLoad();
+      }
     }
-    // Start loading the preview-quality version in background
     preloadPreview(path);
+    ensureVideoMetaLoaded(path)
+      .then(() => ensureVideoTimelineLoaded(path))
+      .then(() => renderVideoEditPanel())
+      .catch((err) => showErrorToast(err.message || "Failed to load video editing metadata"));
+  } else {
+    stopPreviewVideo({ clearSource: true });
+
+    const loadSrc = (src) => {
+      if (previewImg.src === src && imgNatW) {
+        return;
+      }
+      previewImg.style.display = "none";
+      previewImg.onload = () => {
+        imgNatW = previewImg.naturalWidth;
+        imgNatH = previewImg.naturalHeight;
+        resetZoomPan();
+        previewImg.style.display = "block";
+        renderPreviewCaptionOverlay();
+      };
+      previewImg.src = src;
+    };
+
+    if (cachedPreview) {
+      loadSrc(cachedPreview);
+    } else {
+      if (cachedThumb) {
+        loadSrc(cachedThumb);
+      } else {
+        loadSrc(buildImageApiUrl("preview", path));
+      }
+      preloadPreview(path);
+    }
   }
 
   previewPlaceholder.style.display = "none";
   const img = state.images.find(i => i.path === path);
   if (img) {
-    previewInfo.textContent = hasAppliedCrop() ? `${img.name} • cropped` : img.name;
+    previewInfo.textContent = state.previewMediaType === "video"
+      ? `${img.name} • video`
+      : (hasAppliedCrop() ? `${img.name} • cropped` : img.name);
     previewInfo.style.display = "block";
   }
   renderPreviewCaptionOverlay();
+  renderVideoEditPanel();
 }
 
 function hidePreview() {
   state.previewPath = null;
+  state.previewMediaType = null;
   previewImg.style.display = "none";
-  previewPlaceholder.style.display = "block";
+  stopPreviewVideo({ clearSource: true });
+  previewPlaceholder.style.display = "flex";
   previewInfo.style.display = "none";
   imgNatW = 0;
   imgNatH = 0;
   renderPreviewCaptionOverlay();
   clearCropDraft();
+  renderVideoEditPanel();
 }
 
 // ===== ZOOM & PAN =====
 {
-  const panel = centerPanel;
+  const panel = previewStage;
   let fileDragDepth = 0;
 
   const eventHasFiles = (event) => {
@@ -2769,6 +3821,7 @@ function hidePreview() {
 
   // Drag to pan
   let isDragging = false;
+  let dragMoved = false;
   let dragStartX, dragStartY, dragPanStartX, dragPanStartY;
 
   panel.addEventListener("mousedown", (e) => {
@@ -2779,7 +3832,12 @@ function hidePreview() {
       return;
     }
     if (e.button !== 0) return;
+    if (e.target.closest("#video-edit-panel, #preview-caption-overlay, #crop-apply-btn, #crop-cancel-btn, #crop-remove-btn, #rotate-controls")) {
+      return;
+    }
     isDragging = true;
+    dragMoved = false;
+    state.ui.suppressVideoClick = false;
     userHasZoomed = true;
     dragStartX = e.clientX;
     dragStartY = e.clientY;
@@ -2794,10 +3852,14 @@ function hidePreview() {
   });
 
   panel.addEventListener("mouseleave", () => {
-    renderCropOverlay();
+    clearCropGuide();
   });
 
   window.addEventListener("mousemove", (e) => {
+    if (videoTimelineInteraction) {
+      updateVideoTimelineInteraction(e.clientX);
+      return;
+    }
     if (state.cropInteraction && canEditCrop()) {
       updateCropGuideFromClient(e.clientX, e.clientY);
       const point = screenToImage(e.clientX, e.clientY);
@@ -2830,16 +3892,24 @@ function hidePreview() {
       return;
     }
     if (!isDragging) return;
+    if (!dragMoved && (Math.abs(e.clientX - dragStartX) > 2 || Math.abs(e.clientY - dragStartY) > 2)) {
+      dragMoved = true;
+    }
     panX = dragPanStartX + (e.clientX - dragStartX);
     panY = dragPanStartY + (e.clientY - dragStartY);
     applyTransform();
   });
 
-  window.addEventListener("mouseup", () => {
+  window.addEventListener("mouseup", (e) => {
+    if (videoTimelineInteraction) {
+      finishVideoTimelineInteraction(e.clientX);
+      return;
+    }
     if (state.cropInteraction) {
       state.cropInteraction = null;
     }
     if (isDragging) {
+      state.ui.suppressVideoClick = dragMoved;
       isDragging = false;
       panel.classList.remove("dragging");
     }
@@ -2864,6 +3934,11 @@ function hidePreview() {
         fitImageToPanel();
       }
     }
+    if (state.previewMediaType === "video" && state.previewPath) {
+      ensureVideoTimelineLoaded(state.previewPath)
+        .then(() => renderVideoEditPanel())
+        .catch((err) => showErrorToast(err.message || "Failed to resize video timeline"));
+    }
   });
 }
 
@@ -2878,6 +3953,56 @@ cropCancelBtn.addEventListener("click", cancelCropEdit);
 cropRemoveBtn.addEventListener("click", removeCrop);
 rotateLeftBtn.addEventListener("click", () => rotatePreviewImage("left"));
 rotateRightBtn.addEventListener("click", () => rotatePreviewImage("right"));
+previewVideo.addEventListener("click", (e) => {
+  if (state.previewMediaType !== "video" || !state.previewPath) return;
+  if (state.ui.suppressVideoClick) {
+    state.ui.suppressVideoClick = false;
+    return;
+  }
+  e.preventDefault();
+  togglePreviewVideoPlayback();
+});
+previewVideo.addEventListener("play", syncPreviewVideoPlaybackState);
+previewVideo.addEventListener("pause", syncPreviewVideoPlaybackState);
+previewVideo.addEventListener("timeupdate", handlePreviewVideoTimeUpdate);
+previewVideo.addEventListener("seeked", syncPreviewVideoPlaybackState);
+previewVideo.addEventListener("ended", handlePreviewVideoEnded);
+previewVideo.addEventListener("loadedmetadata", syncPreviewVideoPlaybackState);
+videoPlayToggleBtn.addEventListener("click", togglePreviewVideoPlayback);
+videoMuteBtn.addEventListener("click", togglePreviewVideoMute);
+videoVolumeSlider.addEventListener("input", (e) => setPreviewVideoVolumeFromSlider(e.target.value));
+videoTimelineViewport.addEventListener("mousedown", (e) => {
+  if (e.button !== 0 || state.previewMediaType !== "video" || !state.previewPath) return;
+  if (e.target === videoTimelineStartHandle) {
+    beginVideoTimelineInteraction("start", e);
+    return;
+  }
+  if (e.target === videoTimelineEndHandle) {
+    beginVideoTimelineInteraction("end", e);
+    return;
+  }
+  if (e.target === videoTimelinePlayhead) {
+    beginVideoTimelineInteraction("playhead", e);
+    return;
+  }
+  beginVideoTimelineInteraction("pan", e);
+});
+videoTimelineViewport.addEventListener("wheel", (e) => {
+  if (state.previewMediaType !== "video" || !state.previewPath) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const rect = videoTimelineViewport.getBoundingClientRect();
+  const anchorRatio = rect.width > 0 ? clamp((e.clientX - rect.left) / rect.width, 0, 1) : 0.5;
+  const currentZoom = getVideoTimelineUi(state.previewPath).zoom;
+  const nextZoom = currentZoom * (e.deltaY < 0 ? 1.2 : 1 / 1.2);
+  setVideoTimelineZoom(state.previewPath, nextZoom, anchorRatio);
+  renderVideoTimelineStrip(state.previewPath);
+  syncVideoTimelineState(state.previewPath);
+  syncPreviewVideoPlaybackState();
+  ensureVideoTimelineLoaded(state.previewPath)
+    .then(() => renderVideoEditPanel())
+    .catch((err) => showErrorToast(err.message || "Failed to zoom video timeline"));
+}, { passive: false });
 
 // ===== CAPTION DATA =====
 async function loadCaptionData(path) {
@@ -4092,7 +5217,7 @@ function getAutoCaptionScopeLogLabel(scope) {
 }
 
 function getAutoCaptionStatusIntro(scope, count) {
-  const suffix = `for ${count} image${count === 1 ? "" : "s"}...`;
+  const suffix = `for ${count} media file${count === 1 ? "" : "s"}...`;
   switch (scope) {
     case "free-text-only": return `Adding free text ${suffix}`;
     case "sentence": return `Refreshing caption ${suffix}`;
@@ -4104,7 +5229,7 @@ function getAutoCaptionStatusIntro(scope, count) {
 
 function getAutoCaptionStartLog(scope, event) {
   const count = event.count;
-  const target = `${count} image(s) using ${event.model} @ ${event.host}`;
+  const target = `${count} media file(s) using ${event.model} @ ${event.host}`;
   switch (scope) {
     case "free-text-only": return `Starting free-text enhancement for ${target}`;
     case "sentence": return `Starting caption refresh for ${target}`;
@@ -4190,7 +5315,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
       headers: { "Content-Type": "application/json" },
       signal: state.autoCaptionAbortController.signal,
       body: JSON.stringify({
-        image_paths: paths,
+        media_paths: paths,
         model,
         prompt_template: state.ollamaPromptTemplate,
         group_prompt_template: state.ollamaGroupPromptTemplate,
@@ -4221,7 +5346,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           completedImages: 0,
           enableFreeText: !!event.enable_free_text,
           freeTextOnly: !!event.free_text_only,
-          currentMessage: "Preparing images...",
+          currentMessage: "Preparing media...",
         });
         appendModelLog(getAutoCaptionStartLog(scope, event), "log-dim");
         if (event.enable_free_text || event.free_text_only) {

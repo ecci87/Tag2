@@ -64,6 +64,8 @@ filterArBtn.addEventListener("click", toggleAspectFilter);
 filterTxtBtn.addEventListener("click", toggleCaptionPresenceFilter);
 autoCaptionBtn.addEventListener("click", autoCaptionSelected);
 addFreeTextNowBtn.addEventListener("click", addFreeTextNow);
+videoClipBtn.addEventListener("click", queueCurrentVideoClip);
+videoDownloadBtn.addEventListener("click", downloadCurrentVideo);
 hideAddButtonsCheckbox.addEventListener("change", () => {
   state.hideAddButtons = hideAddButtonsCheckbox.checked;
   renderSentences();
@@ -83,6 +85,25 @@ autoFreeTextCheckbox.addEventListener("change", async () => {
 settingsCloseBtn.addEventListener("click", closeSettingsModal);
 settingsCancelBtn.addEventListener("click", closeSettingsModal);
 settingsSaveBtn.addEventListener("click", saveOllamaSettingsFromForm);
+settingsTabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setActiveSettingsTab(button.dataset.settingsTab || "auto-captioning");
+  });
+  button.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    const currentIndex = settingsTabButtons.indexOf(button);
+    if (currentIndex < 0) return;
+    let nextIndex = currentIndex;
+    if (e.key === "ArrowRight") nextIndex = (currentIndex + 1) % settingsTabButtons.length;
+    if (e.key === "ArrowLeft") nextIndex = (currentIndex - 1 + settingsTabButtons.length) % settingsTabButtons.length;
+    if (e.key === "Home") nextIndex = 0;
+    if (e.key === "End") nextIndex = settingsTabButtons.length - 1;
+    const nextButton = settingsTabButtons[nextIndex];
+    setActiveSettingsTab(nextButton.dataset.settingsTab || "auto-captioning");
+    nextButton.focus();
+  });
+});
 modelLogOpenBtn.addEventListener("click", toggleModelLogOverlay);
 previewCaptionToggle.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -119,6 +140,11 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (settingsModal.classList.contains("open")) return;
+  if (e.key === " " && !isEditableElement(document.activeElement) && state.previewMediaType === "video" && state.previewPath) {
+    e.preventDefault();
+    togglePreviewVideoPlayback();
+    return;
+  }
   if (e.key === "Delete" && !isEditableElement(document.activeElement)) {
     e.preventDefault();
     deleteSelectedImages();
@@ -178,6 +204,7 @@ async function initFromSettings() {
   }
 }
 initFromSettings();
+startVideoJobPolling();
 
 // Initial render of sentences
 setCropAspectRatios(state.cropAspectRatioLabels);

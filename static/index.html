@@ -4,10 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Image Captioning Tool</title>
-<link rel="stylesheet" href="/static/css/app-shell.css">
-<link rel="stylesheet" href="/static/css/app-preview.css">
-<link rel="stylesheet" href="/static/css/app-captions.css">
-<link rel="stylesheet" href="/static/css/app-dialogs.css">
+<link rel="stylesheet" href="/static/css/app-shell.css?v=20260315d">
+<link rel="stylesheet" href="/static/css/app-preview.css?v=20260315d">
+<link rel="stylesheet" href="/static/css/app-captions.css?v=20260315d">
+<link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260315d">
 </head>
 <body>
 <div id="error-toast" role="alert" aria-live="assertive">
@@ -20,7 +20,7 @@
     <input type="text" id="folder-input" placeholder="/path/to/images" spellcheck="false">
     <button id="load-btn">Load</button>
     <button id="clone-folder-btn" type="button">Clone</button>
-    <button id="settings-btn" title="Ollama settings" aria-label="Ollama settings">⚙</button>
+    <button id="settings-btn" title="App settings" aria-label="App settings">⚙</button>
     <div id="toolbar-status">
       <span id="status-bar"></span>
       <div id="thumbnail-queue-status" class="toolbar-progress-row" hidden aria-live="polite">
@@ -30,6 +30,10 @@
       <div id="upload-queue-status" class="toolbar-progress-row" hidden aria-live="polite">
         <div id="upload-queue-text" class="toolbar-progress-label"></div>
         <div id="upload-queue-progress" class="toolbar-status-track"><div id="upload-queue-progress-fill"></div></div>
+      </div>
+      <div id="video-job-status" class="toolbar-progress-row" hidden aria-live="polite">
+        <div id="video-job-text" class="toolbar-progress-label"></div>
+        <div id="video-job-progress" class="toolbar-status-track"><div id="video-job-progress-fill"></div></div>
       </div>
       <div id="ai-progress-panel" aria-live="polite">
         <div class="toolbar-progress-row ai-progress-row">
@@ -54,7 +58,7 @@
     <div id="left-panel">
       <div class="panel-header">
         <div class="panel-header-top">
-          <span id="file-count">No images</span>
+          <span id="file-count">No media files</span>
         </div>
         <div class="panel-header-actions">
           <div id="filter-chip-row">
@@ -78,45 +82,73 @@
     <div id="left-resize"></div>
 
     <div id="center-panel">
-      <img id="preview-img" alt="Preview">
-      <div id="file-drop-hint">Drop image files here to add them to the upload queue</div>
-      <div id="preview-caption-overlay" aria-live="polite">
-        <div id="preview-caption-overlay-header">
-          <button id="preview-caption-toggle" type="button" aria-expanded="true" title="Collapse enabled captions">−</button>
+      <div id="preview-stage">
+        <img id="preview-img" alt="Preview">
+        <video id="preview-video" preload="metadata" playsinline></video>
+        <div id="file-drop-hint">Drop image or video files here to add them to the upload queue</div>
+        <div id="preview-caption-overlay" aria-live="polite">
+          <div id="preview-caption-overlay-header">
+            <button id="preview-caption-toggle" type="button" aria-expanded="true" title="Collapse enabled captions">−</button>
+          </div>
+          <div id="preview-caption-list"></div>
         </div>
-        <div id="preview-caption-list"></div>
+        <div id="crop-overlay">
+          <div id="crop-guide-v" class="crop-guide"></div>
+          <div id="crop-guide-h" class="crop-guide"></div>
+          <div id="crop-box">
+            <div class="crop-label"></div>
+            <div class="crop-handle" data-handle="nw"></div>
+            <div class="crop-handle" data-handle="ne"></div>
+            <div class="crop-handle" data-handle="sw"></div>
+            <div class="crop-handle" data-handle="se"></div>
+            <div class="crop-edge" data-handle="n"></div>
+            <div class="crop-edge" data-handle="e"></div>
+            <div class="crop-edge" data-handle="s"></div>
+            <div class="crop-edge" data-handle="w"></div>
+          </div>
+          <button id="crop-apply-btn" type="button">Apply</button>
+          <button id="crop-cancel-btn" type="button">Cancel</button>
+          <button id="crop-remove-btn" type="button">Remove Crop</button>
+          <div id="rotate-controls">
+            <button id="rotate-left-btn" class="rotate-btn" type="button" title="Rotate left" aria-label="Rotate left">↶</button>
+            <button id="rotate-right-btn" class="rotate-btn" type="button" title="Rotate right" aria-label="Rotate right">↷</button>
+          </div>
+        </div>
+        <div id="preview-placeholder">Select a media file to preview<br>or<br>drop media files here to upload</div>
+        <div id="preview-info"></div>
       </div>
-      <div id="crop-overlay">
-        <div id="crop-guide-v" class="crop-guide"></div>
-        <div id="crop-guide-h" class="crop-guide"></div>
-        <div id="crop-box">
-          <div class="crop-label"></div>
-          <div class="crop-handle" data-handle="nw"></div>
-          <div class="crop-handle" data-handle="ne"></div>
-          <div class="crop-handle" data-handle="sw"></div>
-          <div class="crop-handle" data-handle="se"></div>
-          <div class="crop-edge" data-handle="n"></div>
-          <div class="crop-edge" data-handle="e"></div>
-          <div class="crop-edge" data-handle="s"></div>
-          <div class="crop-edge" data-handle="w"></div>
+      <div id="video-edit-panel">
+        <div id="video-timeline-viewport">
+          <div id="video-timeline-strip"></div>
+          <div id="video-timeline-overlay">
+            <div id="video-timeline-selection"></div>
+            <button id="video-timeline-start-handle" type="button" aria-label="Clip start"></button>
+            <button id="video-timeline-end-handle" type="button" aria-label="Clip end"></button>
+            <button id="video-timeline-playhead" type="button" aria-label="Current position"></button>
+          </div>
         </div>
-        <button id="crop-apply-btn" type="button">Apply</button>
-        <button id="crop-cancel-btn" type="button">Cancel</button>
-        <button id="crop-remove-btn" type="button">Remove Crop</button>
-        <div id="rotate-controls">
-          <button id="rotate-left-btn" class="rotate-btn" type="button" title="Rotate left" aria-label="Rotate left">↶</button>
-          <button id="rotate-right-btn" class="rotate-btn" type="button" title="Rotate right" aria-label="Rotate right">↷</button>
+        <div id="video-timeline-footer">
+          <span id="video-time-range-label"></span>
+          <div id="video-playback-controls">
+            <span id="video-timeline-zoom-label"></span>
+            <button id="video-play-toggle-btn" type="button">Play</button>
+            <span id="video-playback-label"></span>
+            <button id="video-clip-btn" type="button">Clip</button>
+            <button id="video-download-btn" type="button">Download</button>
+          </div>
+          <div id="video-audio-controls">
+            <button id="video-mute-btn" type="button" aria-pressed="false" aria-label="Mute preview audio" title="Mute preview audio">🔊</button>
+            <input id="video-volume-slider" type="range" min="0" max="100" step="1" value="100" aria-label="Preview volume">
+          </div>
         </div>
       </div>
-      <div id="preview-placeholder">Select an image to preview<br>or<br>drop images here to upload</div>
-      <div id="preview-info"></div>
     </div>
 
     <div id="right-resize"></div>
 
     <div id="right-panel">
       <div id="add-section-bar">
-        <button id="auto-caption-btn" class="generate-btn generate-btn-toolbar" title="Use Ollama to verify captions for the selected image(s)"><span class="btn-content"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">Auto Caption</span></span></button>
+        <button id="auto-caption-btn" class="generate-btn generate-btn-toolbar" title="Use Ollama to verify captions for the selected media"><span class="btn-content"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">Auto Caption</span></span></button>
         <button id="model-log-open-btn" type="button" title="Open model log overlay" aria-label="Open model log overlay" hidden>Log</button>
         <label class="toggle-label" title="Hide add controls for sections and groups">
           <input type="checkbox" id="hide-add-buttons-checkbox">
@@ -135,7 +167,7 @@
               <input type="checkbox" id="auto-free-text-checkbox" checked>
               <span>Auto Caption</span>
             </label>
-            <button id="add-free-text-now-btn" class="generate-btn generate-btn-compact generate-btn-icon" type="button" title="Ask Ollama to add only free-text details for the selected image(s)" aria-label="Ask Ollama to add only free-text details for the selected image(s)"><span class="btn-icon" aria-hidden="true"></span></button>
+            <button id="add-free-text-now-btn" class="generate-btn generate-btn-compact generate-btn-icon" type="button" title="Ask Ollama to add only free-text details for the selected media" aria-label="Ask Ollama to add only free-text details for the selected media"><span class="btn-icon" aria-hidden="true"></span></button>
           </div>
         </div>
         <textarea id="free-text" placeholder="Additional caption text..." disabled></textarea>
@@ -165,73 +197,112 @@
       <button id="settings-close-btn" type="button" aria-label="Close settings">×</button>
     </div>
     <form id="settings-form">
-      <div class="settings-grid">
-        <div class="settings-field">
-          <label for="settings-ollama-server">Server</label>
-          <input type="text" id="settings-ollama-server" placeholder="127.0.0.1" spellcheck="false">
-        </div>
-        <div class="settings-field">
-          <label for="settings-ollama-port">Port</label>
-          <input type="number" id="settings-ollama-port" min="1" max="65535" placeholder="11434" spellcheck="false">
-        </div>
-        <div class="settings-field">
-          <label for="settings-ollama-timeout">Timeout (s)</label>
-          <input type="number" id="settings-ollama-timeout" min="1" max="600" placeholder="20" spellcheck="false">
-        </div>
+      <div id="settings-tabs" role="tablist" aria-label="Settings sections">
+        <button class="settings-tab-btn active" id="settings-tab-auto-captioning" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-auto-captioning" data-settings-tab="auto-captioning">Auto Captioning</button>
+        <button class="settings-tab-btn" id="settings-tab-server" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-server" data-settings-tab="server">Server Settings</button>
+        <button class="settings-tab-btn" id="settings-tab-editing" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-editing" data-settings-tab="editing">Editing</button>
       </div>
-      <div class="settings-field">
-        <label for="settings-ollama-model">Model</label>
-        <div class="settings-field-row">
-          <select id="settings-ollama-model"></select>
-          <button id="settings-refresh-models-btn" class="settings-inline-btn" type="button" title="Refresh Ollama model list" aria-label="Refresh Ollama model list">↻</button>
-        </div>
-      </div>
-      <div class="settings-field">
-        <label for="settings-crop-aspect-ratios">Aspect Ratios</label>
-        <input type="text" class="compact-code" id="settings-crop-aspect-ratios" placeholder="4:3, 16:9, 3:4, 1:1, 9:16, 2:3, 3:2" spellcheck="false">
-        <div class="settings-help">Comma-separated list. The crop rectangle snaps to the closest allowed ratio. Images not matching these ratios will be marked with "AR" in the preview.</div>
-      </div>
-      <div class="settings-grid">
-        <div class="settings-field">
-          <label for="settings-https-certfile">HTTPS Certificate</label>
-          <input type="text" class="compact-code" id="settings-https-certfile" placeholder="certs/localhost.pem" spellcheck="false">
-        </div>
-        <div class="settings-field">
-          <label for="settings-https-keyfile">HTTPS Key</label>
-          <input type="text" class="compact-code" id="settings-https-keyfile" placeholder="certs/localhost-key.pem" spellcheck="false">
-        </div>
-        <div class="settings-field">
-          <label for="settings-https-port">HTTPS Port</label>
-          <input type="number" id="settings-https-port" min="1" max="65535" placeholder="8900" spellcheck="false">
-        </div>
-      </div>
-      <div class="settings-field">
-        <label for="settings-remote-http-mode">Remote HTTP Access</label>
-        <select id="settings-remote-http-mode">
-          <option value="redirect-to-https">Allow localhost HTTP, redirect other computers to HTTPS</option>
-          <option value="block">Allow localhost HTTP, block HTTP from other computers</option>
-          <option value="allow">Allow HTTP from other computers</option>
-        </select>
-        <div class="settings-help">When a certificate and key are configured, the server keeps HTTP on the current port for this computer and starts HTTPS on the HTTPS port for other devices. Changing these network settings requires a server restart.</div>
-      </div>
-      <div class="settings-field">
-        <label for="settings-ollama-prompt">Caption Check Prompt</label>
-        <textarea id="settings-ollama-prompt" spellcheck="false"></textarea>
-        <div class="settings-help">Use <span>{caption}</span> or <span>{sentence}</span> as the placeholder for the current caption.</div>
-      </div>
-      <div class="settings-field">
-        <label for="settings-ollama-group-prompt">Caption Group Prompt</label>
-        <textarea id="settings-ollama-group-prompt" spellcheck="false"></textarea>
-        <div class="settings-help">Use <span>{group_name}</span>, <span>{options}</span>, and <span>{count}</span> for grouped captions.</div>
-      </div>
-      <label class="settings-checkbox" for="settings-auto-free-text-enabled">
-        <input type="checkbox" id="settings-auto-free-text-enabled">
-        <span>Enable additional free-text suggestions</span>
-      </label>
-      <div class="settings-field">
-        <label for="settings-ollama-free-text-prompt">Free Text Prompt</label>
-        <textarea id="settings-ollama-free-text-prompt" spellcheck="false"></textarea>
-        <div class="settings-help">Use <span>{caption_text}</span>, <span>{current_caption}</span>, or <span>{caption}</span> for the updated caption txt.</div>
+      <div id="settings-panels">
+        <section class="settings-panel active" id="settings-panel-auto-captioning" role="tabpanel" aria-labelledby="settings-tab-auto-captioning" data-settings-panel="auto-captioning">
+          <div class="settings-grid">
+            <div class="settings-field">
+              <label for="settings-ollama-server">Server</label>
+              <input type="text" id="settings-ollama-server" placeholder="127.0.0.1" spellcheck="false">
+            </div>
+            <div class="settings-field">
+              <label for="settings-ollama-port">Port</label>
+              <input type="number" id="settings-ollama-port" min="1" max="65535" placeholder="11434" spellcheck="false">
+            </div>
+            <div class="settings-field">
+              <label for="settings-ollama-timeout">Timeout (s)</label>
+              <input type="number" id="settings-ollama-timeout" min="1" max="600" placeholder="20" spellcheck="false">
+            </div>
+          </div>
+          <div class="settings-field">
+            <label for="settings-ollama-model">Model</label>
+            <div class="settings-field-row">
+              <select id="settings-ollama-model"></select>
+              <button id="settings-refresh-models-btn" class="settings-inline-btn" type="button" title="Refresh Ollama model list" aria-label="Refresh Ollama model list">↻</button>
+            </div>
+            <div class="settings-help">Use a multimodal vision model. Video auto-caption sends several representative frames from each clip to the model.</div>
+          </div>
+          <div class="settings-field">
+            <label for="settings-ollama-prompt">Caption Check Prompt</label>
+            <textarea id="settings-ollama-prompt" spellcheck="false"></textarea>
+            <div class="settings-help">Use <span>{caption}</span> or <span>{sentence}</span> as the placeholder for the current caption.</div>
+          </div>
+          <div class="settings-field">
+            <label for="settings-ollama-group-prompt">Caption Group Prompt</label>
+            <textarea id="settings-ollama-group-prompt" spellcheck="false"></textarea>
+            <div class="settings-help">Use <span>{group_name}</span>, <span>{options}</span>, and <span>{count}</span> for grouped captions.</div>
+          </div>
+          <label class="settings-checkbox" for="settings-auto-free-text-enabled">
+            <input type="checkbox" id="settings-auto-free-text-enabled">
+            <span>Enable additional free-text suggestions</span>
+          </label>
+          <div class="settings-field">
+            <label for="settings-ollama-free-text-prompt">Free Text Prompt</label>
+            <textarea id="settings-ollama-free-text-prompt" spellcheck="false"></textarea>
+            <div class="settings-help">Use <span>{caption_text}</span>, <span>{current_caption}</span>, or <span>{caption}</span> for the updated caption txt.</div>
+          </div>
+        </section>
+        <section class="settings-panel" id="settings-panel-server" role="tabpanel" aria-labelledby="settings-tab-server" data-settings-panel="server" hidden>
+          <div class="settings-grid">
+            <div class="settings-field">
+              <label for="settings-https-certfile">HTTPS Certificate</label>
+              <input type="text" class="compact-code" id="settings-https-certfile" placeholder="certs/localhost.pem" spellcheck="false">
+            </div>
+            <div class="settings-field">
+              <label for="settings-https-keyfile">HTTPS Key</label>
+              <input type="text" class="compact-code" id="settings-https-keyfile" placeholder="certs/localhost-key.pem" spellcheck="false">
+            </div>
+            <div class="settings-field">
+              <label for="settings-https-port">HTTPS Port</label>
+              <input type="number" id="settings-https-port" min="1" max="65535" placeholder="8900" spellcheck="false">
+            </div>
+          </div>
+          <div class="settings-field">
+            <label for="settings-remote-http-mode">Remote HTTP Access</label>
+            <select id="settings-remote-http-mode">
+              <option value="redirect-to-https">Allow localhost HTTP, redirect other computers to HTTPS</option>
+              <option value="block">Allow localhost HTTP, block HTTP from other computers</option>
+              <option value="allow">Allow HTTP from other computers</option>
+            </select>
+            <div class="settings-help">When a certificate and key are configured, the server keeps HTTP on the current port for this computer and starts HTTPS on the HTTPS port for other devices. Changing these network settings requires a server restart.</div>
+          </div>
+          <div class="settings-field">
+            <label for="settings-ffmpeg-path">ffmpeg Path</label>
+            <input type="text" class="compact-code" id="settings-ffmpeg-path" placeholder="ffmpeg or /usr/bin/ffmpeg" spellcheck="false">
+            <div class="settings-help">Optional override. Leave empty to use ffmpeg and ffprobe from PATH. If set to a directory, the server looks for both binaries there.</div>
+          </div>
+          <div class="settings-grid">
+            <div class="settings-field">
+              <label for="settings-processing-reserved-cores">Reserved CPU Cores</label>
+              <input type="number" id="settings-processing-reserved-cores" min="0" max="128" placeholder="4" spellcheck="false">
+              <div class="settings-help">Keeps some CPU capacity free so the server and UI stay responsive while processing media.</div>
+            </div>
+            <div class="settings-field">
+              <label for="settings-ffmpeg-threads">ffmpeg Threads</label>
+              <input type="number" id="settings-ffmpeg-threads" min="0" max="128" placeholder="0" spellcheck="false">
+              <div class="settings-help">Set to 0 for automatic thread budget based on available CPU cores after the reserved cores are subtracted.</div>
+            </div>
+            <div class="settings-field">
+              <label for="settings-ffmpeg-hwaccel">Video Hardware Accel</label>
+              <select id="settings-ffmpeg-hwaccel">
+                <option value="auto">Auto detect GPU decode/encode and fall back to CPU</option>
+                <option value="off">Disable GPU acceleration</option>
+              </select>
+              <div class="settings-help">Best effort. The server will try GPU video acceleration when ffmpeg supports it for the current machine and output format.</div>
+            </div>
+          </div>
+        </section>
+        <section class="settings-panel" id="settings-panel-editing" role="tabpanel" aria-labelledby="settings-tab-editing" data-settings-panel="editing" hidden>
+          <div class="settings-field">
+            <label for="settings-crop-aspect-ratios">Aspect Ratios</label>
+            <input type="text" class="compact-code" id="settings-crop-aspect-ratios" placeholder="4:3, 16:9, 3:4, 1:1, 9:16, 2:3, 3:2" spellcheck="false">
+            <div class="settings-help">Comma-separated list. The crop rectangle snaps to the closest allowed ratio. Images not matching these ratios will be marked with "AR" in the preview.</div>
+          </div>
+        </section>
       </div>
     </form>
     <div id="settings-actions">
@@ -241,8 +312,8 @@
   </div>
 </div>
 
-<script defer src="/static/js/app-shared.js"></script>
-<script defer src="/static/js/app-features.js"></script>
-<script defer src="/static/js/app-init.js"></script>
+<script defer src="/static/js/app-shared.js?v=20260315f"></script>
+<script defer src="/static/js/app-features.js?v=20260315f"></script>
+<script defer src="/static/js/app-init.js?v=20260315f"></script>
 </body>
 </html>

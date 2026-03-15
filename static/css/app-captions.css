@@ -277,17 +277,20 @@
 .ai-progress-row-secondary {
   color: var(--fg-dim);
   font-size: 10px;
+  line-height: 1.22;
 }
 #ai-progress-summary {
   color: var(--fg);
   min-width: 0;
   font-size: 10px;
   font-weight: 700;
+  line-height: 1.22;
 }
 #ai-progress-metric,
 #ai-progress-current-metric {
   color: var(--fg-dim);
   font-size: 10px;
+  line-height: 1.22;
   white-space: nowrap;
   flex-shrink: 0;
   min-width: 34px;
@@ -295,6 +298,7 @@
 }
 #ai-progress-current-label {
   min-width: 0;
+  line-height: 1.22;
 }
 .ai-progress-track {
   position: relative;

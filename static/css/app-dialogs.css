@@ -28,7 +28,12 @@
 }
 #settings-modal.open { display: flex; }
 #settings-dialog {
-  width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto;
+  width: min(680px, calc(100vw - 32px));
+  height: min(760px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
   box-shadow: 0 18px 50px rgba(0,0,0,0.45);
 }
@@ -57,7 +62,63 @@
   color: var(--fg);
   border-color: var(--border);
 }
-#settings-form { padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+#settings-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+#settings-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.settings-tab-btn {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.03);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+.settings-tab-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.settings-tab-btn.active {
+  background: rgba(166,227,161,0.18);
+  border-color: rgba(166,227,161,0.42);
+  color: var(--fg);
+}
+#settings-panels {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.02);
+}
+.settings-panel {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 14px;
+  flex-direction: column;
+  gap: 14px;
+  opacity: 0;
+  pointer-events: none;
+}
+.settings-panel.active {
+  display: flex;
+  opacity: 1;
+  pointer-events: auto;
+}
 .settings-grid {
   display: grid; grid-template-columns: 1fr 120px 140px; gap: 12px;
 }
@@ -116,6 +177,7 @@
 }
 .settings-checkbox input { accent-color: var(--accent2); }
 #settings-actions {
+  flex-shrink: 0;
   display: flex; justify-content: flex-end; gap: 8px; padding: 0 14px 14px;
 }
 #settings-actions button {
@@ -124,6 +186,22 @@
 #settings-cancel-btn { background: var(--bg3); color: var(--fg); }
 #settings-save-btn { background: var(--accent2); color: #1e1e2e; border-color: rgba(166,227,161,0.35); }
 #settings-cancel-btn:hover, #settings-save-btn:hover { filter: brightness(1.08); }
+@media (max-width: 720px) {
+  #settings-dialog {
+    height: calc(100vh - 32px);
+  }
+  #settings-tabs {
+    gap: 6px;
+  }
+  .settings-tab-btn {
+    flex: 1 1 calc(50% - 6px);
+    justify-content: center;
+    text-align: center;
+  }
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
 #error-toast {
   position: fixed;
   top: 12px;

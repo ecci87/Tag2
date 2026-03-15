@@ -1,21 +1,30 @@
-# Tag2 – Image Captioning Tool
+# Tag2 – Media Captioning Tool
 
-A lightweight, browser-based tool for browsing images and managing text captions for AI datasets. Most useful for LoRA type captioning.
-Supports Ollama auto captioning using a check per user caption approach, instead of letting AI generate a free from text leading to more precise LoRA training friendly results.
+A lightweight, browser-based tool for browsing images and videos and managing text captions for AI datasets. Most useful for LoRA type captioning.
+Supports Ollama auto captioning using a check per user caption approach, instead of letting AI generate unrestricted free text, leading to more precise LoRA-training-friendly results.
 Built with **FastAPI** and a single-page HTML frontend.
 
 ## Features
 
-- Browse images from any local folder
-- Thumbnail grid with adjustable sizes
-- Zoomable image preview
+- Fast non-interrupted browsing of images and videos from any server local folder
+- Thumbnail grid with adjustable sizes and video badges
+- Zoomable image preview and video preview with timeline tools
 - Predefined caption tags (per-folder configurable)
-- Free-text captionsa
-- Batch toggle captions across multiple selected images
-- Auto captioning with Ollama by checking images against the predefined captions
+- Free-text captions
+- Batch toggle captions across multiple selected media files
+- Auto captioning with Ollama by checking media against the predefined captions
+- Video auto captioning by sampling representative frames from each clip and sending them to the vision model
 - Aspect ratio checking in the thumbnail grid against the configured allowed ratios
 - Real image cropping with aspect-ratio snapping and reversible undo while the server is running
-- Caption files saved as `.txt` alongside each image
+- Queued video crop and clip jobs with ffmpeg
+- Caption files saved as `.txt` alongside each media file
+- Complex filtering logic for the dataset based on the captions and other attributes
+
+## Ollama Notes
+
+- Use a multimodal vision model such as `llava`.
+- Video auto captioning does not send the raw video file to Ollama. Tag2 samples a small set of representative frames from each clip and sends those frames as the vision input.
+- ffmpeg and ffprobe must be available for video previews, thumbnails, editing, and video auto captioning.
 
 ## Quick Start
 
@@ -98,6 +107,7 @@ On first use, a `config.json` file is created automatically to store:
 - your last opened folder
 - per-folder sentence presets
 - Ollama connection and prompt settings
+- ffmpeg path and video processing settings
 - configured aspect ratios
 
 This file is gitignored.

@@ -18,6 +18,14 @@ const state = {
   filterCaptionCacheKey: "",
   filterLoadingPromise: null,
   previewPath: null,
+  previewMediaType: null,
+  previewVideoMuted: false,
+  previewVideoLastVolume: 1,
+  previewVideoVolume: 1,
+  videoMeta: {},         // path -> {width, height, duration}
+  videoClipDrafts: {},   // path -> {startFraction, endFraction}
+  videoTimelineCache: {}, // path -> [{timeSeconds, url}, ...]
+  videoTimelineUi: {},   // path -> {zoom, offsetFraction}
   saving: false,
   autoCaptioning: false,
   autoCaptionMode: null,
@@ -34,14 +42,18 @@ const state = {
   httpsKeyFile: "",
   httpsPort: 8900,
   remoteHttpMode: "redirect-to-https",
+  ffmpegPath: "",
+  ffmpegThreads: 0,
+  ffmpegHwaccel: "auto",
+  processingReservedCores: 4,
   ollamaServer: "127.0.0.1",
   ollamaPort: 11434,
   ollamaTimeoutSeconds: 20,
   ollamaModel: "llava",
-  ollamaPromptTemplate: "You are verifying a single image caption. Reply with exactly one word: YES or NO. Reply YES only if the caption is clearly correct for the image. Reply NO if it is wrong, uncertain, too specific, or not clearly visible.\n\nCaption: {caption}\nAnswer:",
-  ollamaGroupPromptTemplate: "You are selecting the single best caption for an image from a numbered list. Reply with exactly one number from 1 to {count}. Pick the most likely correct caption for the image.\n\nGroup: {group_name}\n{options}\n\nAnswer:",
+  ollamaPromptTemplate: "You are verifying a caption for one media item. Reply with exactly one word: YES or NO. Reply YES only if the caption is clearly correct for the media. Reply NO if it is wrong, uncertain, too specific, or not clearly visible.\n\nCaption: {caption}\nAnswer:",
+  ollamaGroupPromptTemplate: "You are selecting the single best caption for one media item from a numbered list. Reply with exactly one number from 1 to {count}. Pick the most likely correct caption for the media.\n\nGroup: {group_name}\n{options}\n\nAnswer:",
   ollamaEnableFreeText: true,
-  ollamaFreeTextPromptTemplate: "You are improving an image caption file. The caption text below already covers known details and must not be repeated. Look at the image and return only notable, important visual details that are still missing. Return either NONE or one short line per missing detail, with no bullets or numbering.\n\nCurrent caption text:\n{caption_text}\n\nAnswer:",
+  ollamaFreeTextPromptTemplate: "You are improving a media caption file. The caption text below already covers known details and must not be repeated. Look at the media and return only notable, important visual details that are still missing. Return either NONE or one short line per missing detail, with no bullets or numbering.\n\nCurrent caption text:\n{caption_text}\n\nAnswer:",
   ollamaAvailableModels: [],
   modelLogLines: [],
   modelLogOpen: false,
@@ -75,15 +87,33 @@ const state = {
   uploadQueueCompletedImages: 0,
   uploadQueueFailedJobs: 0,
   uploadQueueLastSummary: "",
+  videoJobs: {
+    activeJob: null,
+    queuedJobs: [],
+    recentJobs: [],
+    summary: { total: 0, completed: 0, failed: 0, queued: 0, running: 0 },
+    seenFinishedIds: new Set(),
+    batch: {
+      active: false,
+      total: 0,
+      completed: 0,
+      jobIds: new Set(),
+    },
+  },
   ui: {
     activeInlineEditor: null,
     renderFrameId: 0,
     pendingSentenceRender: false,
     pendingPreviewRender: false,
+    videoJobPollTimer: null,
+    suppressVideoClick: false,
+    videoTimelineFetches: new Map(),
   },
 };
 
 const IMAGE_FILE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"]);
+const VIDEO_FILE_EXTENSIONS = new Set([".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"]);
+const MEDIA_FILE_EXTENSIONS = new Set([...IMAGE_FILE_EXTENSIONS, ...VIDEO_FILE_EXTENSIONS]);
 let uploadJobCounter = 0;
 let thumbnailProgressHideTimer = null;
 
@@ -101,6 +131,9 @@ const thumbnailQueueProgressFill = $("#thumbnail-queue-progress-fill");
 const uploadQueueStatus = $("#upload-queue-status");
 const uploadQueueText = $("#upload-queue-text");
 const uploadQueueProgressFill = $("#upload-queue-progress-fill");
+const videoJobStatus = $("#video-job-status");
+const videoJobText = $("#video-job-text");
+const videoJobProgressFill = $("#video-job-progress-fill");
 const fileCount = $("#file-count");
 const filterArBtn = $("#filter-ar-btn");
 const filterTxtBtn = $("#filter-txt-btn");
@@ -108,7 +141,9 @@ const clearFiltersBtn = $("#clear-filters-btn");
 const fileGrid = $("#file-grid");
 const fileGridContainer = $("#file-grid-container");
 const centerPanel = $("#center-panel");
+const previewStage = $("#preview-stage");
 const previewImg = $("#preview-img");
+const previewVideo = $("#preview-video");
 const fileDropHint = $("#file-drop-hint");
 const cropOverlay = $("#crop-overlay");
 const cropGuideV = $("#crop-guide-v");
@@ -121,6 +156,22 @@ const cropRemoveBtn = $("#crop-remove-btn");
 const rotateControls = $("#rotate-controls");
 const rotateLeftBtn = $("#rotate-left-btn");
 const rotateRightBtn = $("#rotate-right-btn");
+const videoEditPanel = $("#video-edit-panel");
+const videoPlayToggleBtn = $("#video-play-toggle-btn");
+const videoMuteBtn = $("#video-mute-btn");
+const videoVolumeSlider = $("#video-volume-slider");
+const videoPlaybackLabel = $("#video-playback-label");
+const videoClipBtn = $("#video-clip-btn");
+const videoDownloadBtn = $("#video-download-btn");
+const videoTimelineViewport = $("#video-timeline-viewport");
+const videoTimeRangeLabel = $("#video-time-range-label");
+const videoTimelineZoomLabel = $("#video-timeline-zoom-label");
+const videoTimelineStrip = $("#video-timeline-strip");
+const videoTimelineOverlay = $("#video-timeline-overlay");
+const videoTimelineSelection = $("#video-timeline-selection");
+const videoTimelineStartHandle = $("#video-timeline-start-handle");
+const videoTimelineEndHandle = $("#video-timeline-end-handle");
+const videoTimelinePlayhead = $("#video-timeline-playhead");
 const previewPlaceholder = $("#preview-placeholder");
 const previewInfo = $("#preview-info");
 const previewCaptionOverlay = $("#preview-caption-overlay");
@@ -156,6 +207,8 @@ const settingsForm = $("#settings-form");
 const settingsCloseBtn = $("#settings-close-btn");
 const settingsCancelBtn = $("#settings-cancel-btn");
 const settingsSaveBtn = $("#settings-save-btn");
+const settingsTabButtons = [...document.querySelectorAll(".settings-tab-btn")];
+const settingsPanels = [...document.querySelectorAll(".settings-panel")];
 const settingsServerInput = $("#settings-ollama-server");
 const settingsPortInput = $("#settings-ollama-port");
 const settingsTimeoutInput = $("#settings-ollama-timeout");
@@ -166,6 +219,10 @@ const settingsHttpsCertInput = $("#settings-https-certfile");
 const settingsHttpsKeyInput = $("#settings-https-keyfile");
 const settingsHttpsPortInput = $("#settings-https-port");
 const settingsRemoteHttpModeInput = $("#settings-remote-http-mode");
+const settingsFfmpegPathInput = $("#settings-ffmpeg-path");
+const settingsProcessingReservedCoresInput = $("#settings-processing-reserved-cores");
+const settingsFfmpegThreadsInput = $("#settings-ffmpeg-threads");
+const settingsFfmpegHwaccelInput = $("#settings-ffmpeg-hwaccel");
 const settingsPromptInput = $("#settings-ollama-prompt");
 const settingsGroupPromptInput = $("#settings-ollama-group-prompt");
 const settingsAutoFreeTextEnabled = $("#settings-auto-free-text-enabled");

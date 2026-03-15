@@ -10,18 +10,22 @@ import json
 import asyncio
 import copy
 import ipaddress
+import mimetypes
 import subprocess
 import platform
 import shutil
 import threading
+import time
 import urllib.error
 import urllib.request
 import warnings
+from collections import deque
 from pathlib import Path
 from io import BytesIO
 from functools import partial
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse, HTMLResponse, PlainTextResponse
@@ -38,21 +42,31 @@ from tag2_captions import (
 )
 from tag2_images import (
     IMAGE_EXTENSIONS,
+    MEDIA_EXTENSIONS,
     PREVIEW_MAX_SIZE,
     THUMBNAIL_SIZES,
+    VIDEO_EXTENSIONS,
     _apply_real_crop,
+    _build_clip_output_path,
     _clear_thumbnail_cache_for_path,
-    _encode_image_for_ollama,
+    _clip_video_file,
+    _crop_video_file,
+    _encode_media_for_ollama,
+    _extract_video_frame,
     _generate_thumbnail,
+    _get_media_type_for_path,
     _get_crop_backup_dir,
     _get_crop_backup_path,
     _get_display_image_size,
     _get_image_crop,
     _get_thumbnail,
+    _is_image_path,
+    _is_video_path,
     _load_oriented_image,
     _normalize_crop_rect,
     _normalize_exif_bytes,
     _normalize_image_key,
+    _probe_video_info,
     _remove_real_crop,
     _render_image_bytes,
     _rotate_image,
@@ -60,6 +74,7 @@ from tag2_images import (
     _save_image_file,
 )
 from tag2_ollama import (
+    _apply_media_prompt_context,
     _auto_caption_sections,
     _auto_caption_sentences,
     _compose_ollama_host,
@@ -121,8 +136,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Thread pool for IO-bound thumbnail generation
-executor = ThreadPoolExecutor(max_workers=8)
+# Processing defaults aim to keep the UI responsive while using most available cores.
+HOST_CPU_COUNT = max(1, os.cpu_count() or 1)
+INITIAL_RESERVED_CORES = max(1, min(4, HOST_CPU_COUNT // 4 or 1))
+DEFAULT_EXECUTOR_WORKERS = max(1, min(16, HOST_CPU_COUNT - INITIAL_RESERVED_CORES))
+
+# Thread pool for thumbnail / preview generation.
+executor = ThreadPoolExecutor(max_workers=DEFAULT_EXECUTOR_WORKERS)
+video_job_lock = threading.Lock()
+video_job_pending: deque[str] = deque()
+video_job_registry: dict[str, dict] = {}
+video_job_recent: list[str] = []
+video_job_active_id: str | None = None
+video_job_wakeup = threading.Event()
+MAX_VIDEO_JOB_HISTORY = 24
 
 # In-memory thumbnail cache lives in `tag2_images`.
 
@@ -137,26 +164,30 @@ DEFAULT_HTTPS_CERTFILE = ""
 DEFAULT_HTTPS_KEYFILE = ""
 DEFAULT_HTTPS_PORT = 8900
 DEFAULT_REMOTE_HTTP_MODE = "redirect-to-https"
+DEFAULT_FFMPEG_PATH = ""
+DEFAULT_FFMPEG_THREADS = 0
+DEFAULT_FFMPEG_HWACCEL = "auto"
+DEFAULT_PROCESSING_RESERVED_CORES = INITIAL_RESERVED_CORES
 REMOTE_HTTP_MODES = {"allow", "redirect-to-https", "block"}
 DEFAULT_OLLAMA_PROMPT_TEMPLATE = (
-    "You are verifying a single image caption. "
+    "You are verifying a caption for one media item. "
     "Reply with exactly one word: YES or NO. "
-    "Reply YES only if the caption is clearly correct for the image. "
+    "Reply YES only if the caption is clearly correct for the media. "
     "Reply NO if it is wrong, uncertain, too specific, or not clearly visible.\n\n"
     "Caption: {caption}\n"
     "Answer:"
 )
 DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE = (
-    "You are selecting the single best caption for an image from a numbered list. "
+    "You are selecting the single best caption for one media item from a numbered list. "
     "Reply with exactly one number from 1 to {count}. "
-    "Pick the most likely correct caption for the image.\n\n"
+    "Pick the most likely correct caption for the media.\n\n"
     "Group: {group_name}\n"
     "{options}\n\n"
     "Answer:"
 )
 DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE = (
-    "You are improving an image caption file. The caption text below already covers known details and must not be repeated. "
-    "Look at the image and return only notable, important visual details that are still missing. "
+    "You are improving a media caption file. The caption text below already covers known details and must not be repeated. "
+    "Look at the media and return only notable, important visual details that are still missing. "
     "Return either NONE or one short line per missing detail, with no bullets or numbering.\n\n"
     "Current caption text:\n{caption_text}\n\n"
     "Answer:"
@@ -202,6 +233,10 @@ def _load_config() -> dict:
         "https_keyfile": DEFAULT_HTTPS_KEYFILE,
         "https_port": DEFAULT_HTTPS_PORT,
         "remote_http_mode": DEFAULT_REMOTE_HTTP_MODE,
+        "ffmpeg_path": DEFAULT_FFMPEG_PATH,
+        "ffmpeg_threads": DEFAULT_FFMPEG_THREADS,
+        "ffmpeg_hwaccel": DEFAULT_FFMPEG_HWACCEL,
+        "processing_reserved_cores": DEFAULT_PROCESSING_RESERVED_CORES,
         # Local Ollama server settings
         "ollama_server": DEFAULT_OLLAMA_SERVER,
         "ollama_port": DEFAULT_OLLAMA_PORT,
@@ -257,6 +292,260 @@ def _resolve_config_path(path_value: str | None) -> str:
     if os.path.isabs(raw_path):
         return raw_path
     return os.path.abspath(os.path.join(os.path.dirname(CONFIG_PATH), raw_path))
+
+
+def _get_ffmpeg_path(cfg: dict) -> str:
+    """Return the configured ffmpeg path override, if any."""
+    return str(cfg.get("ffmpeg_path") or "").strip()
+
+
+def _get_processing_reserved_cores(cfg: dict) -> int:
+    """Return how many CPU cores to keep free for responsiveness."""
+    try:
+        configured = int(cfg.get("processing_reserved_cores", DEFAULT_PROCESSING_RESERVED_CORES) or DEFAULT_PROCESSING_RESERVED_CORES)
+    except (TypeError, ValueError):
+        configured = DEFAULT_PROCESSING_RESERVED_CORES
+    return max(0, min(HOST_CPU_COUNT - 1, configured)) if HOST_CPU_COUNT > 1 else 0
+
+
+def _get_ffmpeg_threads(cfg: dict) -> int:
+    """Return the ffmpeg thread budget for one processing job."""
+    try:
+        configured = int(cfg.get("ffmpeg_threads", DEFAULT_FFMPEG_THREADS) or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    if configured > 0:
+        return max(1, configured)
+    return max(1, HOST_CPU_COUNT - _get_processing_reserved_cores(cfg))
+
+
+def _get_ffmpeg_hwaccel(cfg: dict) -> str:
+    """Return the ffmpeg hardware acceleration mode."""
+    mode = str(cfg.get("ffmpeg_hwaccel") or DEFAULT_FFMPEG_HWACCEL).strip().lower()
+    return mode if mode in {"auto", "off"} else DEFAULT_FFMPEG_HWACCEL
+
+
+def _get_tool_binary_name(base_name: str) -> str:
+    """Return the platform-appropriate binary file name."""
+    if os.name == "nt" and not base_name.lower().endswith(".exe"):
+        return f"{base_name}.exe"
+    return base_name
+
+
+def _resolve_ffmpeg_binaries(cfg: dict) -> tuple[str, str]:
+    """Resolve ffmpeg and ffprobe executable paths from config or PATH."""
+    configured = _get_ffmpeg_path(cfg)
+    ffmpeg_name = _get_tool_binary_name("ffmpeg")
+    ffprobe_name = _get_tool_binary_name("ffprobe")
+    if not configured:
+        return ffmpeg_name, ffprobe_name
+
+    resolved = _resolve_config_path(configured)
+    if os.path.isdir(resolved):
+        return os.path.join(resolved, ffmpeg_name), os.path.join(resolved, ffprobe_name)
+
+    ffmpeg_binary = resolved
+    ffprobe_binary = os.path.join(os.path.dirname(resolved), ffprobe_name) if os.path.dirname(resolved) else ffprobe_name
+    return ffmpeg_binary, ffprobe_binary
+
+
+def _build_media_entry(entry: Path) -> dict:
+    """Build a list response payload for a supported media file."""
+    stat = entry.stat()
+    caption_file = entry.with_suffix(".txt")
+    return {
+        "name": entry.name,
+        "path": str(entry),
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+        "has_caption": caption_file.exists(),
+        "media_type": _get_media_type_for_path(str(entry)),
+    }
+
+
+def _serialize_video_job(job: dict) -> dict:
+    """Return a client-safe video job payload."""
+    return {
+        "id": job.get("id"),
+        "type": job.get("type"),
+        "video_path": job.get("video_path"),
+        "folder": job.get("folder"),
+        "status": job.get("status"),
+        "progress": float(job.get("progress") or 0.0),
+        "message": job.get("message") or "",
+        "error": job.get("error") or "",
+        "output_path": job.get("output_path") or "",
+        "created_at": float(job.get("created_at") or 0.0),
+        "updated_at": float(job.get("updated_at") or 0.0),
+        "start_seconds": job.get("start_seconds"),
+        "end_seconds": job.get("end_seconds"),
+    }
+
+
+def _update_video_job(job_id: str, **patch) -> None:
+    """Update a queued video job in the registry."""
+    with video_job_lock:
+        job = video_job_registry.get(job_id)
+        if not job:
+            return
+        job.update(patch)
+        job["updated_at"] = time.time()
+
+
+def _record_recent_video_job_locked(job_id: str) -> None:
+    """Track a recently finished job and prune old history."""
+    if job_id in video_job_recent:
+        video_job_recent.remove(job_id)
+    video_job_recent.insert(0, job_id)
+    while len(video_job_recent) > MAX_VIDEO_JOB_HISTORY:
+        stale_id = video_job_recent.pop()
+        if stale_id == video_job_active_id or stale_id in video_job_pending:
+            continue
+        video_job_registry.pop(stale_id, None)
+
+
+def _snapshot_video_jobs() -> dict:
+    """Return a consistent snapshot of queued video job state."""
+    with video_job_lock:
+        active_job = video_job_registry.get(video_job_active_id) if video_job_active_id else None
+        queued_jobs = [
+            _serialize_video_job(video_job_registry[job_id])
+            for job_id in list(video_job_pending)
+            if job_id in video_job_registry
+        ]
+        recent_jobs = [
+            _serialize_video_job(video_job_registry[job_id])
+            for job_id in video_job_recent
+            if job_id in video_job_registry
+        ]
+        completed_count = sum(1 for job in video_job_registry.values() if job.get("status") == "completed")
+        failed_count = sum(1 for job in video_job_registry.values() if job.get("status") == "error")
+        total_count = completed_count + failed_count + len(queued_jobs) + (1 if active_job else 0)
+        return {
+            "active_job": _serialize_video_job(active_job) if active_job else None,
+            "queued_jobs": queued_jobs,
+            "recent_jobs": recent_jobs,
+            "summary": {
+                "total": total_count,
+                "completed": completed_count,
+                "failed": failed_count,
+                "queued": len(queued_jobs),
+                "running": 1 if active_job else 0,
+            },
+        }
+
+
+def _run_video_job(job_id: str) -> None:
+    """Execute a queued video crop or clip job."""
+    job = video_job_registry.get(job_id)
+    if not job:
+        return
+
+    cfg = _load_config()
+    ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+    ffmpeg_threads = _get_ffmpeg_threads(cfg)
+    ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
+
+    def on_progress(progress_value: float, message: str):
+        _update_video_job(job_id, progress=max(0.0, min(1.0, progress_value)), message=message)
+
+    if job.get("type") == "crop":
+        result = _crop_video_file(
+            job["video_path"],
+            job["crop"],
+            job.get("output_path"),
+            ffmpeg_path,
+            ffprobe_path,
+            ffmpeg_threads,
+            ffmpeg_hwaccel,
+            on_progress=on_progress,
+        )
+        _update_video_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message="Crop complete",
+            output_path=result.get("output_path") or job.get("output_path") or "",
+            result=result,
+        )
+        return
+
+    if job.get("type") == "clip":
+        result = _clip_video_file(
+            job["video_path"],
+            job["start_seconds"],
+            job["end_seconds"],
+            job.get("crop"),
+            job.get("output_path"),
+            ffmpeg_path,
+            ffprobe_path,
+            ffmpeg_threads,
+            ffmpeg_hwaccel,
+            on_progress=on_progress,
+        )
+        _update_video_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message="Clip complete",
+            output_path=result.get("output_path") or job.get("output_path") or "",
+            result=result,
+        )
+        return
+
+    raise RuntimeError("Unsupported video job type")
+
+
+def _video_job_worker_loop() -> None:
+    """Process queued video jobs sequentially in the background."""
+    global video_job_active_id
+    while True:
+        video_job_wakeup.wait()
+        while True:
+            with video_job_lock:
+                if not video_job_pending:
+                    video_job_active_id = None
+                    video_job_wakeup.clear()
+                    break
+                job_id = video_job_pending.popleft()
+                job = video_job_registry.get(job_id)
+                if not job:
+                    continue
+                video_job_active_id = job_id
+                job["status"] = "running"
+                job["progress"] = 0.0
+                job["message"] = "Queued job started"
+                job["error"] = ""
+                job["updated_at"] = time.time()
+            try:
+                _run_video_job(job_id)
+            except Exception as exc:
+                _update_video_job(job_id, status="error", error=str(exc), message="Job failed")
+            finally:
+                with video_job_lock:
+                    _record_recent_video_job_locked(job_id)
+                    video_job_active_id = None
+
+
+video_job_worker = threading.Thread(target=_video_job_worker_loop, name="tag2-video-jobs", daemon=True)
+video_job_worker.start()
+
+
+def _enqueue_video_job(job: dict) -> dict:
+    """Queue a video job for background processing."""
+    with video_job_lock:
+        job["id"] = str(uuid4())
+        now = time.time()
+        job["status"] = "queued"
+        job["progress"] = 0.0
+        job["message"] = "Queued"
+        job["error"] = ""
+        job["created_at"] = now
+        job["updated_at"] = now
+        video_job_registry[job["id"]] = job
+        video_job_pending.append(job["id"])
+        video_job_wakeup.set()
+        return _serialize_video_job(job)
 
 
 def _has_https_config(cfg: dict) -> bool:
@@ -411,22 +700,14 @@ def _apply_free_text_result_to_live_caption(
 
 @app.get("/api/list-images")
 async def list_images(folder: str = Query(...)):
-    """List all image files in the given folder."""
+    """List all supported media files in the given folder."""
     folder_path = _resolve_folder_path(folder)
 
     images = []
     try:
         for entry in sorted(folder_path.iterdir()):
-            if entry.is_file() and entry.suffix.lower() in IMAGE_EXTENSIONS:
-                stat = entry.stat()
-                caption_file = entry.with_suffix(".txt")
-                images.append({
-                    "name": entry.name,
-                    "path": str(entry),
-                    "size": stat.st_size,
-                    "mtime": stat.st_mtime,
-                    "has_caption": caption_file.exists(),
-                })
+            if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS:
+                images.append(_build_media_entry(entry))
     except PermissionError:
         raise HTTPException(status_code=403, detail="Permission denied")
 
@@ -438,7 +719,7 @@ async def upload_images(
     folder: str = Form(...),
     files: Optional[list[UploadFile]] = File(default=None),
 ):
-    """Upload image files into the currently loaded folder."""
+    """Upload supported media files into the currently loaded folder."""
     folder_path = _resolve_folder_path(folder)
     uploads = [upload for upload in (files or []) if upload is not None]
     if not uploads:
@@ -451,10 +732,10 @@ async def upload_images(
         try:
             original_name = _sanitize_upload_filename(upload.filename or "")
             suffix = Path(original_name).suffix.lower()
-            if suffix not in IMAGE_EXTENSIONS:
+            if suffix not in MEDIA_EXTENSIONS:
                 skipped.append({
                     "name": original_name,
-                    "reason": "Unsupported image file",
+                    "reason": "Unsupported media file",
                 })
                 continue
 
@@ -465,15 +746,12 @@ async def upload_images(
                 shutil.copyfileobj(upload.file, handle)
 
             _clear_thumbnail_cache_for_path(str(destination))
-            stat = destination.stat()
-            uploaded.append({
-                "name": destination.name,
-                "path": str(destination),
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
+            media_entry = _build_media_entry(destination)
+            media_entry.update({
                 "source_name": original_name,
                 "renamed": destination.name != original_name,
             })
+            uploaded.append(media_entry)
         except HTTPException:
             raise
         except Exception as exc:
@@ -497,19 +775,40 @@ async def upload_images(
 
 @app.get("/api/thumbnail")
 async def get_thumbnail(path: str = Query(...), size: int = Query(default=256)):
-    """Return a thumbnail for the given image path."""
+    """Return a thumbnail for the given media path."""
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="File not found")
+    if _get_media_type_for_path(path) not in {"image", "video"}:
+        raise HTTPException(status_code=400, detail="Unsupported media file")
 
     # Clamp size to nearest available
     actual_size = min(THUMBNAIL_SIZES, key=lambda s: abs(s - size))
     loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(executor, _get_thumbnail, path, actual_size, None)
+    cfg = _load_config()
+    ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+    ffmpeg_threads = _get_ffmpeg_threads(cfg)
+    ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
+    try:
+        data = await loop.run_in_executor(executor, _get_thumbnail, path, actual_size, None, ffmpeg_path, ffprobe_path, ffmpeg_threads, ffmpeg_hwaccel)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     if not data:
         raise HTTPException(status_code=500, detail="Failed to generate thumbnail")
 
     return StreamingResponse(BytesIO(data), media_type="image/jpeg")
+
+
+@app.get("/api/media")
+async def get_media(path: str = Query(...)):
+    """Serve the original media file with an inferred content type."""
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if _get_media_type_for_path(path) not in {"image", "video"}:
+        raise HTTPException(status_code=400, detail="Unsupported media file")
+
+    media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type)
 
 
 @app.get("/api/image")
@@ -525,15 +824,27 @@ async def get_image(path: str = Query(...)):
 
 @app.get("/api/preview")
 async def get_preview(path: str = Query(...), ignore_crop: bool = Query(default=False)):
-    """Serve a preview-quality image (downscaled to max 2048px edge, JPEG).
-    Much faster than serving the full-res file for large images."""
+    """Serve a preview-quality image for a supported media file."""
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="File not found")
 
+    media_type = _get_media_type_for_path(path)
+    if media_type == "other":
+        raise HTTPException(status_code=400, detail="Unsupported media file")
+
     loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(executor, _get_thumbnail, path, PREVIEW_MAX_SIZE, None)
+    cfg = _load_config()
+    ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+    ffmpeg_threads = _get_ffmpeg_threads(cfg)
+    ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
+    try:
+        data = await loop.run_in_executor(executor, _get_thumbnail, path, PREVIEW_MAX_SIZE, None, ffmpeg_path, ffprobe_path, ffmpeg_threads, ffmpeg_hwaccel)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     if not data:
+        if media_type == "video":
+            raise HTTPException(status_code=500, detail="Failed to generate video preview")
         rendered, media_type = await loop.run_in_executor(executor, _render_image_bytes, path, None, PREVIEW_MAX_SIZE, True)
         return StreamingResponse(BytesIO(rendered), media_type=media_type)
 
@@ -542,6 +853,148 @@ async def get_preview(path: str = Query(...), ignore_crop: bool = Query(default=
         media_type="image/jpeg",
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+@app.get("/api/video/meta")
+async def get_video_meta(path: str = Query(...)):
+    """Return basic metadata for a video file."""
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Video file not found")
+    if not _is_video_path(path):
+        raise HTTPException(status_code=400, detail="Unsupported video file")
+
+    cfg = _load_config()
+    _, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+    try:
+        metadata = _probe_video_info(path, ffprobe_path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {
+        "path": path,
+        "name": Path(path).name,
+        "width": int(metadata.get("width") or 0),
+        "height": int(metadata.get("height") or 0),
+        "duration": float(metadata.get("duration") or 0.0),
+    }
+
+
+@app.get("/api/video/frame")
+async def get_video_frame(
+    path: str = Query(...),
+    time_seconds: float = Query(default=0.0),
+    width: int = Query(default=160),
+    height: int = Query(default=90),
+):
+    """Return a single JPEG frame from a video at a selected timestamp."""
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Video file not found")
+    if not _is_video_path(path):
+        raise HTTPException(status_code=400, detail="Unsupported video file")
+
+    cfg = _load_config()
+    ffmpeg_path, _ = _resolve_ffmpeg_binaries(cfg)
+    ffmpeg_threads = _get_ffmpeg_threads(cfg)
+    ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
+    loop = asyncio.get_event_loop()
+    try:
+        data = await loop.run_in_executor(
+            executor,
+            _extract_video_frame,
+            path,
+            max(0.0, float(time_seconds or 0.0)),
+            max(32, min(640, int(width or 160))),
+            max(18, min(360, int(height or 90))),
+            ffmpeg_path,
+            ffmpeg_threads,
+            ffmpeg_hwaccel,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return StreamingResponse(
+        BytesIO(data),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+class VideoCropJobRequest(BaseModel):
+    video_path: str
+    crop: dict
+
+
+class VideoClipJobRequest(BaseModel):
+    video_path: str
+    start_seconds: float
+    end_seconds: float
+    crop: Optional[dict] = None
+
+
+@app.get("/api/video/jobs/status")
+async def get_video_job_status():
+    """Return the current queued video job state."""
+    return _snapshot_video_jobs()
+
+
+@app.post("/api/video/jobs/crop")
+async def enqueue_video_crop_job(data: VideoCropJobRequest):
+    """Queue a video crop job."""
+    video_path = os.path.abspath(os.path.normpath(str(data.video_path or "").strip()))
+    if not os.path.isfile(video_path):
+        raise HTTPException(status_code=404, detail="Video file not found")
+    if not _is_video_path(video_path):
+        raise HTTPException(status_code=400, detail="Unsupported video file")
+    if not isinstance(data.crop, dict):
+        raise HTTPException(status_code=400, detail="Crop payload is required")
+
+    queued = _enqueue_video_job({
+        "type": "crop",
+        "video_path": video_path,
+        "folder": str(Path(video_path).parent),
+        "crop": data.crop,
+        "output_path": str(_get_unique_upload_path(
+            Path(video_path).parent,
+            Path(video_path).with_name(
+                f"{Path(video_path).stem}__crop_{max(1, int(round(float(data.crop.get('w') or 1))))}x{max(1, int(round(float(data.crop.get('h') or 1))))}_{max(0, int(round(float(data.crop.get('x') or 0))))}-{max(0, int(round(float(data.crop.get('y') or 0))))}_{str(data.crop.get('ratio') or 'crop').replace(':', '-').replace('/', '-')}{Path(video_path).suffix or '.mp4'}"
+            ).name,
+        )),
+    })
+    return {"ok": True, "job": queued}
+
+
+@app.post("/api/video/jobs/clip")
+async def enqueue_video_clip_job(data: VideoClipJobRequest):
+    """Queue a video clip job."""
+    video_path = os.path.abspath(os.path.normpath(str(data.video_path or "").strip()))
+    if not os.path.isfile(video_path):
+        raise HTTPException(status_code=404, detail="Video file not found")
+    if not _is_video_path(video_path):
+        raise HTTPException(status_code=400, detail="Unsupported video file")
+
+    try:
+        start_seconds = max(0.0, float(data.start_seconds or 0.0))
+        end_seconds = max(0.0, float(data.end_seconds or 0.0))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid clip time range") from exc
+
+    if end_seconds <= start_seconds:
+        raise HTTPException(status_code=400, detail="Clip end time must be greater than start time")
+
+    crop = data.crop if isinstance(data.crop, dict) else None
+    folder_path = Path(video_path).parent
+    clip_name = Path(_build_clip_output_path(video_path, start_seconds, end_seconds, crop)).name
+    output_path = str(_get_unique_upload_path(folder_path, clip_name))
+    queued = _enqueue_video_job({
+        "type": "clip",
+        "video_path": video_path,
+        "folder": str(folder_path),
+        "start_seconds": start_seconds,
+        "end_seconds": end_seconds,
+        "crop": crop,
+        "output_path": output_path,
+    })
+    return {"ok": True, "job": queued}
 
 
 class BatchCaptionUpdate(BaseModel):
@@ -667,8 +1120,8 @@ def _prepare_clone_plan(source_folder: str, requested_name: str, image_paths: li
             raise HTTPException(status_code=400, detail=f"Image not found: {candidate}")
         if os.path.normcase(str(candidate.parent)) != normalized_source:
             raise HTTPException(status_code=400, detail="Selected images must belong to the current folder")
-        if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
-            raise HTTPException(status_code=400, detail=f"Unsupported image file: {candidate.name}")
+        if candidate.suffix.lower() not in MEDIA_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Unsupported media file: {candidate.name}")
         if candidate not in normalized_selected:
             normalized_selected.append(candidate)
 
@@ -688,11 +1141,11 @@ def _prepare_clone_plan(source_folder: str, requested_name: str, image_paths: li
         for entry in sorted(source_path.iterdir(), key=lambda item: item.name.lower()):
             dest_entry = target_path / entry.name
             copy_items.append((entry, dest_entry))
-            if entry.is_file() and entry.suffix.lower() in IMAGE_EXTENSIONS:
+            if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS:
                 copied_image_count += 1
 
     if copied_image_count == 0:
-        raise HTTPException(status_code=400, detail="No images available to clone")
+        raise HTTPException(status_code=400, detail="No media files available to clone")
 
     return {
         "source_path": source_path,
@@ -717,10 +1170,10 @@ def _copy_folder_config_for_clone(source_folder: str, target_folder: str):
 
 
 def _iter_folder_image_entries(folder: str):
-    """Yield image files in a folder."""
+    """Yield supported media files in a folder."""
     folder_path = Path(folder)
     for entry in folder_path.iterdir():
-        if entry.is_file() and entry.suffix.lower() in IMAGE_EXTENSIONS:
+        if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS:
             yield entry
 
 
@@ -764,6 +1217,8 @@ async def get_crop(path: str = Query(...)):
     """Get whether an image currently has a reversible real crop applied."""
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Image file not found")
+    if not _is_image_path(path):
+        raise HTTPException(status_code=400, detail="Crop is only available for image files")
     return {
         "path": path,
         "crop": _get_image_crop(path),
@@ -775,6 +1230,8 @@ async def save_crop(data: CropUpdate):
     """Apply or remove a real crop on the image file."""
     if not os.path.isfile(data.image_path):
         raise HTTPException(status_code=404, detail="Image file not found")
+    if not _is_image_path(data.image_path):
+        raise HTTPException(status_code=400, detail="Crop is only available for image files")
     cfg = _load_config()
     try:
         if data.crop is None:
@@ -796,6 +1253,8 @@ async def rotate_image(data: RotateUpdate):
     """Rotate an image by 90 degrees left or right."""
     if not os.path.isfile(data.image_path):
         raise HTTPException(status_code=404, detail="Image file not found")
+    if not _is_image_path(data.image_path):
+        raise HTTPException(status_code=400, detail="Rotate is only available for image files")
     try:
         crop_state = _rotate_image(data.image_path, data.direction)
     except ValueError as e:
@@ -810,7 +1269,7 @@ async def rotate_image(data: RotateUpdate):
 
 @app.post("/api/images/delete")
 async def delete_images(data: BatchDeleteImagesRequest):
-    """Delete image files and their local sidecar artifacts."""
+    """Delete supported media files and their local sidecar artifacts."""
     image_paths = [str(path or "").strip() for path in data.image_paths]
     image_paths = [path for path in image_paths if path]
     if not image_paths:
@@ -826,21 +1285,21 @@ async def delete_images(data: BatchDeleteImagesRequest):
         normalized_path = os.path.abspath(os.path.normpath(image_path))
         path_obj = Path(normalized_path)
 
-        if path_obj.suffix.lower() not in IMAGE_EXTENSIONS:
-            errors.append({"path": normalized_path, "error": "Unsupported image file"})
+        if path_obj.suffix.lower() not in MEDIA_EXTENSIONS:
+            errors.append({"path": normalized_path, "error": "Unsupported media file"})
             continue
         if not path_obj.is_file():
             errors.append({"path": normalized_path, "error": "File not found"})
             continue
 
         caption_path = _get_caption_path(normalized_path)
-        backup_path = _get_crop_backup_path(normalized_path)
+        backup_path = _get_crop_backup_path(normalized_path) if _is_image_path(normalized_path) else ""
 
         try:
             path_obj.unlink()
             if caption_path.exists():
                 caption_path.unlink()
-            if os.path.isfile(backup_path):
+            if backup_path and os.path.isfile(backup_path):
                 os.remove(backup_path)
             _clear_thumbnail_cache_for_path(normalized_path)
             if image_crops is not None and image_crops.pop(_normalize_image_key(normalized_path), None) is not None:
@@ -1009,7 +1468,7 @@ async def rename_caption_preset(update: RenameCaptionPresetUpdate):
     headers = _all_headers_from_sections(sections)
     folder_path = Path(folder)
     for entry in folder_path.iterdir():
-        if not entry.is_file() or entry.suffix.lower() not in IMAGE_EXTENSIONS:
+        if not entry.is_file() or entry.suffix.lower() not in MEDIA_EXTENSIONS:
             continue
         caption_path = entry.with_suffix(".txt")
         if not caption_path.exists():
@@ -1055,7 +1514,7 @@ async def rename_section(update: RenameSectionUpdate):
 
     folder_path = Path(folder)
     for entry in folder_path.iterdir():
-        if not entry.is_file() or entry.suffix.lower() not in IMAGE_EXTENSIONS:
+        if not entry.is_file() or entry.suffix.lower() not in MEDIA_EXTENSIONS:
             continue
         caption_path = entry.with_suffix(".txt")
         if not caption_path.exists():
@@ -1135,9 +1594,9 @@ async def delete_section(update: DeleteSectionUpdate):
 
 @app.post("/api/caption/save-free-text")
 async def save_free_text(data: BatchFreeTextUpdate):
-    """Save free text for a single image, preserving predefined sentences."""
+    """Save free text for a single media file, preserving predefined sentences."""
     if not os.path.isfile(data.image_path):
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="Media not found")
 
     # We need to know which lines are predefined to preserve them
     # Client will send the sentences query param
@@ -1152,6 +1611,8 @@ class SaveCaptionFull(BaseModel):
 
 
 class AutoCaptionRequest(BaseModel):
+    media_path: Optional[str] = None
+    media_paths: Optional[list[str]] = None
     image_path: Optional[str] = None
     image_paths: Optional[list[str]] = None
     model: Optional[str] = None
@@ -1219,9 +1680,9 @@ def _resolve_caption_targets(
 
 @app.post("/api/caption/save")
 async def save_caption(data: SaveCaptionFull):
-    """Full save of caption data for one image."""
+    """Full save of caption data for one media file."""
     if not os.path.isfile(data.image_path):
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="Media not found")
     # Load sections config for proper formatting
     cfg = _load_config()
     folder = str(Path(data.image_path).parent)
@@ -1233,10 +1694,12 @@ async def save_caption(data: SaveCaptionFull):
 
 @app.post("/api/auto-caption")
 async def auto_caption(data: AutoCaptionRequest):
-    """Ask a local Ollama vision model to verify each configured caption."""
-    image_path = data.image_path or (data.image_paths[0] if data.image_paths else None)
-    if not image_path or not os.path.isfile(image_path):
-        raise HTTPException(status_code=404, detail="Image not found")
+    """Ask a local Ollama vision model to verify each configured caption for one media file."""
+    media_path = data.media_path or (data.media_paths[0] if data.media_paths else None) or data.image_path or (data.image_paths[0] if data.image_paths else None)
+    if not media_path or not os.path.isfile(media_path):
+        raise HTTPException(status_code=404, detail="Media not found")
+    if _get_media_type_for_path(media_path) not in {"image", "video"}:
+        raise HTTPException(status_code=400, detail="Unsupported media file for auto caption")
 
     cfg = _load_config()
     model = (data.model or _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL)).strip()
@@ -1251,7 +1714,18 @@ async def auto_caption(data: AutoCaptionRequest):
     if not model:
         raise HTTPException(status_code=400, detail="No Ollama model configured")
 
-    folder = str(Path(image_path).parent)
+    ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+    ffmpeg_threads = _get_ffmpeg_threads(cfg)
+    ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
+    encode_media_call = partial(
+        _encode_media_for_ollama,
+        ffmpeg_path=ffmpeg_path,
+        ffprobe_path=ffprobe_path,
+        thread_count=ffmpeg_threads,
+        hwaccel_mode=ffmpeg_hwaccel,
+    )
+
+    folder = str(Path(media_path).parent)
     sections = _get_folder_sections(cfg, folder)
     all_sentences = _all_sentences_from_sections(sections)
     if not all_sentences and not free_text_only:
@@ -1272,7 +1746,7 @@ async def auto_caption(data: AutoCaptionRequest):
         raise HTTPException(status_code=400, detail="Invalid target")
 
     headers = _all_headers_from_sections(sections)
-    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
+    enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
     results: list[dict] = []
     is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "sentence"})
 
@@ -1284,9 +1758,9 @@ async def auto_caption(data: AutoCaptionRequest):
                     _auto_caption_sections,
                     host,
                     model,
-                    image_path,
+                    media_path,
                     sections,
-                    encode_image_func=_encode_image_for_ollama,
+                    encode_image_func=encode_media_call,
                     generate_func=_ollama_generate,
                     prompt_template=prompt_template,
                     group_prompt_template=group_prompt_template,
@@ -1297,18 +1771,18 @@ async def auto_caption(data: AutoCaptionRequest):
                     auto_caption_call,
                 )
                 free_text = free_text if is_scoped else ""
-                if not os.path.isfile(image_path):
-                    raise FileNotFoundError(f"Image not found: {image_path}")
-                _write_caption_file(image_path, enabled, free_text, sections)
+                if not os.path.isfile(media_path):
+                    raise FileNotFoundError(f"Media not found: {media_path}")
+                _write_caption_file(media_path, enabled, free_text, sections)
             else:
-                image_b64 = await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)
+                media_payload = await loop.run_in_executor(executor, encode_media_call, media_path)
                 for target in targets or []:
                     if target["type"] == "sentence":
                         sentence = target["sentence"]
                         payload = {
                             "model": model,
-                            "prompt": _ollama_prompt_for_sentence(sentence, prompt_template),
-                            "images": [image_b64],
+                            "prompt": _apply_media_prompt_context(_ollama_prompt_for_sentence(sentence, prompt_template), media_path),
+                            "images": media_payload,
                             "stream": False,
                             "options": {"temperature": 0},
                         }
@@ -1316,7 +1790,7 @@ async def auto_caption(data: AutoCaptionRequest):
                         raw_answer = str(response.get("response") or "").strip()
                         is_match = _parse_ollama_yes_no(raw_answer)
                         enabled, free_text = _apply_sentence_result_to_live_caption(
-                            image_path,
+                            media_path,
                             sentence,
                             is_match,
                             all_sentences,
@@ -1337,8 +1811,8 @@ async def auto_caption(data: AutoCaptionRequest):
                     group_sentences = target["sentences"]
                     payload = {
                         "model": model,
-                        "prompt": _ollama_prompt_for_group(target.get("group_name", ""), group_sentences, group_prompt_template),
-                        "images": [image_b64],
+                        "prompt": _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_sentences, group_prompt_template), media_path),
+                        "images": media_payload,
                         "stream": False,
                         "options": {"temperature": 0},
                     }
@@ -1348,7 +1822,7 @@ async def auto_caption(data: AutoCaptionRequest):
                     selected_sentence = group_sentences[selection_index - 1] if selection_index else None
                     selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
                     enabled, free_text = _apply_group_result_to_live_caption(
-                        image_path,
+                        media_path,
                         group_sentences,
                         selected_sentence,
                         all_sentences,
@@ -1370,23 +1844,23 @@ async def auto_caption(data: AutoCaptionRequest):
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
         except FileNotFoundError:
-            raise HTTPException(status_code=409, detail="Image was deleted during auto caption") from None
+            raise HTTPException(status_code=409, detail="Media was deleted during auto caption") from None
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Auto caption failed: {e}") from e
 
     free_text_model_output = ""
     added_free_text_lines: list[str] = []
     if enable_free_text:
-        enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
+        enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
         caption_text = _build_caption_text(enabled, free_text, sections)
         try:
             suggest_free_text_call = partial(
                 _suggest_free_text,
                 host,
                 model,
-                image_path,
+                media_path,
                 caption_text,
-                encode_image_func=_encode_image_for_ollama,
+                encode_image_func=encode_media_call,
                 generate_func=_ollama_generate,
                 prompt_template=free_text_prompt_template,
                 timeout=timeout_seconds,
@@ -1396,7 +1870,7 @@ async def auto_caption(data: AutoCaptionRequest):
                 suggest_free_text_call,
             )
             enabled, free_text, added_free_text_lines = _apply_free_text_result_to_live_caption(
-                image_path,
+                media_path,
                 free_text_model_output,
                 all_sentences,
                 headers,
@@ -1406,11 +1880,11 @@ async def auto_caption(data: AutoCaptionRequest):
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
         except FileNotFoundError:
-            raise HTTPException(status_code=409, detail="Image was deleted during auto caption") from None
+            raise HTTPException(status_code=409, detail="Media was deleted during auto caption") from None
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Auto caption free-text step failed: {e}") from e
 
-    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
+    enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
     return {
         "ok": True,
         "model": model,
@@ -1431,10 +1905,10 @@ async def auto_caption(data: AutoCaptionRequest):
 
 @app.post("/api/auto-caption/stream")
 async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
-    """Stream real-time auto-caption progress for one or more images as NDJSON."""
-    image_paths = data.image_paths or ([data.image_path] if data.image_path else [])
-    if not image_paths:
-        raise HTTPException(status_code=400, detail="No images provided")
+    """Stream real-time auto-caption progress for one or more media files as NDJSON."""
+    media_paths = data.media_paths or data.image_paths or ([data.media_path] if data.media_path else []) or ([data.image_path] if data.image_path else [])
+    if not media_paths:
+        raise HTTPException(status_code=400, detail="No media provided")
 
     cfg = _load_config()
     model = (data.model or _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL)).strip()
@@ -1449,6 +1923,17 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
     if not model:
         raise HTTPException(status_code=400, detail="No Ollama model configured")
 
+    ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+    ffmpeg_threads = _get_ffmpeg_threads(cfg)
+    ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
+    encode_media_call = partial(
+        _encode_media_for_ollama,
+        ffmpeg_path=ffmpeg_path,
+        ffprobe_path=ffprobe_path,
+        thread_count=ffmpeg_threads,
+        hwaccel_mode=ffmpeg_hwaccel,
+    )
+
     def _event_bytes(payload: dict) -> bytes:
         return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
@@ -1458,7 +1943,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
         total_errors = 0
         yield _event_bytes({
             "type": "start",
-            "count": len(image_paths),
+            "count": len(media_paths),
             "model": model,
             "host": host,
             "group_prompt_template": group_prompt_template,
@@ -1467,20 +1952,24 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
             "timeout_seconds": timeout_seconds,
         })
 
-        for image_path in image_paths:
+        for media_path in media_paths:
             if await request.is_disconnected():
                 break
-            if not os.path.isfile(image_path):
+            if not os.path.isfile(media_path):
                 total_errors += 1
-                yield _event_bytes({"type": "error", "path": image_path, "message": "Image not found"})
+                yield _event_bytes({"type": "error", "path": media_path, "message": "Media not found"})
+                continue
+            if _get_media_type_for_path(media_path) not in {"image", "video"}:
+                total_errors += 1
+                yield _event_bytes({"type": "error", "path": media_path, "message": "Unsupported media file for auto caption"})
                 continue
 
-            folder = str(Path(image_path).parent)
+            folder = str(Path(media_path).parent)
             sections = _get_folder_sections(cfg, folder)
             all_sentences = _all_sentences_from_sections(sections)
             if not all_sentences and not free_text_only:
                 total_errors += 1
-                yield _event_bytes({"type": "error", "path": image_path, "message": "No captions configured for this folder"})
+                yield _event_bytes({"type": "error", "path": media_path, "message": "No captions configured for this folder"})
                 continue
 
             targets, target_scope = _resolve_caption_targets(
@@ -1498,18 +1987,18 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                     message = "Invalid target group"
                 elif data.target_section_index is not None:
                     message = "Invalid target section"
-                yield _event_bytes({"type": "error", "path": image_path, "message": message})
+                yield _event_bytes({"type": "error", "path": media_path, "message": message})
                 continue
 
             headers = _all_headers_from_sections(sections)
-            enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
+            enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
             results = []
-            image_b64 = await loop.run_in_executor(executor, _encode_image_for_ollama, image_path)
+            media_payload = await loop.run_in_executor(executor, encode_media_call, media_path)
 
             total_targets = 0 if free_text_only else len(targets or [])
             yield _event_bytes({
                 "type": "image-start",
-                "path": image_path,
+                "path": media_path,
                 "total_sentences": len(all_sentences),
                 "total_targets": total_targets,
                 "free_text_only": free_text_only,
@@ -1527,8 +2016,8 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             sentence = target["sentence"]
                             payload = {
                                 "model": model,
-                                "prompt": _ollama_prompt_for_sentence(sentence, prompt_template),
-                                "images": [image_b64],
+                                "prompt": _apply_media_prompt_context(_ollama_prompt_for_sentence(sentence, prompt_template), media_path),
+                                "images": media_payload,
                                 "stream": False,
                                 "options": {"temperature": 0},
                             }
@@ -1536,7 +2025,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             raw_answer = str(response.get("response") or "").strip()
                             is_match = _parse_ollama_yes_no(raw_answer)
                             enabled, free_text = _apply_sentence_result_to_live_caption(
-                                image_path,
+                                media_path,
                                 sentence,
                                 is_match,
                                 all_sentences,
@@ -1547,7 +2036,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             results.append(result)
                             yield _event_bytes({
                                 "type": "caption-check",
-                                "path": image_path,
+                                "path": media_path,
                                 "index": index,
                                 "total": total_targets,
                                 "sentence": sentence,
@@ -1561,8 +2050,8 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                         group_sentences = target["sentences"]
                         payload = {
                             "model": model,
-                            "prompt": _ollama_prompt_for_group(target.get("group_name", ""), group_sentences, group_prompt_template),
-                            "images": [image_b64],
+                            "prompt": _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_sentences, group_prompt_template), media_path),
+                            "images": media_payload,
                             "stream": False,
                             "options": {"temperature": 0},
                         }
@@ -1572,7 +2061,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                         selected_sentence = group_sentences[selection_index - 1] if selection_index else None
                         selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
                         enabled, free_text = _apply_group_result_to_live_caption(
-                            image_path,
+                            media_path,
                             group_sentences,
                             selected_sentence,
                             all_sentences,
@@ -1593,7 +2082,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                         results.append(result)
                         yield _event_bytes({
                             "type": "group-selection",
-                            "path": image_path,
+                            "path": media_path,
                             "index": index,
                             "total": total_targets,
                             "section_index": target.get("section_index"),
@@ -1614,19 +2103,19 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                     if await request.is_disconnected():
                         return
                     is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "sentence"})
-                    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
+                    enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
                     caption_text = _build_caption_text(enabled, free_text, sections)
                     free_payload = {
                         "model": model,
-                        "prompt": _ollama_prompt_for_free_text(caption_text, free_text_prompt_template),
-                        "images": [image_b64],
+                        "prompt": _apply_media_prompt_context(_ollama_prompt_for_free_text(caption_text, free_text_prompt_template), media_path),
+                        "images": media_payload,
                         "stream": False,
                         "options": {"temperature": 0},
                     }
                     response = await loop.run_in_executor(executor, _ollama_generate, host, free_payload, timeout_seconds)
                     free_text_model_output = str(response.get("response") or "").strip()
                     enabled, free_text, added_free_text_lines = _apply_free_text_result_to_live_caption(
-                        image_path,
+                        media_path,
                         free_text_model_output,
                         all_sentences,
                         headers,
@@ -1635,18 +2124,18 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                     )
                     yield _event_bytes({
                         "type": "free-text",
-                        "path": image_path,
+                        "path": media_path,
                         "answer": free_text_model_output,
                         "enabled_sentences": enabled,
                         "free_text": free_text,
                         "added_lines": added_free_text_lines,
                     })
 
-                enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
+                enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
                 total_processed += 1
                 yield _event_bytes({
                     "type": "image-complete",
-                    "path": image_path,
+                    "path": media_path,
                     "free_text_only": free_text_only,
                     "enabled_sentences": enabled,
                     "free_text": free_text,
@@ -1654,19 +2143,19 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 })
             except RuntimeError as e:
                 total_errors += 1
-                yield _event_bytes({"type": "error", "path": image_path, "message": f"Ollama error: {e}"})
+                yield _event_bytes({"type": "error", "path": media_path, "message": f"Ollama error: {e}"})
             except FileNotFoundError:
                 total_errors += 1
-                yield _event_bytes({"type": "error", "path": image_path, "message": "Image was deleted during auto caption"})
+                yield _event_bytes({"type": "error", "path": media_path, "message": "Media was deleted during auto caption"})
             except Exception as e:
                 total_errors += 1
-                yield _event_bytes({"type": "error", "path": image_path, "message": f"Auto caption failed: {e}"})
+                yield _event_bytes({"type": "error", "path": media_path, "message": f"Auto caption failed: {e}"})
 
         yield _event_bytes({
             "type": "done",
             "processed": total_processed,
             "errors": total_errors,
-            "count": len(image_paths),
+            "count": len(media_paths),
         })
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
@@ -1732,6 +2221,10 @@ class SettingsUpdate(BaseModel):
     https_keyfile: Optional[str] = None
     https_port: Optional[int] = None
     remote_http_mode: Optional[str] = None
+    ffmpeg_path: Optional[str] = None
+    ffmpeg_threads: Optional[int] = None
+    ffmpeg_hwaccel: Optional[str] = None
+    processing_reserved_cores: Optional[int] = None
     ollama_host: Optional[str] = None
     ollama_server: Optional[str] = None
     ollama_port: Optional[int] = None
@@ -1755,6 +2248,10 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
         "https_keyfile": str(cfg.get("https_keyfile") or ""),
         "https_port": _get_https_port(cfg, DEFAULT_HTTPS_PORT),
         "remote_http_mode": _get_remote_http_mode(cfg, DEFAULT_REMOTE_HTTP_MODE),
+        "ffmpeg_path": _get_ffmpeg_path(cfg),
+        "ffmpeg_threads": _get_ffmpeg_threads(cfg),
+        "ffmpeg_hwaccel": _get_ffmpeg_hwaccel(cfg),
+        "processing_reserved_cores": _get_processing_reserved_cores(cfg),
         "ollama_host": _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
         "ollama_server": _get_ollama_server(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
         "ollama_port": _get_ollama_port(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
@@ -1810,6 +2307,14 @@ async def update_settings(data: SettingsUpdate):
         cfg["https_port"] = max(1, min(65535, int(data.https_port)))
     if data.remote_http_mode is not None:
         cfg["remote_http_mode"] = _get_remote_http_mode({"remote_http_mode": data.remote_http_mode}, DEFAULT_REMOTE_HTTP_MODE)
+    if data.ffmpeg_path is not None:
+        cfg["ffmpeg_path"] = str(data.ffmpeg_path or "").strip()
+    if data.ffmpeg_threads is not None:
+        cfg["ffmpeg_threads"] = max(0, int(data.ffmpeg_threads))
+    if data.ffmpeg_hwaccel is not None:
+        cfg["ffmpeg_hwaccel"] = _get_ffmpeg_hwaccel({"ffmpeg_hwaccel": data.ffmpeg_hwaccel})
+    if data.processing_reserved_cores is not None:
+        cfg["processing_reserved_cores"] = max(0, min(HOST_CPU_COUNT - 1, int(data.processing_reserved_cores))) if HOST_CPU_COUNT > 1 else 0
     if data.ollama_host is not None:
         server_name, server_port = _split_ollama_host(data.ollama_host, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
         cfg["ollama_server"] = server_name
