@@ -61,6 +61,7 @@ settingsBtn.addEventListener("click", openSettingsModal);
 settingsRefreshModelsBtn.addEventListener("click", refreshOllamaModelOptions);
 clearFiltersBtn.addEventListener("click", clearSentenceFilters);
 filterArBtn.addEventListener("click", toggleAspectFilter);
+filterMaskBtn.addEventListener("click", toggleMaskPresenceFilter);
 filterTxtBtn.addEventListener("click", toggleCaptionPresenceFilter);
 autoCaptionBtn.addEventListener("click", autoCaptionSelected);
 addFreeTextNowBtn.addEventListener("click", addFreeTextNow);
@@ -126,12 +127,31 @@ initializeFilterButtons();
 
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {
+  if (state.maskEditor.active && !isEditableElement(document.activeElement) && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    if (e.shiftKey) {
+      redoMaskEdit();
+    } else {
+      undoMaskEdit();
+    }
+    return;
+  }
+  if (state.maskEditor.active && !isEditableElement(document.activeElement) && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+    e.preventDefault();
+    redoMaskEdit();
+    return;
+  }
   if (e.key === "Escape" && modelLogOverlay.classList.contains("open")) {
     closeModelLogOverlay();
     return;
   }
   if (e.key === "Escape" && settingsModal.classList.contains("open")) {
     closeSettingsModal();
+    return;
+  }
+  if (e.key === "Escape" && state.maskEditor.active) {
+    e.preventDefault();
+    cancelMaskEdit();
     return;
   }
   if (e.key === "Escape" && (state.cropDraft || state.cropInteraction)) {
@@ -209,5 +229,6 @@ startVideoJobPolling();
 // Initial render of sentences
 setCropAspectRatios(state.cropAspectRatioLabels);
 renderSentences();
+renderMaskEditorUi();
 updateActionButtons();
 renderFilterActions();

@@ -42,6 +42,7 @@ from tag2_captions import (
 )
 from tag2_images import (
     IMAGE_EXTENSIONS,
+    MASK_SIDECAR_SUFFIX,
     MEDIA_EXTENSIONS,
     PREVIEW_MAX_SIZE,
     THUMBNAIL_SIZES,
@@ -59,8 +60,11 @@ from tag2_images import (
     _get_crop_backup_path,
     _get_display_image_size,
     _get_image_crop,
+    _get_image_mask_info,
+    _get_image_mask_path,
     _get_thumbnail,
     _is_image_path,
+    _is_mask_sidecar_path,
     _is_video_path,
     _load_oriented_image,
     _normalize_crop_rect,
@@ -71,7 +75,9 @@ from tag2_images import (
     _render_image_bytes,
     _rotate_image,
     _rotate_image_file,
+    _save_image_mask,
     _save_image_file,
+    _write_default_image_mask,
 )
 from tag2_ollama import (
     _apply_media_prompt_context,
@@ -353,12 +359,14 @@ def _build_media_entry(entry: Path) -> dict:
     """Build a list response payload for a supported media file."""
     stat = entry.stat()
     caption_file = entry.with_suffix(".txt")
+    mask_file = _get_image_mask_path(str(entry)) if _is_image_path(str(entry)) else None
     return {
         "name": entry.name,
         "path": str(entry),
         "size": stat.st_size,
         "mtime": stat.st_mtime,
         "has_caption": caption_file.exists(),
+        "has_mask": bool(mask_file and mask_file.exists()),
         "media_type": _get_media_type_for_path(str(entry)),
     }
 
@@ -706,7 +714,7 @@ async def list_images(folder: str = Query(...)):
     images = []
     try:
         for entry in sorted(folder_path.iterdir()):
-            if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS:
+            if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS and not _is_mask_sidecar_path(str(entry)):
                 images.append(_build_media_entry(entry))
     except PermissionError:
         raise HTTPException(status_code=403, detail="Permission denied")
@@ -732,7 +740,7 @@ async def upload_images(
         try:
             original_name = _sanitize_upload_filename(upload.filename or "")
             suffix = Path(original_name).suffix.lower()
-            if suffix not in MEDIA_EXTENSIONS:
+            if suffix not in MEDIA_EXTENSIONS or original_name.lower().endswith(MASK_SIDECAR_SUFFIX):
                 skipped.append({
                     "name": original_name,
                     "reason": "Unsupported media file",
@@ -1040,6 +1048,7 @@ class CropUpdate(BaseModel):
     image_path: str
     crop: Optional[dict] = None
 
+
 class RotateUpdate(BaseModel):
     image_path: str
     direction: str
@@ -1137,11 +1146,14 @@ def _prepare_clone_plan(source_folder: str, requested_name: str, image_paths: li
             caption_path = _get_caption_path(str(image_path))
             if caption_path.exists():
                 copy_items.append((caption_path, target_path / caption_path.name))
+            mask_path = _get_image_mask_path(str(image_path))
+            if mask_path.exists():
+                copy_items.append((mask_path, target_path / mask_path.name))
     else:
         for entry in sorted(source_path.iterdir(), key=lambda item: item.name.lower()):
             dest_entry = target_path / entry.name
             copy_items.append((entry, dest_entry))
-            if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS:
+            if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS and not _is_mask_sidecar_path(str(entry)):
                 copied_image_count += 1
 
     if copied_image_count == 0:
@@ -1173,7 +1185,7 @@ def _iter_folder_image_entries(folder: str):
     """Yield supported media files in a folder."""
     folder_path = Path(folder)
     for entry in folder_path.iterdir():
-        if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS:
+        if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS and not _is_mask_sidecar_path(str(entry)):
             yield entry
 
 
@@ -1223,6 +1235,69 @@ async def get_crop(path: str = Query(...)):
         "path": path,
         "crop": _get_image_crop(path),
     }
+
+
+@app.get("/api/mask")
+async def get_mask(path: str = Query(...), ensure: bool = Query(default=False)):
+    """Return mask sidecar metadata for an image, optionally creating a default mask."""
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Image file not found")
+    if not _is_image_path(path):
+        raise HTTPException(status_code=400, detail="Mask editing is only available for image files")
+
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(executor, _write_default_image_mask if ensure else _get_image_mask_info, path)
+    if not ensure:
+        image_width, image_height = await loop.run_in_executor(executor, _get_display_image_size, path)
+        info["created"] = False
+        info["image_width"] = image_width
+        info["image_height"] = image_height
+    return info
+
+
+@app.get("/api/mask/image")
+async def get_mask_image(path: str = Query(...), ensure: bool = Query(default=False)):
+    """Serve the grayscale mask sidecar for an image."""
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Image file not found")
+    if not _is_image_path(path):
+        raise HTTPException(status_code=400, detail="Mask editing is only available for image files")
+
+    loop = asyncio.get_event_loop()
+    if ensure:
+        await loop.run_in_executor(executor, _write_default_image_mask, path)
+
+    mask_path = _get_image_mask_path(path)
+    if not mask_path.is_file():
+        raise HTTPException(status_code=404, detail="Mask file not found")
+
+    return FileResponse(mask_path, media_type="image/png")
+
+
+@app.post("/api/mask")
+async def save_mask(
+    image_path: str = Form(...),
+    mask: UploadFile = File(...),
+):
+    """Save a grayscale PNG mask sidecar for an image."""
+    if not os.path.isfile(image_path):
+        raise HTTPException(status_code=404, detail="Image file not found")
+    if not _is_image_path(image_path):
+        raise HTTPException(status_code=400, detail="Mask editing is only available for image files")
+
+    try:
+        mask_bytes = await mask.read()
+        if not mask_bytes:
+            raise HTTPException(status_code=400, detail="Mask upload is empty")
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(executor, _save_image_mask, image_path, mask_bytes)
+        return {"ok": True, **info}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid mask image: {exc}") from exc
+    finally:
+        await mask.close()
 
 
 @app.post("/api/crop")
@@ -1293,12 +1368,15 @@ async def delete_images(data: BatchDeleteImagesRequest):
             continue
 
         caption_path = _get_caption_path(normalized_path)
+        mask_path = _get_image_mask_path(normalized_path) if _is_image_path(normalized_path) else None
         backup_path = _get_crop_backup_path(normalized_path) if _is_image_path(normalized_path) else ""
 
         try:
             path_obj.unlink()
             if caption_path.exists():
                 caption_path.unlink()
+            if mask_path and mask_path.exists():
+                mask_path.unlink()
             if backup_path and os.path.isfile(backup_path):
                 os.remove(backup_path)
             _clear_thumbnail_cache_for_path(normalized_path)

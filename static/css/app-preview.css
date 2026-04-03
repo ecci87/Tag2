@@ -46,7 +46,8 @@
   display: flex;
 }
 #preview-img,
-#preview-video {
+#preview-video,
+#preview-mask-canvas {
   position: absolute;
   top: 0; left: 0;
   transform-origin: 0 0;
@@ -62,8 +63,88 @@
   box-shadow: 0 16px 40px rgba(0,0,0,0.35);
   cursor: inherit;
 }
+#preview-mask-canvas {
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  opacity: 1;
+  z-index: 2;
+}
+#preview-mask-canvas[data-view-mode="mask"] {
+  mix-blend-mode: normal;
+}
+#mask-editor-panel {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: none;
+  width: min(280px, calc(100% - 28px));
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 14px;
+  background: rgba(12,14,22,0.86);
+  box-shadow: 0 18px 44px rgba(0,0,0,0.32);
+  backdrop-filter: blur(8px);
+  z-index: 5;
+}
+#mask-editor-panel.visible {
+  display: grid;
+  gap: 10px;
+}
+#mask-editor-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+#mask-editor-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.92);
+}
+#mask-editor-status {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.mask-editor-field {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.mask-editor-field input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent2);
+}
+#mask-mini-preview {
+  width: 120px;
+  height: 120px;
+  justify-self: end;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+  image-rendering: auto;
+}
+#mask-cursor {
+  position: absolute;
+  display: none;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255,255,255,0.92);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(0,0,0,0.22);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 6;
+}
+#mask-cursor.visible {
+  display: block;
+}
 #crop-overlay {
-  position: absolute; inset: 0; pointer-events: none;
+  position: absolute; inset: 0; pointer-events: none; z-index: 4;
 }
 .crop-guide {
   position: absolute; display: none; pointer-events: none;
@@ -125,6 +206,100 @@
 }
 #crop-remove-btn.visible { display: block; }
 #crop-remove-btn:hover { filter: brightness(1.08); }
+#mask-edit-btn,
+#mask-apply-btn,
+#mask-cancel-btn,
+#mask-undo-btn,
+#mask-redo-btn,
+#mask-view-mode-btn,
+#mask-reset-btn {
+  display: none;
+  padding: 7px 18px;
+  border-radius: 8px;
+  font-weight: 700;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  z-index: 5;
+}
+#mask-edit-btn {
+  position: absolute;
+  right: 18px;
+  bottom: 40px;
+  background: rgba(250, 220, 140, 0.96);
+  color: #181822;
+  border: 1px solid rgba(250, 220, 140, 0.38);
+}
+#mask-edit-btn.visible { display: block; }
+#mask-action-bar {
+  position: absolute;
+  right: 18px;
+  bottom: 40px;
+  display: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  max-width: calc(100% - 36px);
+  flex-wrap: wrap;
+  pointer-events: auto;
+  z-index: 5;
+}
+#mask-action-bar.visible {
+  display: flex;
+}
+#mask-apply-btn {
+  background: var(--accent2);
+  color: #1e1e2e;
+  border: 1px solid rgba(166,227,161,0.35);
+}
+#mask-cancel-btn {
+  background: rgba(243,139,168,0.14);
+  color: #f38ba8;
+  border: 1px solid rgba(243,139,168,0.35);
+}
+#mask-undo-btn,
+#mask-redo-btn {
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.92);
+  border: 1px solid rgba(255,255,255,0.12);
+}
+#mask-view-mode-btn {
+  background: rgba(137,180,250,0.14);
+  color: #b8d6ff;
+  border: 1px solid rgba(137,180,250,0.36);
+}
+#mask-reset-btn {
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.92);
+  border: 1px solid rgba(255,255,255,0.12);
+}
+#mask-apply-btn.visible,
+#mask-cancel-btn.visible,
+#mask-undo-btn.visible,
+#mask-redo-btn.visible,
+#mask-view-mode-btn.visible,
+#mask-reset-btn.visible {
+  display: block;
+}
+#mask-edit-btn:hover,
+#mask-apply-btn:hover,
+#mask-cancel-btn:hover,
+#mask-undo-btn:hover,
+#mask-redo-btn:hover,
+#mask-view-mode-btn:hover,
+#mask-reset-btn:hover {
+  filter: brightness(1.08);
+}
+#mask-undo-btn:disabled,
+#mask-redo-btn:disabled,
+#mask-view-mode-btn:disabled,
+#mask-reset-btn:disabled,
+#mask-apply-btn:disabled,
+#mask-cancel-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  filter: none;
+}
 #rotate-controls {
   position: absolute;
   left: 18px;
@@ -132,6 +307,7 @@
   display: none;
   gap: 10px;
   pointer-events: auto;
+  z-index: 5;
 }
 #rotate-controls.visible { display: flex; }
 .rotate-btn {

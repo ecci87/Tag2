@@ -29,6 +29,7 @@ warnings.simplefilter("ignore", Image.DecompressionBombWarning)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+MASK_SIDECAR_SUFFIX = ".mask.png"
 THUMBNAIL_SIZES = [64, 128, 256, 400]
 PREVIEW_MAX_SIZE = 2048
 thumbnail_cache: dict[tuple[str, float, int, tuple | None], bytes] = {}
@@ -57,6 +58,8 @@ def _normalize_image_key(image_path: str) -> str:
 
 def _get_media_type_for_path(path_value: str) -> str:
     """Return the supported media type for a path."""
+    if _is_mask_sidecar_path(path_value):
+        return "other"
     suffix = Path(str(path_value or "")).suffix.lower()
     if suffix in IMAGE_EXTENSIONS:
         return "image"
@@ -73,6 +76,73 @@ def _is_image_path(path_value: str) -> bool:
 def _is_video_path(path_value: str) -> bool:
     """Return whether a path refers to a supported video file."""
     return _get_media_type_for_path(path_value) == "video"
+
+
+def _is_mask_sidecar_path(path_value: str) -> bool:
+    """Return whether a path is one of this app's image mask sidecars."""
+    file_name = Path(str(path_value or "")).name.lower()
+    return file_name.endswith(MASK_SIDECAR_SUFFIX)
+
+
+def _get_image_mask_path(image_path: str) -> Path:
+    """Build the mask sidecar path for an image file."""
+    return Path(f"{image_path}{MASK_SIDECAR_SUFFIX}")
+
+
+def _get_image_mask_info(image_path: str) -> dict:
+    """Return mask sidecar metadata for an image file."""
+    mask_path = _get_image_mask_path(image_path)
+    exists = mask_path.is_file()
+    info = {
+        "path": str(mask_path),
+        "exists": exists,
+        "mtime": mask_path.stat().st_mtime if exists else 0.0,
+    }
+    if exists:
+        with Image.open(mask_path) as mask_image:
+            info["width"], info["height"] = mask_image.size
+    return info
+
+
+def _write_default_image_mask(image_path: str, default_value: int = 128) -> dict:
+    """Create or normalize a grayscale mask sidecar for an image."""
+    image_width, image_height = _get_display_image_size(image_path)
+    mask_path = _get_image_mask_path(image_path)
+    default_fill = max(0, min(255, int(round(default_value))))
+    created = False
+
+    if mask_path.is_file():
+        with Image.open(mask_path) as existing_mask:
+            normalized_mask = ImageOps.exif_transpose(existing_mask).convert("L")
+            if normalized_mask.size != (image_width, image_height):
+                normalized_mask = normalized_mask.resize((image_width, image_height), Image.Resampling.LANCZOS)
+            normalized_mask.save(mask_path, format="PNG")
+    else:
+        Image.new("L", (image_width, image_height), color=default_fill).save(mask_path, format="PNG")
+        created = True
+
+    info = _get_image_mask_info(image_path)
+    info["created"] = created
+    info["image_width"] = image_width
+    info["image_height"] = image_height
+    return info
+
+
+def _save_image_mask(image_path: str, mask_bytes: bytes) -> dict:
+    """Persist an uploaded mask image as a normalized grayscale PNG sidecar."""
+    image_width, image_height = _get_display_image_size(image_path)
+    mask_path = _get_image_mask_path(image_path)
+    with Image.open(BytesIO(mask_bytes)) as uploaded_mask:
+        normalized_mask = ImageOps.exif_transpose(uploaded_mask).convert("L")
+        if normalized_mask.size != (image_width, image_height):
+            normalized_mask = normalized_mask.resize((image_width, image_height), Image.Resampling.LANCZOS)
+        normalized_mask.save(mask_path, format="PNG")
+
+    info = _get_image_mask_info(image_path)
+    info["created"] = False
+    info["image_width"] = image_width
+    info["image_height"] = image_height
+    return info
 
 
 def _get_crop_backup_dir() -> str:

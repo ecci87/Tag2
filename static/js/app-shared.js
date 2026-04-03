@@ -3,6 +3,7 @@ const state = {
   images: [],            // [{name, path, size, mtime}, ...]
   imageCrops: {},        // path -> {x, y, w, h, ratio}
   imageVersions: {},     // path -> cache-busting token
+  imageMaskVersions: {}, // path -> cache-busting token for image sidecar masks
   thumbnailDimensions: {}, // path -> {width, height}
   selectedPaths: new Set(),
   lastClickedIndex: -1,
@@ -13,6 +14,7 @@ const state = {
   activeSentenceFilters: new Map(),
   activeMetaFilters: {
     aspectState: "any",
+    maskState: "any",
     captionState: "any",
   },
   filterCaptionCacheKey: "",
@@ -36,6 +38,33 @@ const state = {
   cropGuide: null,
   cropDirty: false,
   cropInteraction: null,
+  maskEditor: {
+    active: false,
+    loading: false,
+    saving: false,
+    dirty: false,
+    viewMode: "overlay",
+    history: [],
+    historyIndex: -1,
+    cleanHistoryIndex: -1,
+    path: null,
+    imageWidth: 0,
+    imageHeight: 0,
+    previewScaleX: 1,
+    previewScaleY: 1,
+    brushSizePercent: 6,
+    brushValue: 100,
+    brushCore: 30,
+    brushSteepness: 8,
+    painting: false,
+    lastPoint: null,
+    baseCanvas: null,
+    strokeBaseCanvas: null,
+    strokeInfluenceValues: null,
+    previewQueued: false,
+    strokeRenderFrameId: 0,
+    strokeDirtyRect: null,
+  },
   collapsedSections: {},
   collapsedGroups: {},
   httpsCertFile: "",
@@ -136,6 +165,7 @@ const videoJobText = $("#video-job-text");
 const videoJobProgressFill = $("#video-job-progress-fill");
 const fileCount = $("#file-count");
 const filterArBtn = $("#filter-ar-btn");
+const filterMaskBtn = $("#filter-mask-btn");
 const filterTxtBtn = $("#filter-txt-btn");
 const clearFiltersBtn = $("#clear-filters-btn");
 const fileGrid = $("#file-grid");
@@ -144,7 +174,20 @@ const centerPanel = $("#center-panel");
 const previewStage = $("#preview-stage");
 const previewImg = $("#preview-img");
 const previewVideo = $("#preview-video");
+const previewMaskCanvas = $("#preview-mask-canvas");
 const fileDropHint = $("#file-drop-hint");
+const maskEditorPanel = $("#mask-editor-panel");
+const maskEditorStatus = $("#mask-editor-status");
+const maskBrushSizeInput = $("#mask-brush-size");
+const maskBrushSizeLabel = $("#mask-brush-size-label");
+const maskBrushValueInput = $("#mask-brush-value");
+const maskBrushValueLabel = $("#mask-brush-value-label");
+const maskBrushCoreInput = $("#mask-brush-core");
+const maskBrushCoreLabel = $("#mask-brush-core-label");
+const maskBrushSteepnessInput = $("#mask-brush-steepness");
+const maskBrushSteepnessLabel = $("#mask-brush-steepness-label");
+const maskMiniPreview = $("#mask-mini-preview");
+const maskCursor = $("#mask-cursor");
 const cropOverlay = $("#crop-overlay");
 const cropGuideV = $("#crop-guide-v");
 const cropGuideH = $("#crop-guide-h");
@@ -153,6 +196,14 @@ const cropLabel = cropBox.querySelector(".crop-label");
 const cropApplyBtn = $("#crop-apply-btn");
 const cropCancelBtn = $("#crop-cancel-btn");
 const cropRemoveBtn = $("#crop-remove-btn");
+const maskEditBtn = $("#mask-edit-btn");
+const maskActionBar = $("#mask-action-bar");
+const maskApplyBtn = $("#mask-apply-btn");
+const maskCancelBtn = $("#mask-cancel-btn");
+const maskUndoBtn = $("#mask-undo-btn");
+const maskRedoBtn = $("#mask-redo-btn");
+const maskViewModeBtn = $("#mask-view-mode-btn");
+const maskResetBtn = $("#mask-reset-btn");
 const rotateControls = $("#rotate-controls");
 const rotateLeftBtn = $("#rotate-left-btn");
 const rotateRightBtn = $("#rotate-right-btn");

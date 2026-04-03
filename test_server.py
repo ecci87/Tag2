@@ -452,6 +452,18 @@ class TestListImages:
         clip = next(item for item in images if item["name"] == "clip.mp4")
         assert clip["media_type"] == "video"
 
+    def test_list_images_hides_mask_sidecars_and_reports_mask_flag(self, client, img_dir):
+        image_path = str(img_dir / "photo1.jpg")
+        server._write_default_image_mask(image_path)
+
+        resp = client.get("/api/list-images", params={"folder": str(img_dir)})
+        assert resp.status_code == 200
+        images = resp.json()["images"]
+        names = {item["name"] for item in images}
+        assert "photo1.jpg.mask.png" not in names
+        photo1 = next(item for item in images if item["name"] == "photo1.jpg")
+        assert photo1["has_mask"] is True
+
 
 class TestUploadImages:
     def test_upload_images_copies_files_into_loaded_folder(self, client, img_dir):
@@ -526,6 +538,19 @@ class TestUploadImages:
         assert data["skipped"][0]["reason"] == "Unsupported media file"
         assert (img_dir / "valid.webp").exists()
         assert not (img_dir / "notes.txt").exists()
+
+    def test_upload_images_skips_mask_sidecars(self, client, img_dir):
+        resp = client.post(
+            "/api/images/upload",
+            data={"folder": str(img_dir)},
+            files=[("files", make_upload_file("photo1.jpg.mask.png", color="gray"))],
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["uploaded_count"] == 0
+        assert data["skipped_count"] == 1
+        assert data["skipped"][0]["name"] == "photo1.jpg.mask.png"
+        assert not (img_dir / "photo1.jpg.mask.png").exists()
 
     def test_upload_images_rejects_invalid_folder(self, client):
         resp = client.post(
@@ -630,6 +655,8 @@ class TestDeleteImages:
         image_path = str(img_dir / "photo1.jpg")
         caption_path = img_dir / "photo1.txt"
         caption_path.write_text("caption", encoding="utf-8")
+        mask_path = server._get_image_mask_path(image_path)
+        server._write_default_image_mask(image_path)
         backup_path = Path(server._get_crop_backup_path(image_path))
         backup_path.parent.mkdir(parents=True, exist_ok=True)
         backup_path.write_bytes(b"backup")
@@ -646,6 +673,7 @@ class TestDeleteImages:
         assert data["errors"] == []
         assert not Path(image_path).exists()
         assert not caption_path.exists()
+        assert not mask_path.exists()
         assert not backup_path.exists()
         assert server._normalize_image_key(image_path) not in server._load_config()["image_crops"]
 
@@ -730,6 +758,7 @@ class TestCloneFolder:
     def test_clone_whole_folder_stream_copies_files_and_config(self, client, img_dir):
         source_folder = str(img_dir)
         (img_dir / "photo1.txt").write_text("caption", encoding="utf-8")
+        server._write_default_image_mask(str(img_dir / "photo1.jpg"))
         (img_dir / "notes.md").write_text("hello", encoding="utf-8")
         client.post("/api/settings", json={
             "folder": source_folder,
@@ -754,6 +783,7 @@ class TestCloneFolder:
         assert target_folder.exists()
         assert (target_folder / "photo1.jpg").exists()
         assert (target_folder / "photo1.txt").exists()
+        assert (target_folder / "photo1.jpg.mask.png").exists()
         assert (target_folder / "notes.md").exists()
 
         cloned_settings = client.get("/api/settings", params={"folder": str(target_folder)}).json()
@@ -764,6 +794,7 @@ class TestCloneFolder:
         selected_a = str(img_dir / "photo1.jpg")
         selected_b = str(img_dir / "photo2.png")
         (img_dir / "photo1.txt").write_text("caption one", encoding="utf-8")
+        server._write_default_image_mask(selected_a)
         (img_dir / "photo3.txt").write_text("caption three", encoding="utf-8")
         client.post("/api/settings", json={
             "folder": source_folder,
@@ -788,6 +819,7 @@ class TestCloneFolder:
         assert (target_folder / "photo1.jpg").exists()
         assert (target_folder / "photo2.png").exists()
         assert (target_folder / "photo1.txt").exists()
+        assert (target_folder / "photo1.jpg.mask.png").exists()
         assert not (target_folder / "photo3.jpg").exists()
         assert not (target_folder / "photo3.txt").exists()
 
@@ -1555,6 +1587,57 @@ class TestCropAPI:
 
         with Image.open(image_path) as img:
             assert img.size == (80, 120)
+
+
+class TestMaskAPI:
+    def test_get_mask_metadata_without_creation(self, client, single_image):
+        resp = client.get("/api/mask", params={"path": single_image})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["exists"] is False
+        assert data["created"] is False
+        assert data["image_width"] == 100
+        assert data["image_height"] == 100
+
+    def test_get_mask_with_ensure_creates_default_gray_mask(self, client, single_image):
+        resp = client.get("/api/mask", params={"path": single_image, "ensure": True})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["exists"] is True
+        assert data["created"] is True
+
+        mask_path = Path(data["path"])
+        assert mask_path.exists()
+        with Image.open(mask_path) as mask_image:
+            assert mask_image.mode == "L"
+            assert mask_image.size == (100, 100)
+            assert mask_image.getpixel((50, 50)) == 128
+
+    def test_get_mask_image_serves_png(self, client, single_image):
+        client.get("/api/mask", params={"path": single_image, "ensure": True})
+        resp = client.get("/api/mask/image", params={"path": single_image})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/png"
+
+    def test_save_mask_normalizes_uploaded_image(self, client, single_image):
+        buffer = BytesIO()
+        Image.new("RGB", (40, 20), color=(255, 255, 255)).save(buffer, format="PNG")
+        buffer.seek(0)
+
+        resp = client.post(
+            "/api/mask",
+            data={"image_path": single_image},
+            files={"mask": ("mask.png", buffer, "image/png")},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+
+        mask_path = Path(data["path"])
+        with Image.open(mask_path) as mask_image:
+            assert mask_image.mode == "L"
+            assert mask_image.size == (100, 100)
+            assert mask_image.getpixel((50, 50)) == 255
 
 
 class TestAutoCaptionAPI:
