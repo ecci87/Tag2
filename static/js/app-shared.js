@@ -44,6 +44,13 @@ const state = {
     saving: false,
     dirty: false,
     viewMode: "overlay",
+    latentPreviewEnabled: false,
+    latentBaseWidth: 512,
+    latentDivider: 16,
+    latentPreviewQueued: false,
+    latentImageDirty: false,
+    latentBaseMaskCanvas: null,
+    latentGridCanvas: null,
     history: [],
     historyIndex: -1,
     cleanHistoryIndex: -1,
@@ -175,6 +182,8 @@ const previewStage = $("#preview-stage");
 const previewImg = $("#preview-img");
 const previewVideo = $("#preview-video");
 const previewMaskCanvas = $("#preview-mask-canvas");
+const previewLatentImageCanvas = $("#preview-latent-image-canvas");
+const previewLatentMaskCanvas = $("#preview-latent-mask-canvas");
 const fileDropHint = $("#file-drop-hint");
 const maskEditorPanel = $("#mask-editor-panel");
 const maskEditorStatus = $("#mask-editor-status");
@@ -186,6 +195,13 @@ const maskBrushCoreInput = $("#mask-brush-core");
 const maskBrushCoreLabel = $("#mask-brush-core-label");
 const maskBrushSteepnessInput = $("#mask-brush-steepness");
 const maskBrushSteepnessLabel = $("#mask-brush-steepness-label");
+const maskLatentPreviewControls = $("#mask-latent-preview-controls");
+const maskLatentBaseWidthInput = $("#mask-latent-base-width");
+const maskLatentBaseWidthLabel = $("#mask-latent-base-width-label");
+const maskLatentDividerInput = $("#mask-latent-divider");
+const maskLatentDividerLabel = $("#mask-latent-divider-label");
+const maskLatentBaseSizeLabel = $("#mask-latent-base-size-label");
+const maskLatentGridSizeLabel = $("#mask-latent-grid-size-label");
 const maskMiniPreview = $("#mask-mini-preview");
 const maskCursor = $("#mask-cursor");
 const cropOverlay = $("#crop-overlay");
@@ -203,6 +219,7 @@ const maskCancelBtn = $("#mask-cancel-btn");
 const maskUndoBtn = $("#mask-undo-btn");
 const maskRedoBtn = $("#mask-redo-btn");
 const maskViewModeBtn = $("#mask-view-mode-btn");
+const maskLatentPreviewBtn = $("#mask-latent-preview-btn");
 const maskResetBtn = $("#mask-reset-btn");
 const rotateControls = $("#rotate-controls");
 const rotateLeftBtn = $("#rotate-left-btn");

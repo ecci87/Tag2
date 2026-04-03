@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Image Captioning Tool</title>
 <link rel="stylesheet" href="/static/css/app-shell.css?v=20260315d">
-<link rel="stylesheet" href="/static/css/app-preview.css?v=20260315d">
+<link rel="stylesheet" href="/static/css/app-preview.css?v=20260403d">
 <link rel="stylesheet" href="/static/css/app-captions.css?v=20260315d">
 <link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260315d">
 </head>
@@ -87,6 +87,8 @@
         <img id="preview-img" alt="Preview">
         <video id="preview-video" preload="metadata" playsinline></video>
         <canvas id="preview-mask-canvas" aria-hidden="true"></canvas>
+        <canvas id="preview-latent-image-canvas" aria-hidden="true"></canvas>
+        <canvas id="preview-latent-mask-canvas" aria-hidden="true"></canvas>
         <div id="file-drop-hint">Drop image or video files here to add them to the upload queue</div>
         <div id="preview-caption-overlay" aria-live="polite">
           <div id="preview-caption-overlay-header">
@@ -119,6 +121,22 @@
             <input id="mask-brush-steepness" type="range" min="1" max="32" step="0.1" value="8">
             <span id="mask-brush-steepness-label">8.0</span>
           </label>
+          <div id="mask-latent-preview-controls">
+            <label class="mask-editor-field" for="mask-latent-base-width">
+              <span>Base</span>
+              <input id="mask-latent-base-width" type="range" min="64" max="2048" step="8" value="512">
+              <span id="mask-latent-base-width-label">512 px</span>
+            </label>
+            <label class="mask-editor-field" for="mask-latent-divider">
+              <span>Div</span>
+              <input id="mask-latent-divider" type="range" min="1" max="64" step="1" value="16">
+              <span id="mask-latent-divider-label">/16</span>
+            </label>
+            <div id="mask-latent-preview-meta">
+              <span id="mask-latent-base-size-label">Base 512×512</span>
+              <span id="mask-latent-grid-size-label">Latent 32×32</span>
+            </div>
+          </div>
           <canvas id="mask-mini-preview" width="120" height="120" aria-label="Mask preview"></canvas>
         </div>
         <div id="mask-cursor" aria-hidden="true"></div>
@@ -146,6 +164,7 @@
             <button id="mask-undo-btn" type="button">Undo</button>
             <button id="mask-redo-btn" type="button">Redo</button>
             <button id="mask-view-mode-btn" type="button" aria-pressed="false">Show Mask</button>
+            <button id="mask-latent-preview-btn" type="button" aria-pressed="false">Latent Preview</button>
             <button id="mask-reset-btn" type="button">Reset 50%</button>
           </div>
           <div id="rotate-controls">
@@ -351,8 +370,8 @@
   </div>
 </div>
 
-<script defer src="/static/js/app-shared.js?v=20260403c"></script>
-<script defer src="/static/js/app-features.js?v=20260403c"></script>
+<script defer src="/static/js/app-shared.js?v=20260403d"></script>
+<script defer src="/static/js/app-features.js?v=20260403d"></script>
 <script defer src="/static/js/app-init.js?v=20260403c"></script>
 </body>
 </html>

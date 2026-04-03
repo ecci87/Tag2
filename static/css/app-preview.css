@@ -47,7 +47,9 @@
 }
 #preview-img,
 #preview-video,
-#preview-mask-canvas {
+#preview-mask-canvas,
+#preview-latent-image-canvas,
+#preview-latent-mask-canvas {
   position: absolute;
   top: 0; left: 0;
   transform-origin: 0 0;
@@ -70,6 +72,20 @@
   z-index: 2;
 }
 #preview-mask-canvas[data-view-mode="mask"] {
+  mix-blend-mode: normal;
+}
+#preview-latent-image-canvas {
+  pointer-events: none;
+  z-index: 1;
+}
+#preview-latent-mask-canvas {
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  opacity: 1;
+  z-index: 2;
+  image-rendering: pixelated;
+}
+#preview-latent-mask-canvas[data-view-mode="mask"] {
   mix-blend-mode: normal;
 }
 #mask-editor-panel {
@@ -127,6 +143,25 @@
   border: 1px solid rgba(255,255,255,0.12);
   background: linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
   image-rendering: auto;
+}
+#mask-latent-preview-controls {
+  display: none;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+}
+#mask-latent-preview-controls.visible {
+  display: grid;
+}
+#mask-latent-preview-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--fg-dim);
 }
 #mask-cursor {
   position: absolute;
@@ -212,6 +247,7 @@
 #mask-undo-btn,
 #mask-redo-btn,
 #mask-view-mode-btn,
+#mask-latent-preview-btn,
 #mask-reset-btn {
   display: none;
   padding: 7px 18px;
@@ -268,6 +304,15 @@
   color: #b8d6ff;
   border: 1px solid rgba(137,180,250,0.36);
 }
+#mask-latent-preview-btn {
+  background: rgba(250,179,135,0.16);
+  color: #ffd2b4;
+  border: 1px solid rgba(250,179,135,0.38);
+}
+#mask-latent-preview-btn[aria-pressed="true"] {
+  background: rgba(250,179,135,0.92);
+  color: #181822;
+}
 #mask-reset-btn {
   background: rgba(255,255,255,0.08);
   color: rgba(255,255,255,0.92);
@@ -278,6 +323,7 @@
 #mask-undo-btn.visible,
 #mask-redo-btn.visible,
 #mask-view-mode-btn.visible,
+#mask-latent-preview-btn.visible,
 #mask-reset-btn.visible {
   display: block;
 }
@@ -287,12 +333,14 @@
 #mask-undo-btn:hover,
 #mask-redo-btn:hover,
 #mask-view-mode-btn:hover,
+#mask-latent-preview-btn:hover,
 #mask-reset-btn:hover {
   filter: brightness(1.08);
 }
 #mask-undo-btn:disabled,
 #mask-redo-btn:disabled,
 #mask-view-mode-btn:disabled,
+#mask-latent-preview-btn:disabled,
 #mask-reset-btn:disabled,
 #mask-apply-btn:disabled,
 #mask-cancel-btn:disabled {
