@@ -968,12 +968,16 @@ function updateMaskControlLabels() {
   maskLatentDividerInput.value = String(latentMetrics.divider);
   maskBrushSizeLabel.textContent = `${brushSizePercent.toFixed(1)}% · ${Math.round(brushDiameterMaskPx)} px`;
   maskBrushValueLabel.textContent = `${Math.round(brushValue)}%`;
+  maskResetBtn.textContent = `Reset ${Math.round(brushValue)}%`;
+  maskResetBtn.title = `Fill the full mask with ${Math.round(brushValue)}%`;
   maskBrushCoreLabel.textContent = `${Math.round(brushCore)}%`;
   maskBrushSteepnessLabel.textContent = brushSteepness.toFixed(1);
   maskLatentBaseWidthLabel.textContent = `${latentMetrics.baseWidth}px`;
   maskLatentDividerLabel.textContent = `/${latentMetrics.divider}`;
   maskLatentBaseSizeLabel.textContent = `Base ${latentMetrics.baseWidth}×${latentMetrics.baseHeight}`;
   maskLatentGridSizeLabel.textContent = `Latent ${latentMetrics.latentWidth}×${latentMetrics.latentHeight}`;
+  maskLatentSignalLabel.textContent = `Signal ${state.maskEditor.latentSignalPercent.toFixed(1)}%`;
+  maskLatentReductionLabel.textContent = `Reduction ${state.maskEditor.latentReductionPercent.toFixed(1)}%`;
   maskEditorStatus.textContent = state.maskEditor.loading
     ? "Loading..."
     : (state.maskEditor.saving ? "Saving..." : `${Math.round(brushValue)}%`);
@@ -1020,6 +1024,25 @@ function ensureMaskLatentPreviewBuffers() {
     latentBaseMaskCanvas: state.maskEditor.latentBaseMaskCanvas,
     latentGridCanvas: state.maskEditor.latentGridCanvas,
   };
+}
+
+function updateMaskLatentSignalStats(sourceCanvas) {
+  const canvas = sourceCanvas || previewLatentMaskCanvas;
+  if (!canvas || !canvas.width || !canvas.height) {
+    state.maskEditor.latentSignalPercent = 0;
+    state.maskEditor.latentReductionPercent = 100;
+    return;
+  }
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  let sum = 0;
+  for (let index = 0; index < data.length; index += 4) {
+    sum += data[index];
+  }
+  const pixelCount = Math.max(1, canvas.width * canvas.height);
+  const signalPercent = clamp((sum / (pixelCount * 255)) * 100, 0, 100);
+  state.maskEditor.latentSignalPercent = signalPercent;
+  state.maskEditor.latentReductionPercent = 100 - signalPercent;
 }
 
 function scheduleMaskLatentPreviewRender(options = {}) {
@@ -1078,6 +1101,8 @@ function renderMaskLatentPreview() {
   latentMaskCtx.clearRect(0, 0, previewLatentMaskCanvas.width, previewLatentMaskCanvas.height);
   latentMaskCtx.imageSmoothingEnabled = false;
   latentMaskCtx.drawImage(latentGridCanvas, 0, 0);
+  updateMaskLatentSignalStats(previewLatentMaskCanvas);
+  updateMaskControlLabels();
 }
 
 function scheduleMaskMiniPreviewRender() {
@@ -1579,6 +1604,8 @@ function closeMaskEditor(options = {}) {
   state.maskEditor.baseCanvas = null;
   state.maskEditor.latentPreviewQueued = false;
   state.maskEditor.latentImageDirty = true;
+  state.maskEditor.latentSignalPercent = 50;
+  state.maskEditor.latentReductionPercent = 50;
   state.maskEditor.latentBaseMaskCanvas = null;
   state.maskEditor.latentGridCanvas = null;
   state.maskEditor.strokeBaseCanvas = null;
@@ -1662,10 +1689,12 @@ function cancelMaskEdit() {
 
 function resetMaskEditToDefault() {
   if (!state.maskEditor.active || !previewMaskCanvas.width || !previewMaskCanvas.height) return;
+  const resetValue = clamp(Number(state.maskEditor.brushValue || 0), 0, 100);
+  const resetChannelValue = Math.round(resetValue * 2.55);
   clearMaskStrokeRenderFrame();
   const ctx = previewMaskCanvas.getContext("2d");
   ctx.save();
-  ctx.fillStyle = "rgb(128, 128, 128)";
+  ctx.fillStyle = `rgb(${resetChannelValue}, ${resetChannelValue}, ${resetChannelValue})`;
   ctx.fillRect(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
   ctx.restore();
   pushMaskHistorySnapshot();
@@ -1673,7 +1702,7 @@ function resetMaskEditToDefault() {
   scheduleMaskMiniPreviewRender();
   scheduleMaskLatentPreviewRender();
   renderMaskEditorUi();
-  statusBar.textContent = "Mask reset to 50%";
+  statusBar.textContent = `Mask reset to ${Math.round(resetValue)}%`;
 }
 
 function toggleMaskEditorViewMode() {

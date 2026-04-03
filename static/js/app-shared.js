@@ -47,6 +47,8 @@ const state = {
     latentPreviewEnabled: false,
     latentBaseWidth: 512,
     latentDivider: 16,
+    latentSignalPercent: 50,
+    latentReductionPercent: 50,
     latentPreviewQueued: false,
     latentImageDirty: false,
     latentBaseMaskCanvas: null,
@@ -202,6 +204,8 @@ const maskLatentDividerInput = $("#mask-latent-divider");
 const maskLatentDividerLabel = $("#mask-latent-divider-label");
 const maskLatentBaseSizeLabel = $("#mask-latent-base-size-label");
 const maskLatentGridSizeLabel = $("#mask-latent-grid-size-label");
+const maskLatentSignalLabel = $("#mask-latent-signal-label");
+const maskLatentReductionLabel = $("#mask-latent-reduction-label");
 const maskMiniPreview = $("#mask-mini-preview");
 const maskCursor = $("#mask-cursor");
 const cropOverlay = $("#crop-overlay");

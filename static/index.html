@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Image Captioning Tool</title>
 <link rel="stylesheet" href="/static/css/app-shell.css?v=20260315d">
-<link rel="stylesheet" href="/static/css/app-preview.css?v=20260403d">
+<link rel="stylesheet" href="/static/css/app-preview.css?v=20260404a">
 <link rel="stylesheet" href="/static/css/app-captions.css?v=20260315d">
 <link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260315d">
 </head>
@@ -135,6 +135,10 @@
             <div id="mask-latent-preview-meta">
               <span id="mask-latent-base-size-label">Base 512×512</span>
               <span id="mask-latent-grid-size-label">Latent 32×32</span>
+            </div>
+            <div id="mask-latent-preview-stats">
+              <span id="mask-latent-signal-label">Signal 50.0%</span>
+              <span id="mask-latent-reduction-label">Reduction 50.0%</span>
             </div>
           </div>
           <canvas id="mask-mini-preview" width="120" height="120" aria-label="Mask preview"></canvas>
@@ -370,8 +374,8 @@
   </div>
 </div>
 
-<script defer src="/static/js/app-shared.js?v=20260403d"></script>
-<script defer src="/static/js/app-features.js?v=20260403d"></script>
+<script defer src="/static/js/app-shared.js?v=20260404a"></script>
+<script defer src="/static/js/app-features.js?v=20260404a"></script>
 <script defer src="/static/js/app-init.js?v=20260403c"></script>
 </body>
 </html>
