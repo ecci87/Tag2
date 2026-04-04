@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 import server
+from tag2_images import _get_video_mask_path
 
 
 # ===== FIXTURES =====
@@ -452,6 +453,19 @@ class TestListImages:
         clip = next(item for item in images if item["name"] == "clip.mp4")
         assert clip["media_type"] == "video"
 
+    def test_list_images_reports_video_mask_count(self, client, img_dir):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        Image.new("L", (16, 16), color=96).save(_get_video_mask_path(str(video_path), 0))
+        Image.new("L", (16, 16), color=192).save(_get_video_mask_path(str(video_path), 24))
+
+        resp = client.get("/api/list-images", params={"folder": str(img_dir)})
+        assert resp.status_code == 200
+        images = resp.json()["images"]
+        clip = next(item for item in images if item["name"] == "clip.mp4")
+        assert clip["has_mask"] is True
+        assert clip["mask_count"] == 2
+
     def test_list_images_hides_mask_sidecars_and_reports_mask_flag(self, client, img_dir):
         image_path = str(img_dir / "photo1.jpg")
         server._write_default_image_mask(image_path)
@@ -463,6 +477,43 @@ class TestListImages:
         assert "photo1.jpg.mask.png" not in names
         photo1 = next(item for item in images if item["name"] == "photo1.jpg")
         assert photo1["has_mask"] is True
+
+
+class TestFolderSuggestions:
+    def test_folder_suggestions_match_partial_name(self, client, tmp_path):
+        base = tmp_path / "folders"
+        base.mkdir()
+        (base / "alpha").mkdir()
+        (base / "alpine").mkdir()
+        (base / "beta").mkdir()
+
+        resp = client.get("/api/folders/suggest", params={"query": str(base / "al")})
+
+        assert resp.status_code == 200
+        suggestions = resp.json()["suggestions"]
+        paths = {item["path"] for item in suggestions}
+        assert str(base / "alpha") in paths
+        assert str(base / "alpine") in paths
+        assert str(base / "beta") not in paths
+
+    def test_folder_suggestions_list_children_for_trailing_separator(self, client, tmp_path):
+        base = tmp_path / "folders"
+        base.mkdir()
+        (base / "alpha").mkdir()
+        (base / "beta").mkdir()
+
+        resp = client.get("/api/folders/suggest", params={"query": f"{base}{os.sep}"})
+
+        assert resp.status_code == 200
+        suggestions = resp.json()["suggestions"]
+        names = {item["name"] for item in suggestions}
+        assert names == {"alpha", "beta"}
+
+    def test_folder_suggestions_return_empty_for_missing_parent(self, client, tmp_path):
+        resp = client.get("/api/folders/suggest", params={"query": str(tmp_path / "missing" / "al")})
+
+        assert resp.status_code == 200
+        assert resp.json()["suggestions"] == []
 
 
 class TestUploadImages:
@@ -566,7 +617,7 @@ class TestVideoAPI:
     def test_get_video_meta(self, client, img_dir, monkeypatch):
         video_path = img_dir / "clip.mp4"
         video_path.write_bytes(b"fake-video-bytes")
-        monkeypatch.setattr(server, "_probe_video_info", lambda path, ffprobe_path="ffprobe": {"width": 1920, "height": 1080, "duration": 12.5})
+        monkeypatch.setattr(server, "_probe_video_info", lambda path, ffprobe_path="ffprobe": {"width": 1920, "height": 1080, "duration": 12.5, "fps": 24.0})
 
         resp = client.get("/api/video/meta", params={"path": str(video_path)})
         assert resp.status_code == 200
@@ -574,6 +625,21 @@ class TestVideoAPI:
         assert data["width"] == 1920
         assert data["height"] == 1080
         assert data["duration"] == 12.5
+        assert data["fps"] == 24.0
+        assert data["mask_keyframes"] == []
+
+    def test_get_video_meta_includes_mask_keyframes(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        Image.new("L", (16, 16), color=96).save(_get_video_mask_path(str(video_path), 12))
+        Image.new("L", (16, 16), color=160).save(_get_video_mask_path(str(video_path), 48))
+        monkeypatch.setattr(server, "_probe_video_info", lambda path, ffprobe_path="ffprobe": {"width": 1920, "height": 1080, "duration": 12.5, "fps": 24.0})
+
+        resp = client.get("/api/video/meta", params={"path": str(video_path)})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mask_keyframes"] == [12, 48]
 
     def test_get_video_frame(self, client, img_dir, monkeypatch):
         video_path = img_dir / "clip.mp4"
@@ -649,6 +715,20 @@ class TestVideoAPI:
         assert resp.status_code == 400
         assert resp.json()["detail"] == "Clip end time must be greater than start time"
 
+    def test_enqueue_gif_convert_job(self, client, img_dir, monkeypatch):
+        gif_path = img_dir / "loop.gif"
+        Image.new("RGB", (24, 24), color="purple").save(gif_path, format="GIF")
+        monkeypatch.setattr(server, "_enqueue_video_job", lambda job: {"id": "job-gif", **job, "status": "queued"})
+
+        resp = client.post("/api/media/jobs/convert-gif", json={"media_path": str(gif_path)})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["job"]["type"] == "gif_to_mp4"
+        assert data["job"]["video_path"] == str(gif_path)
+        assert Path(data["job"]["output_path"]).name == "loop.mp4"
+
 
 class TestDeleteImages:
     def test_delete_image_removes_sidecars_and_crop_state(self, client, img_dir):
@@ -676,6 +756,27 @@ class TestDeleteImages:
         assert not mask_path.exists()
         assert not backup_path.exists()
         assert server._normalize_image_key(image_path) not in server._load_config()["image_crops"]
+
+    def test_delete_video_removes_video_mask_sidecars(self, client, img_dir):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        caption_path = img_dir / "clip.txt"
+        caption_path.write_text("caption", encoding="utf-8")
+        mask_a = _get_video_mask_path(str(video_path), 0)
+        mask_b = _get_video_mask_path(str(video_path), 12)
+        Image.new("L", (16, 16), color=96).save(mask_a)
+        Image.new("L", (16, 16), color=160).save(mask_b)
+
+        resp = client.post("/api/images/delete", json={"image_paths": [str(video_path)]})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["deleted_count"] == 1
+        assert not video_path.exists()
+        assert not caption_path.exists()
+        assert not mask_a.exists()
+        assert not mask_b.exists()
 
     def test_delete_images_requires_paths(self, client):
         resp = client.post("/api/images/delete", json={"image_paths": []})
@@ -825,6 +926,36 @@ class TestCloneFolder:
 
         cloned_settings = client.get("/api/settings", params={"folder": str(target_folder)}).json()
         assert cloned_settings["sections"][0]["name"] == "Scene"
+
+    def test_clone_selected_media_copies_video_mask_sidecars(self, client, img_dir):
+        source_folder = str(img_dir)
+        video_path = img_dir / "clip.mp4"
+        extra_video_path = img_dir / "clip-b.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        extra_video_path.write_bytes(b"fake-video-bytes")
+        mask_a = _get_video_mask_path(str(video_path), 0)
+        mask_b = _get_video_mask_path(str(video_path), 18)
+        Image.new("L", (16, 16), color=96).save(mask_a)
+        Image.new("L", (16, 16), color=160).save(mask_b)
+
+        with client.stream(
+            "POST",
+            "/api/folder/clone/stream",
+            json={
+                "source_folder": source_folder,
+                "new_folder_name": "video-subset",
+                "image_paths": [str(video_path), str(extra_video_path)],
+            },
+        ) as response:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        done = next(event for event in events if event.get("type") == "done")
+        target_folder = Path(done["target_folder"])
+        assert (target_folder / "clip.mp4").exists()
+        assert (target_folder / "clip-b.mp4").exists()
+        assert (target_folder / mask_a.name).exists()
+        assert (target_folder / mask_b.name).exists()
 
 
 class TestThumbnail:
@@ -1184,6 +1315,8 @@ class TestSettingsAPI:
         assert "last_folder" in data
         assert data["thumb_size"] == 160
         assert data["crop_aspect_ratios"] == ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"]
+        assert isinstance(data["video_training_presets"], list)
+        assert len(data["video_training_presets"]) >= 1
         assert data["https_certfile"] == ""
         assert data["https_keyfile"] == ""
         assert data["https_port"] == 8900
@@ -1279,6 +1412,43 @@ class TestSettingsAPI:
         assert data["sections"][0]["name"] == "## Lighting"
         assert data["sections"][0]["sentences"] == ["bright"]
         assert data["sections"][1]["groups"][0]["hidden_sentences"] == ["not visible"]
+
+    def test_save_and_load_video_training_presets_and_folder_profile(self, client, tmp_path):
+        folder = str(tmp_path / "video_folder")
+        os.makedirs(folder, exist_ok=True)
+        presets = [
+            {
+                "key": "wan-fast",
+                "label": "Wan Fast",
+                "target_family": "wan",
+                "num_frames": 40,
+                "fps": 16,
+                "preferred_extensions": ["mp4", ".mov"],
+            },
+            {
+                "label": "Hunyuan Base",
+                "target_family": "hunyuan",
+                "num_frames": 129,
+                "fps": 24,
+                "preferred_extensions": [".mp4"],
+                "description": "Longer Hunyuan motion clips.",
+            },
+        ]
+
+        resp = client.post("/api/settings", json={
+            "video_training_presets": presets,
+            "folder": folder,
+            "video_training_profile_key": "hunyuan-base",
+        })
+
+        assert resp.status_code == 200
+
+        data = client.get("/api/settings", params={"folder": folder}).json()
+        assert [preset["key"] for preset in data["video_training_presets"]] == ["wan-fast", "hunyuan-base"]
+        assert data["video_training_profile_key"] == "hunyuan-base"
+        assert data["video_training_profile"]["target_family"] == "hunyuan"
+        assert data["video_training_profile"]["ideal_clip_seconds"] == pytest.approx(5.375)
+        assert data["video_training_profile"]["preferred_extensions"] == [".mp4"]
 
     def test_settings_persistence(self, client, tmp_path):
         """Settings survive a config reload."""
@@ -1638,6 +1808,123 @@ class TestMaskAPI:
             assert mask_image.mode == "L"
             assert mask_image.size == (100, 100)
             assert mask_image.getpixel((50, 50)) == 255
+
+    def test_get_video_mask_with_ensure_creates_keyframe_mask(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        monkeypatch.setattr(server, "_resolve_ffmpeg_binaries", lambda cfg: ("ffmpeg", "ffprobe"))
+        monkeypatch.setattr(server, "_probe_video_info", lambda path, ffprobe_path="ffprobe": {
+            "width": 96,
+            "height": 54,
+            "duration": 5.0,
+            "fps": 24.0,
+        })
+
+        resp = client.get("/api/mask", params={"path": str(video_path), "frame_index": 48, "ensure": True})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["media_type"] == "video"
+        assert data["frame_index"] == 48
+        assert data["requested_frame_index"] == 48
+        assert data["created"] is True
+        assert data["mask_count"] == 1
+        mask_path = Path(data["path"])
+        assert mask_path.exists()
+        with Image.open(mask_path) as mask_image:
+            assert mask_image.mode == "L"
+            assert mask_image.size == (96, 54)
+            assert mask_image.getpixel((10, 10)) == 128
+
+    def test_get_video_mask_reuses_previous_keyframe_without_create_new(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        previous_mask_path = _get_video_mask_path(str(video_path), 24)
+        Image.new("L", (96, 54), color=200).save(previous_mask_path)
+        monkeypatch.setattr(server, "_resolve_ffmpeg_binaries", lambda cfg: ("ffmpeg", "ffprobe"))
+        monkeypatch.setattr(server, "_probe_video_info", lambda path, ffprobe_path="ffprobe": {
+            "width": 96,
+            "height": 54,
+            "duration": 5.0,
+            "fps": 24.0,
+        })
+
+        resp = client.get("/api/mask", params={"path": str(video_path), "frame_index": 48})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["frame_index"] == 24
+        assert data["requested_frame_index"] == 48
+        assert data["source_frame_index"] == 24
+        assert data["path"] == str(previous_mask_path)
+        assert data["exists"] is True
+        assert data["mask_count"] == 1
+
+    def test_get_video_mask_with_create_new_clones_previous_keyframe(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        previous_mask_path = _get_video_mask_path(str(video_path), 24)
+        Image.new("L", (96, 54), color=200).save(previous_mask_path)
+        monkeypatch.setattr(server, "_resolve_ffmpeg_binaries", lambda cfg: ("ffmpeg", "ffprobe"))
+        monkeypatch.setattr(server, "_probe_video_info", lambda path, ffprobe_path="ffprobe": {
+            "width": 96,
+            "height": 54,
+            "duration": 5.0,
+            "fps": 24.0,
+        })
+
+        resp = client.get("/api/mask", params={
+            "path": str(video_path),
+            "frame_index": 48,
+            "ensure": True,
+            "create_new": True,
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["frame_index"] == 48
+        assert data["requested_frame_index"] == 48
+        assert data["source_frame_index"] == 24
+        assert data["created"] is True
+        assert data["mask_count"] == 2
+        new_mask_path = Path(data["path"])
+        assert new_mask_path.exists()
+        with Image.open(new_mask_path) as mask_image:
+            assert mask_image.size == (96, 54)
+            assert mask_image.getpixel((10, 10)) == 200
+
+    def test_save_video_mask_normalizes_uploaded_image(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        monkeypatch.setattr(server, "_resolve_ffmpeg_binaries", lambda cfg: ("ffmpeg", "ffprobe"))
+        monkeypatch.setattr(server, "_probe_video_info", lambda path, ffprobe_path="ffprobe": {
+            "width": 96,
+            "height": 54,
+            "duration": 5.0,
+            "fps": 24.0,
+        })
+
+        buffer = BytesIO()
+        Image.new("RGB", (40, 20), color=(255, 255, 255)).save(buffer, format="PNG")
+        buffer.seek(0)
+
+        resp = client.post(
+            "/api/mask",
+            data={"media_path": str(video_path), "frame_index": 12},
+            files={"mask": ("mask.png", buffer, "image/png")},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["media_type"] == "video"
+        assert data["frame_index"] == 12
+        assert data["mask_count"] == 1
+        mask_path = Path(data["path"])
+        with Image.open(mask_path) as mask_image:
+            assert mask_image.mode == "L"
+            assert mask_image.size == (96, 54)
+            assert mask_image.getpixel((10, 10)) == 255
 
 
 class TestAutoCaptionAPI:

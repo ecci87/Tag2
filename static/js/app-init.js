@@ -56,7 +56,10 @@ setupVerticalResize(rightHorizontalResize, sentencesSection, $("#freetext-sectio
 // ===== EVENT LISTENERS =====
 loadBtn.addEventListener("click", loadFolder);
 cloneFolderBtn.addEventListener("click", cloneCurrentFolder);
-folderInput.addEventListener("keydown", (e) => { if (e.key === "Enter") loadFolder(); });
+folderInput.addEventListener("input", handleFolderInputInput);
+folderInput.addEventListener("focus", handleFolderInputFocus);
+folderInput.addEventListener("blur", handleFolderInputBlur);
+folderInput.addEventListener("keydown", handleFolderInputKeydown);
 settingsBtn.addEventListener("click", openSettingsModal);
 settingsRefreshModelsBtn.addEventListener("click", refreshOllamaModelOptions);
 clearFiltersBtn.addEventListener("click", clearSentenceFilters);
@@ -66,6 +69,7 @@ filterTxtBtn.addEventListener("click", toggleCaptionPresenceFilter);
 autoCaptionBtn.addEventListener("click", autoCaptionSelected);
 addFreeTextNowBtn.addEventListener("click", addFreeTextNow);
 videoClipBtn.addEventListener("click", queueCurrentVideoClip);
+gifConvertBtn.addEventListener("click", queueCurrentGifConversion);
 videoDownloadBtn.addEventListener("click", downloadCurrentVideo);
 hideAddButtonsCheckbox.addEventListener("change", () => {
   state.hideAddButtons = hideAddButtonsCheckbox.checked;
@@ -86,6 +90,8 @@ autoFreeTextCheckbox.addEventListener("change", async () => {
 settingsCloseBtn.addEventListener("click", closeSettingsModal);
 settingsCancelBtn.addEventListener("click", closeSettingsModal);
 settingsSaveBtn.addEventListener("click", saveOllamaSettingsFromForm);
+settingsVideoPresetsInput.addEventListener("input", handleVideoTrainingPresetsInput);
+settingsVideoProfileInput.addEventListener("change", handleVideoTrainingProfileInputChange);
 settingsTabButtons.forEach((button) => {
   button.addEventListener("click", () => {
     setActiveSettingsTab(button.dataset.settingsTab || "auto-captioning");
@@ -121,6 +127,10 @@ modelLogOverlay.addEventListener("click", (e) => {
 });
 settingsModal.addEventListener("click", (e) => {
   if (e.target === settingsModal) closeSettingsModal();
+});
+document.addEventListener("mousedown", (e) => {
+  if (folderInputWrap?.contains(e.target)) return;
+  hideFolderAutocomplete();
 });
 renderAddButtonsVisibility();
 initializeFilterButtons();

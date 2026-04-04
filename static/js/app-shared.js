@@ -24,6 +24,9 @@ const state = {
   previewVideoMuted: false,
   previewVideoLastVolume: 1,
   previewVideoVolume: 1,
+  videoTrainingPresets: [],
+  videoTrainingProfileKey: "",
+  videoTrainingProfile: null,
   videoMeta: {},         // path -> {width, height, duration}
   videoClipDrafts: {},   // path -> {startFraction, endFraction}
   videoTimelineCache: {}, // path -> [{timeSeconds, url}, ...]
@@ -43,6 +46,12 @@ const state = {
     loading: false,
     saving: false,
     dirty: false,
+    switchingKeyframe: false,
+    mediaType: null,
+    frameIndex: null,
+    requestedFrameIndex: null,
+    sourceFrameIndex: null,
+    videoSnapshotUrl: null,
     viewMode: "overlay",
     latentPreviewEnabled: false,
     latentBaseWidth: 512,
@@ -96,6 +105,14 @@ const state = {
   modelLogLines: [],
   modelLogOpen: false,
   cloning: false,
+  folderAutocomplete: {
+    items: [],
+    highlightedIndex: -1,
+    visible: false,
+    debounceTimer: 0,
+    requestSeq: 0,
+    abortController: null,
+  },
   aiProgress: {
     visible: false,
     scopeLabel: "",
@@ -158,6 +175,8 @@ let thumbnailProgressHideTimer = null;
 // ===== DOM REFS =====
 const $ = (s) => document.querySelector(s);
 const folderInput = $("#folder-input");
+const folderInputWrap = $("#folder-input-wrap");
+const folderSuggestionsList = $("#folder-suggestions");
 const loadBtn = $("#load-btn");
 const cloneFolderBtn = $("#clone-folder-btn");
 const settingsBtn = $("#settings-btn");
@@ -217,6 +236,8 @@ const cropApplyBtn = $("#crop-apply-btn");
 const cropCancelBtn = $("#crop-cancel-btn");
 const cropRemoveBtn = $("#crop-remove-btn");
 const maskEditBtn = $("#mask-edit-btn");
+const videoMaskAddBtn = $("#video-mask-add-btn");
+const gifConvertBtn = $("#gif-convert-btn");
 const maskActionBar = $("#mask-action-bar");
 const maskApplyBtn = $("#mask-apply-btn");
 const maskCancelBtn = $("#mask-cancel-btn");
@@ -229,6 +250,8 @@ const rotateControls = $("#rotate-controls");
 const rotateLeftBtn = $("#rotate-left-btn");
 const rotateRightBtn = $("#rotate-right-btn");
 const videoEditPanel = $("#video-edit-panel");
+const videoTrainingProfileLabel = $("#video-training-profile-label");
+const videoTrainingGuidanceLabel = $("#video-training-guidance-label");
 const videoPlayToggleBtn = $("#video-play-toggle-btn");
 const videoMuteBtn = $("#video-mute-btn");
 const videoVolumeSlider = $("#video-volume-slider");
@@ -295,6 +318,9 @@ const settingsFfmpegPathInput = $("#settings-ffmpeg-path");
 const settingsProcessingReservedCoresInput = $("#settings-processing-reserved-cores");
 const settingsFfmpegThreadsInput = $("#settings-ffmpeg-threads");
 const settingsFfmpegHwaccelInput = $("#settings-ffmpeg-hwaccel");
+const settingsVideoProfileInput = $("#settings-video-profile");
+const settingsVideoPresetsInput = $("#settings-video-presets");
+const settingsVideoPresetsStatus = $("#settings-video-presets-status");
 const settingsPromptInput = $("#settings-ollama-prompt");
 const settingsGroupPromptInput = $("#settings-ollama-group-prompt");
 const settingsAutoFreeTextEnabled = $("#settings-auto-free-text-enabled");

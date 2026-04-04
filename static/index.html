@@ -4,10 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Image Captioning Tool</title>
-<link rel="stylesheet" href="/static/css/app-shell.css?v=20260315d">
-<link rel="stylesheet" href="/static/css/app-preview.css?v=20260404a">
+<link rel="stylesheet" href="/static/css/app-shell.css?v=20260404g">
+<link rel="stylesheet" href="/static/css/app-preview.css?v=20260404f">
 <link rel="stylesheet" href="/static/css/app-captions.css?v=20260315d">
-<link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260315d">
+<link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260404b">
 </head>
 <body>
 <div id="error-toast" role="alert" aria-live="assertive">
@@ -17,7 +17,10 @@
 <div id="app">
   <div id="toolbar">
     <label>Folder:</label>
-    <input type="text" id="folder-input" placeholder="/path/to/images" spellcheck="false">
+    <div id="folder-input-wrap">
+      <input type="text" id="folder-input" placeholder="/path/to/images" spellcheck="false" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="folder-suggestions">
+      <div id="folder-suggestions" role="listbox" aria-label="Matching folders" hidden></div>
+    </div>
     <button id="load-btn">Load</button>
     <button id="clone-folder-btn" type="button">Clone</button>
     <button id="settings-btn" title="App settings" aria-label="App settings">⚙</button>
@@ -162,6 +165,8 @@
           <button id="crop-cancel-btn" type="button">Cancel</button>
           <button id="crop-remove-btn" type="button">Remove Crop</button>
           <button id="mask-edit-btn" type="button">Mask</button>
+          <button id="video-mask-add-btn" type="button" aria-label="Add new key-frame mask" title="Add a new key-frame mask at the current video frame">+</button>
+          <button id="gif-convert-btn" type="button">GIF to MP4</button>
           <div id="mask-action-bar">
             <button id="mask-apply-btn" type="button">Save Mask</button>
             <button id="mask-cancel-btn" type="button">Cancel Mask</button>
@@ -180,6 +185,10 @@
         <div id="preview-info"></div>
       </div>
       <div id="video-edit-panel">
+        <div id="video-training-summary">
+          <span id="video-training-profile-label"></span>
+          <span id="video-training-guidance-label"></span>
+        </div>
         <div id="video-timeline-viewport">
           <div id="video-timeline-strip"></div>
           <div id="video-timeline-overlay">
@@ -262,6 +271,7 @@
       <div id="settings-tabs" role="tablist" aria-label="Settings sections">
         <button class="settings-tab-btn active" id="settings-tab-auto-captioning" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-auto-captioning" data-settings-tab="auto-captioning">Auto Captioning</button>
         <button class="settings-tab-btn" id="settings-tab-server" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-server" data-settings-tab="server">Server Settings</button>
+        <button class="settings-tab-btn" id="settings-tab-video-training" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-video-training" data-settings-tab="video-training">Video Training</button>
         <button class="settings-tab-btn" id="settings-tab-editing" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-editing" data-settings-tab="editing">Editing</button>
       </div>
       <div id="settings-panels">
@@ -358,6 +368,18 @@
             </div>
           </div>
         </section>
+        <section class="settings-panel" id="settings-panel-video-training" role="tabpanel" aria-labelledby="settings-tab-video-training" data-settings-panel="video-training" hidden>
+          <div class="settings-field">
+            <label for="settings-video-profile">Current Folder Profile</label>
+            <select id="settings-video-profile"></select>
+            <div class="settings-help">The loaded folder uses this preset for clip guidance, in-place conversion hints, and future video mask tools.</div>
+          </div>
+          <div class="settings-field">
+            <label for="settings-video-presets">Video Training Presets (JSON)</label>
+            <textarea id="settings-video-presets" spellcheck="false"></textarea>
+            <div id="settings-video-presets-status" class="settings-help">Edit the preset library as JSON. Save to apply the library and the current folder selection.</div>
+          </div>
+        </section>
         <section class="settings-panel" id="settings-panel-editing" role="tabpanel" aria-labelledby="settings-tab-editing" data-settings-panel="editing" hidden>
           <div class="settings-field">
             <label for="settings-crop-aspect-ratios">Aspect Ratios</label>
@@ -374,8 +396,8 @@
   </div>
 </div>
 
-<script defer src="/static/js/app-shared.js?v=20260404a"></script>
-<script defer src="/static/js/app-features.js?v=20260404a"></script>
-<script defer src="/static/js/app-init.js?v=20260403c"></script>
+<script defer src="/static/js/app-shared.js?v=20260404d"></script>
+<script defer src="/static/js/app-features.js?v=20260404g"></script>
+<script defer src="/static/js/app-init.js?v=20260404d"></script>
 </body>
 </html>

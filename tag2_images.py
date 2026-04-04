@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -29,7 +30,10 @@ warnings.simplefilter("ignore", Image.DecompressionBombWarning)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
 VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi"}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
-MASK_SIDECAR_SUFFIX = ".mask.png"
+IMAGE_MASK_SIDECAR_SUFFIX = ".mask.png"
+MASK_SIDECAR_SUFFIX = IMAGE_MASK_SIDECAR_SUFFIX
+VIDEO_MASK_FRAME_PADDING = 6
+VIDEO_MASK_SIDECAR_PATTERN = re.compile(r"^(?P<source_name>.+)\.mask\.f(?P<frame_index>\d+)\.png$", re.IGNORECASE)
 THUMBNAIL_SIZES = [64, 128, 256, 400]
 PREVIEW_MAX_SIZE = 2048
 thumbnail_cache: dict[tuple[str, float, int, tuple | None], bytes] = {}
@@ -79,19 +83,96 @@ def _is_video_path(path_value: str) -> bool:
 
 
 def _is_mask_sidecar_path(path_value: str) -> bool:
+    """Return whether a path is one of this app's mask sidecars."""
+    return _is_image_mask_sidecar_path(path_value) or _is_video_mask_sidecar_path(path_value)
+
+
+def _is_image_mask_sidecar_path(path_value: str) -> bool:
     """Return whether a path is one of this app's image mask sidecars."""
     file_name = Path(str(path_value or "")).name.lower()
-    return file_name.endswith(MASK_SIDECAR_SUFFIX)
+    return file_name.endswith(IMAGE_MASK_SIDECAR_SUFFIX)
+
+
+def _is_video_mask_sidecar_path(path_value: str) -> bool:
+    """Return whether a path is one of this app's video key-frame mask sidecars."""
+    file_name = Path(str(path_value or "")).name
+    return bool(VIDEO_MASK_SIDECAR_PATTERN.match(file_name))
 
 
 def _get_image_mask_path(image_path: str) -> Path:
     """Build the mask sidecar path for an image file."""
-    return Path(f"{image_path}{MASK_SIDECAR_SUFFIX}")
+    return Path(f"{image_path}{IMAGE_MASK_SIDECAR_SUFFIX}")
 
 
-def _get_image_mask_info(image_path: str) -> dict:
-    """Return mask sidecar metadata for an image file."""
-    mask_path = _get_image_mask_path(image_path)
+def _normalize_video_mask_frame_index(frame_index: int) -> int:
+    """Clamp and normalize a video mask frame index."""
+    return max(0, int(frame_index or 0))
+
+
+def _parse_video_mask_frame_index(path_value: str) -> int | None:
+    """Extract a frame index from a video mask sidecar path."""
+    match = VIDEO_MASK_SIDECAR_PATTERN.match(Path(str(path_value or "")).name)
+    if not match:
+        return None
+    try:
+        return _normalize_video_mask_frame_index(int(match.group("frame_index") or 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_video_mask_path(video_path: str, frame_index: int) -> Path:
+    """Build the mask sidecar path for a video key frame."""
+    normalized_index = _normalize_video_mask_frame_index(frame_index)
+    return Path(f"{video_path}.mask.f{normalized_index:0{VIDEO_MASK_FRAME_PADDING}d}.png")
+
+
+def _list_video_mask_paths(video_path: str) -> list[Path]:
+    """Return sorted key-frame mask sidecars for a video path."""
+    video_file = Path(str(video_path or ""))
+    if not video_file.name:
+        return []
+    candidates = sorted(video_file.parent.glob(f"{video_file.name}.mask.f*.png"), key=lambda item: item.name.lower())
+    keyed_candidates: list[tuple[int, Path]] = []
+    for candidate in candidates:
+        frame_index = _parse_video_mask_frame_index(candidate.name)
+        if frame_index is None:
+            continue
+        keyed_candidates.append((frame_index, candidate))
+    keyed_candidates.sort(key=lambda item: (item[0], item[1].name.lower()))
+    return [candidate for _, candidate in keyed_candidates]
+
+
+def _has_video_mask_sidecars(video_path: str) -> bool:
+    """Return whether a video has one or more key-frame mask sidecars."""
+    return any(True for _ in _list_video_mask_paths(video_path)[:1])
+
+
+def _get_video_mask_info(video_path: str) -> dict:
+    """Return lightweight metadata for video key-frame mask sidecars."""
+    mask_paths = _list_video_mask_paths(video_path)
+    keyframes = []
+    latest_mtime = 0.0
+    for mask_path in mask_paths:
+        frame_index = _parse_video_mask_frame_index(mask_path.name)
+        if frame_index is None:
+            continue
+        mtime = float(mask_path.stat().st_mtime)
+        latest_mtime = max(latest_mtime, mtime)
+        keyframes.append({
+            "path": str(mask_path),
+            "frame_index": frame_index,
+            "mtime": mtime,
+        })
+    return {
+        "exists": bool(keyframes),
+        "count": len(keyframes),
+        "mtime": latest_mtime,
+        "keyframes": keyframes,
+    }
+
+
+def _get_mask_file_info(mask_path: Path) -> dict:
+    """Return lightweight metadata for a mask PNG file."""
     exists = mask_path.is_file()
     info = {
         "path": str(mask_path),
@@ -104,45 +185,166 @@ def _get_image_mask_info(image_path: str) -> dict:
     return info
 
 
-def _write_default_image_mask(image_path: str, default_value: int = 128) -> dict:
-    """Create or normalize a grayscale mask sidecar for an image."""
-    image_width, image_height = _get_display_image_size(image_path)
-    mask_path = _get_image_mask_path(image_path)
+def _normalize_mask_image_to_size(mask_image: Image.Image, image_width: int, image_height: int) -> Image.Image:
+    """Normalize an arbitrary uploaded or existing mask image to the requested size."""
+    normalized_mask = ImageOps.exif_transpose(mask_image).convert("L")
+    if normalized_mask.size != (image_width, image_height):
+        normalized_mask = normalized_mask.resize((image_width, image_height), Image.Resampling.LANCZOS)
+    return normalized_mask
+
+
+def _write_default_mask_file(
+    mask_path: Path,
+    image_width: int,
+    image_height: int,
+    default_value: int = 128,
+    source_mask_path: Path | None = None,
+) -> dict:
+    """Create or normalize a grayscale mask file, optionally cloning from another mask."""
     default_fill = max(0, min(255, int(round(default_value))))
     created = False
 
     if mask_path.is_file():
         with Image.open(mask_path) as existing_mask:
-            normalized_mask = ImageOps.exif_transpose(existing_mask).convert("L")
-            if normalized_mask.size != (image_width, image_height):
-                normalized_mask = normalized_mask.resize((image_width, image_height), Image.Resampling.LANCZOS)
+            normalized_mask = _normalize_mask_image_to_size(existing_mask, image_width, image_height)
             normalized_mask.save(mask_path, format="PNG")
+    elif source_mask_path and source_mask_path.is_file() and source_mask_path != mask_path:
+        with Image.open(source_mask_path) as source_mask:
+            normalized_mask = _normalize_mask_image_to_size(source_mask, image_width, image_height)
+            normalized_mask.save(mask_path, format="PNG")
+        created = True
     else:
         Image.new("L", (image_width, image_height), color=default_fill).save(mask_path, format="PNG")
         created = True
 
-    info = _get_image_mask_info(image_path)
+    info = _get_mask_file_info(mask_path)
     info["created"] = created
     info["image_width"] = image_width
     info["image_height"] = image_height
     return info
 
 
-def _save_image_mask(image_path: str, mask_bytes: bytes) -> dict:
-    """Persist an uploaded mask image as a normalized grayscale PNG sidecar."""
-    image_width, image_height = _get_display_image_size(image_path)
-    mask_path = _get_image_mask_path(image_path)
+def _save_mask_file(mask_path: Path, mask_bytes: bytes, image_width: int, image_height: int) -> dict:
+    """Persist an uploaded mask image as a normalized grayscale PNG file."""
     with Image.open(BytesIO(mask_bytes)) as uploaded_mask:
-        normalized_mask = ImageOps.exif_transpose(uploaded_mask).convert("L")
-        if normalized_mask.size != (image_width, image_height):
-            normalized_mask = normalized_mask.resize((image_width, image_height), Image.Resampling.LANCZOS)
+        normalized_mask = _normalize_mask_image_to_size(uploaded_mask, image_width, image_height)
         normalized_mask.save(mask_path, format="PNG")
 
-    info = _get_image_mask_info(image_path)
+    info = _get_mask_file_info(mask_path)
     info["created"] = False
     info["image_width"] = image_width
     info["image_height"] = image_height
     return info
+
+
+def _resolve_video_mask_frame_target(video_path: str, frame_index: int, create_new: bool = False) -> dict:
+    """Resolve which key-frame mask should be edited or created for a video frame request."""
+    requested_frame_index = _normalize_video_mask_frame_index(frame_index)
+    previous_keyframe = None
+    for keyframe in _get_video_mask_info(video_path).get("keyframes", []):
+        current_frame_index = _normalize_video_mask_frame_index(keyframe.get("frame_index") or 0)
+        if current_frame_index > requested_frame_index:
+            break
+        previous_keyframe = keyframe
+
+    if create_new:
+        target_frame_index = requested_frame_index
+    elif previous_keyframe is not None:
+        target_frame_index = _normalize_video_mask_frame_index(previous_keyframe.get("frame_index") or 0)
+    else:
+        target_frame_index = requested_frame_index
+
+    source_frame_index = _normalize_video_mask_frame_index(previous_keyframe.get("frame_index") or 0) if previous_keyframe else None
+    target_path = _get_video_mask_path(video_path, target_frame_index)
+    source_path = _get_video_mask_path(video_path, source_frame_index) if source_frame_index is not None else None
+    if source_path == target_path:
+        source_path = None
+
+    return {
+        "requested_frame_index": requested_frame_index,
+        "frame_index": target_frame_index,
+        "source_frame_index": source_frame_index,
+        "path": str(target_path),
+        "source_path": str(source_path) if source_path else "",
+        "create_new": bool(create_new),
+    }
+
+
+def _get_video_mask_frame_info(video_path: str, frame_index: int, image_width: int, image_height: int, create_new: bool = False) -> dict:
+    """Return metadata for the effective video key-frame mask to edit for a request."""
+    video_mask_info = _get_video_mask_info(video_path)
+    target = _resolve_video_mask_frame_target(video_path, frame_index, create_new=create_new)
+    info = _get_mask_file_info(Path(target["path"]))
+    info.update({
+        "frame_index": target["frame_index"],
+        "requested_frame_index": target["requested_frame_index"],
+        "source_frame_index": target["source_frame_index"],
+        "image_width": image_width,
+        "image_height": image_height,
+        "mask_count": int(video_mask_info.get("count") or 0),
+        "keyframes": list(video_mask_info.get("keyframes") or []),
+    })
+    return info
+
+
+def _write_default_video_mask(
+    video_path: str,
+    frame_index: int,
+    image_width: int,
+    image_height: int,
+    create_new: bool = False,
+    default_value: int = 128,
+) -> dict:
+    """Create or normalize a grayscale key-frame mask sidecar for a video."""
+    target = _resolve_video_mask_frame_target(video_path, frame_index, create_new=create_new)
+    source_mask_path = Path(target["source_path"]) if target.get("source_path") else None
+    info = _write_default_mask_file(
+        Path(target["path"]),
+        image_width,
+        image_height,
+        default_value=default_value,
+        source_mask_path=source_mask_path,
+    )
+    info.update({
+        "frame_index": target["frame_index"],
+        "requested_frame_index": target["requested_frame_index"],
+        "source_frame_index": target["source_frame_index"],
+        "mask_count": int(_get_video_mask_info(video_path).get("count") or 0),
+        "keyframes": list((_get_video_mask_info(video_path).get("keyframes") or [])),
+    })
+    return info
+
+
+def _save_video_mask(video_path: str, frame_index: int, mask_bytes: bytes, image_width: int, image_height: int) -> dict:
+    """Persist an uploaded mask image as a normalized grayscale PNG sidecar for a video key frame."""
+    normalized_frame_index = _normalize_video_mask_frame_index(frame_index)
+    info = _save_mask_file(_get_video_mask_path(video_path, normalized_frame_index), mask_bytes, image_width, image_height)
+    video_mask_info = _get_video_mask_info(video_path)
+    info.update({
+        "frame_index": normalized_frame_index,
+        "requested_frame_index": normalized_frame_index,
+        "source_frame_index": normalized_frame_index,
+        "mask_count": int(video_mask_info.get("count") or 0),
+        "keyframes": list(video_mask_info.get("keyframes") or []),
+    })
+    return info
+
+
+def _get_image_mask_info(image_path: str) -> dict:
+    """Return mask sidecar metadata for an image file."""
+    return _get_mask_file_info(_get_image_mask_path(image_path))
+
+
+def _write_default_image_mask(image_path: str, default_value: int = 128) -> dict:
+    """Create or normalize a grayscale mask sidecar for an image."""
+    image_width, image_height = _get_display_image_size(image_path)
+    return _write_default_mask_file(_get_image_mask_path(image_path), image_width, image_height, default_value=default_value)
+
+
+def _save_image_mask(image_path: str, mask_bytes: bytes) -> dict:
+    """Persist an uploaded mask image as a normalized grayscale PNG sidecar."""
+    image_width, image_height = _get_display_image_size(image_path)
+    return _save_mask_file(_get_image_mask_path(image_path), mask_bytes, image_width, image_height)
 
 
 def _get_crop_backup_dir() -> str:
@@ -443,7 +645,7 @@ def _probe_video_info(filepath: str, ffprobe_path: str = "ffprobe") -> dict:
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height:format=duration",
+        "stream=width,height,avg_frame_rate,r_frame_rate:format=duration",
         "-of",
         "json",
         filepath,
@@ -470,10 +672,30 @@ def _probe_video_info(filepath: str, ffprobe_path: str = "ffprobe") -> dict:
     except (TypeError, ValueError):
         duration = 0.0
 
+    fps = 0.0
+    for rate_value in (stream.get("avg_frame_rate"), stream.get("r_frame_rate")):
+        text = str(rate_value or "").strip()
+        if not text or text in {"0/0", "N/A"}:
+            continue
+        try:
+            if "/" in text:
+                numerator_text, denominator_text = text.split("/", 1)
+                numerator = float(numerator_text or 0)
+                denominator = float(denominator_text or 0)
+                if denominator > 0:
+                    fps = max(0.0, numerator / denominator)
+            else:
+                fps = max(0.0, float(text))
+        except (TypeError, ValueError, ZeroDivisionError):
+            fps = 0.0
+        if fps > 0.0:
+            break
+
     return {
         "width": int(stream.get("width") or 0),
         "height": int(stream.get("height") or 0),
         "duration": duration,
+        "fps": fps,
     }
 
 
@@ -894,6 +1116,97 @@ def _clip_video_file(
         "end_seconds": end_seconds,
         "duration": clip_duration,
         "crop": normalized_crop,
+    }
+
+
+def _convert_gif_to_mp4_file(
+    filepath: str,
+    output_path: str | None = None,
+    ffmpeg_path: str = "ffmpeg",
+    ffprobe_path: str = "ffprobe",
+    thread_count: int = 0,
+    hwaccel_mode: str | None = "auto",
+    on_progress=None,
+) -> dict:
+    """Convert an animated GIF into an MP4 sibling file for video training workflows."""
+    input_path = str(filepath)
+    source = Path(input_path)
+    if source.suffix.lower() != ".gif":
+        raise RuntimeError("Only GIF files can be converted to MP4")
+
+    video_info = _probe_video_info(input_path, ffprobe_path)
+    duration = max(0.0, float(video_info.get("duration") or 0.0))
+    final_output = str(output_path or source.with_suffix(".mp4"))
+    temp_output = str(Path(final_output).with_name(f"{Path(final_output).stem}.tag2-gif-temp{Path(final_output).suffix}"))
+    filter_expr = "scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos,format=yuv420p"
+    decode_args, gpu_processing_args, cpu_processing_args = _build_ffmpeg_processing_args(
+        ffmpeg_path,
+        final_output,
+        thread_count=thread_count,
+        hwaccel_mode=hwaccel_mode,
+        allow_gpu_encode=True,
+    )
+    command = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        *decode_args,
+        "-i",
+        input_path,
+        "-vf",
+        filter_expr,
+        *(gpu_processing_args or cpu_processing_args),
+        "-movflags",
+        "+faststart",
+        "-pix_fmt",
+        "yuv420p",
+        "-an",
+        "-progress",
+        "pipe:1",
+        "-nostats",
+        temp_output,
+    ]
+    fallback_command = None
+    if gpu_processing_args:
+        fallback_command = [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            input_path,
+            "-vf",
+            filter_expr,
+            *cpu_processing_args,
+            "-movflags",
+            "+faststart",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            temp_output,
+        ]
+    try:
+        _run_ffmpeg_with_optional_fallback(command, duration, on_progress, fallback_command)
+        _replace_file_from_temp(temp_output, final_output)
+    finally:
+        temp_candidate = Path(temp_output)
+        if temp_candidate.exists():
+            temp_candidate.unlink(missing_ok=True)
+
+    refreshed = _probe_video_info(final_output, ffprobe_path)
+    return {
+        "source_path": input_path,
+        "output_path": final_output,
+        "path": final_output,
+        "width": int(refreshed.get("width") or 0),
+        "height": int(refreshed.get("height") or 0),
+        "duration": float(refreshed.get("duration") or 0.0),
     }
 
 

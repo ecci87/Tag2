@@ -905,13 +905,124 @@ function scheduleUiRender(options = {}) {
 function isMaskEditAvailable() {
   return state.selectedPaths.size === 1
     && !!state.previewPath
-    && state.previewMediaType === "image"
+    && (state.previewMediaType === "image" || state.previewMediaType === "video")
+    && !!imgNatW
+    && !!imgNatH;
+}
+
+function isVideoMaskEditAvailable() {
+  return state.selectedPaths.size === 1
+    && !!state.previewPath
+    && state.previewMediaType === "video"
     && !!imgNatW
     && !!imgNatH;
 }
 
 function isMaskEditorVisible() {
   return !!state.maskEditor.active;
+}
+
+function getEffectiveVideoMaskFps(path = state.previewPath) {
+  const metaFps = Number(getCurrentVideoMeta(path)?.fps || 0);
+  if (metaFps > 0) return metaFps;
+  const profileFps = Number(getSelectedVideoTrainingProfileFromState()?.fps || 0);
+  return Math.max(1, profileFps || 24);
+}
+
+function getVideoMaskKeyframes(path = state.previewPath) {
+  const keyframes = getCurrentVideoMeta(path)?.mask_keyframes;
+  if (!Array.isArray(keyframes)) return [];
+  return [...new Set(keyframes.map((value) => Math.max(0, Number.parseInt(value, 10) || 0)))].sort((a, b) => a - b);
+}
+
+function setVideoMaskKeyframes(path, keyframes) {
+  if (!path) return;
+  if (!state.videoMeta[path]) {
+    state.videoMeta[path] = {};
+  }
+  state.videoMeta[path].mask_keyframes = getVideoMaskKeyframesFromValues(keyframes);
+}
+
+function getVideoMaskKeyframesFromValues(keyframes) {
+  if (!Array.isArray(keyframes)) return [];
+  return [...new Set(keyframes.map((value) => {
+    if (value && typeof value === "object") {
+      return Math.max(0, Number.parseInt(value.frame_index, 10) || 0);
+    }
+    return Math.max(0, Number.parseInt(value, 10) || 0);
+  }))].sort((a, b) => a - b);
+}
+
+function getResolvedVideoMaskKeyframeForFrame(path, requestedFrameIndex, options = {}) {
+  const { fallbackToCurrent = true } = options;
+  const normalizedRequestedFrameIndex = Math.max(0, Number.parseInt(requestedFrameIndex, 10) || 0);
+  let resolvedFrameIndex = null;
+  for (const keyframe of getVideoMaskKeyframes(path)) {
+    if (keyframe > normalizedRequestedFrameIndex) {
+      break;
+    }
+    resolvedFrameIndex = keyframe;
+  }
+  if (resolvedFrameIndex == null && fallbackToCurrent && state.maskEditor.mediaType === "video" && state.maskEditor.path === path) {
+    return state.maskEditor.frameIndex;
+  }
+  return resolvedFrameIndex;
+}
+
+function getCurrentVideoMaskFrameIndex(path = state.previewPath) {
+  const currentTime = Math.max(0, Number(previewVideo.currentTime || 0));
+  return Math.max(0, Math.floor((currentTime * getEffectiveVideoMaskFps(path)) + 1e-6));
+}
+
+function formatVideoMaskFrameHint(frameIndex, path = state.previewPath) {
+  const normalizedFrameIndex = Math.max(0, Number(frameIndex || 0));
+  const fps = getEffectiveVideoMaskFps(path);
+  const timeSeconds = normalizedFrameIndex / Math.max(1, fps);
+  return `frame ${normalizedFrameIndex} (${formatDurationSeconds(timeSeconds)})`;
+}
+
+function revokeMaskEditorVideoSnapshot() {
+  if (state.maskEditor.videoSnapshotUrl) {
+    URL.revokeObjectURL(state.maskEditor.videoSnapshotUrl);
+    state.maskEditor.videoSnapshotUrl = null;
+  }
+}
+
+async function captureCurrentPreviewVideoFrameSnapshot(path = state.previewPath) {
+  if (!path || state.previewMediaType !== "video") {
+    throw new Error("Video preview is not active");
+  }
+  if (previewVideo.readyState < 2) {
+    throw new Error("Video frame is not ready yet");
+  }
+
+  const frameWidth = Math.max(1, Number(previewVideo.videoWidth || getCurrentVideoMeta(path)?.width || imgNatW || 1));
+  const frameHeight = Math.max(1, Number(previewVideo.videoHeight || getCurrentVideoMeta(path)?.height || imgNatH || 1));
+  const snapshotCanvas = document.createElement("canvas");
+  snapshotCanvas.width = frameWidth;
+  snapshotCanvas.height = frameHeight;
+  const snapshotContext = snapshotCanvas.getContext("2d");
+  snapshotContext.drawImage(previewVideo, 0, 0, frameWidth, frameHeight);
+
+  const snapshotBlob = await new Promise((resolve, reject) => {
+    snapshotCanvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+        return;
+      }
+      reject(new Error("Failed to capture the current video frame"));
+    }, "image/jpeg", 0.92);
+  });
+
+  const snapshotUrl = URL.createObjectURL(snapshotBlob);
+  await new Promise((resolve, reject) => {
+    previewImg.onload = () => resolve();
+    previewImg.onerror = () => reject(new Error("Failed to load the captured video frame"));
+    previewImg.src = snapshotUrl;
+  });
+  revokeMaskEditorVideoSnapshot();
+  state.maskEditor.videoSnapshotUrl = snapshotUrl;
+  return { width: frameWidth, height: frameHeight, url: snapshotUrl };
 }
 
 function clearMaskCursor() {
@@ -1219,17 +1330,37 @@ function syncMaskPreviewLayerVisibility() {
   const showLatentPreview = active && !!state.maskEditor.latentPreviewEnabled;
   if (state.previewMediaType === "image") {
     previewImg.style.display = state.previewPath && imgNatW && (!active || !showLatentPreview) ? "block" : "none";
+  } else if (state.previewMediaType === "video") {
+    const videoReady = state.previewPath && previewVideo.currentSrc && previewVideo.readyState >= 2;
+    previewImg.style.display = active && !!state.maskEditor.videoSnapshotUrl && (showLatentPreview || !videoReady) ? "block" : "none";
+    previewVideo.style.display = videoReady && (!active || !showLatentPreview) ? "block" : "none";
+    if (previewImg.style.display === "block") {
+      applyTransformToElement(previewImg);
+    }
+    if (previewVideo.style.display === "block") {
+      applyTransformToElement(previewVideo);
+    }
   }
   previewMaskCanvas.style.display = active && !showLatentPreview ? "block" : "none";
   previewLatentImageCanvas.style.display = showLatentPreview ? "block" : "none";
   previewLatentMaskCanvas.style.display = showLatentPreview ? "block" : "none";
 }
 
+function applyTransformToElement(element) {
+  if (!element) return;
+  element.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
+  element.style.width = imgNatW + "px";
+  element.style.height = imgNatH + "px";
+}
+
 function renderMaskEditorUi() {
   const available = isMaskEditAvailable();
+  const videoAvailable = isVideoMaskEditAvailable();
   const active = isMaskEditorVisible();
   const interactive = active && !state.maskEditor.loading && !state.maskEditor.saving;
   const showLatentPreview = active && !!state.maskEditor.latentPreviewEnabled;
+  const currentVideoFrameIndex = videoAvailable ? getCurrentVideoMaskFrameIndex() : null;
+  const canCreateVideoKeyframe = videoAvailable && (!active || (!state.maskEditor.loading && !state.maskEditor.saving && !state.maskEditor.painting && !state.maskEditor.switchingKeyframe));
   updateMaskControlLabels();
   applyMaskViewMode();
   updateMaskViewModeButton();
@@ -1243,7 +1374,11 @@ function renderMaskEditorUi() {
   maskLatentBaseWidthInput.disabled = !interactive || !showLatentPreview;
   maskLatentDividerInput.disabled = !interactive || !showLatentPreview;
   maskEditBtn.classList.toggle("visible", available && !active);
+  videoMaskAddBtn.classList.toggle("visible", videoAvailable);
+  videoMaskAddBtn.classList.toggle("in-editor", active && videoAvailable);
+  videoMaskAddBtn.disabled = !canCreateVideoKeyframe;
   maskActionBar.classList.toggle("visible", active);
+  maskActionBar.classList.toggle("with-video-key-add", active && videoAvailable);
   maskApplyBtn.classList.toggle("visible", active);
   maskCancelBtn.classList.toggle("visible", active);
   maskUndoBtn.classList.toggle("visible", active);
@@ -1252,6 +1387,21 @@ function renderMaskEditorUi() {
   maskLatentPreviewBtn.classList.toggle("visible", active);
   maskResetBtn.classList.toggle("visible", active);
   maskLatentPreviewControls.classList.toggle("visible", showLatentPreview);
+  if (state.previewMediaType === "video") {
+    maskEditBtn.textContent = "Edit Key Mask";
+    maskEditBtn.title = videoAvailable
+      ? `Edit the active key-frame mask at or before ${formatVideoMaskFrameHint(currentVideoFrameIndex)}`
+      : "Edit the key-frame mask at the current video frame";
+    videoMaskAddBtn.title = videoAvailable
+      ? (active
+        ? `Create a new key-frame mask at ${formatVideoMaskFrameHint(currentVideoFrameIndex)} and keep editing`
+        : `Add a new key-frame mask at ${formatVideoMaskFrameHint(currentVideoFrameIndex)}`)
+      : "Add a new key-frame mask at the current video frame";
+  } else {
+    maskEditBtn.textContent = "Mask";
+    maskEditBtn.title = "Edit the image mask";
+    videoMaskAddBtn.title = "Add a new key-frame mask at the current video frame";
+  }
   syncMaskPreviewLayerVisibility();
   applyMaskCanvasTransform();
   applyMaskLatentPreviewTransform();
@@ -1261,6 +1411,7 @@ function renderMaskEditorUi() {
   if (!active) {
     clearMaskCursor();
   }
+  renderGifConvertButton();
   renderPreviewCaptionOverlay();
 }
 
@@ -1476,6 +1627,11 @@ function paintMaskAtClient(clientX, clientY) {
 }
 
 function beginMaskPaint(event) {
+  if (state.previewMediaType === "video" && !previewVideo.paused) {
+    previewVideo.pause();
+    statusBar.textContent = "Paused video preview for mask painting";
+    return;
+  }
   ensureMaskStrokeCanvases();
   const strokeBaseCtx = state.maskEditor.strokeBaseCanvas.getContext("2d");
   strokeBaseCtx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1506,8 +1662,19 @@ function snapshotMaskBaseCanvas() {
   refreshMaskBaseCanvas();
 }
 
-async function fetchMaskMetadata(path, ensure = false) {
-  const resp = await fetch(`/api/mask?path=${encodeURIComponent(path)}&ensure=${ensure ? "true" : "false"}`);
+async function fetchMaskMetadata(path, ensure = false, options = {}) {
+  const { frameIndex = null, createNew = false } = options;
+  const params = new URLSearchParams({
+    path,
+    ensure: ensure ? "true" : "false",
+  });
+  if (frameIndex != null) {
+    params.set("frame_index", String(frameIndex));
+  }
+  if (createNew) {
+    params.set("create_new", "true");
+  }
+  const resp = await fetch(`/api/mask?${params.toString()}`);
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     throw new Error(data.detail || "Failed to load mask metadata");
@@ -1524,7 +1691,7 @@ function loadMaskImage(url) {
   });
 }
 
-async function loadMaskEditorForPath(path) {
+async function loadImageMaskEditorForPath(path) {
   const maskInfo = await fetchMaskMetadata(path, true);
   const imageWidth = Math.max(1, Number(maskInfo.image_width || 1));
   const imageHeight = Math.max(1, Number(maskInfo.image_height || 1));
@@ -1542,6 +1709,10 @@ async function loadMaskEditorForPath(path) {
   ctx.drawImage(image, 0, 0, imageWidth, imageHeight);
 
   state.maskEditor.path = path;
+  state.maskEditor.mediaType = "image";
+  state.maskEditor.frameIndex = null;
+  state.maskEditor.requestedFrameIndex = null;
+  state.maskEditor.sourceFrameIndex = null;
   state.maskEditor.imageWidth = imageWidth;
   state.maskEditor.imageHeight = imageHeight;
   state.maskEditor.previewScaleX = previewScaleX;
@@ -1555,9 +1726,66 @@ async function loadMaskEditorForPath(path) {
   applyMaskLatentPreviewTransform();
   renderMaskEditorUi();
   scheduleMaskLatentPreviewRender({ imageDirty: true });
+  return maskInfo;
 }
 
-async function enterMaskEditMode() {
+async function loadVideoMaskEditorForPath(path, options = {}) {
+  const { createNew = false, requestedFrameIndex: requestedFrameIndexOption = null } = options;
+  const requestedFrameIndex = requestedFrameIndexOption == null
+    ? getCurrentVideoMaskFrameIndex(path)
+    : Math.max(0, Number.parseInt(requestedFrameIndexOption, 10) || 0);
+  await captureCurrentPreviewVideoFrameSnapshot(path);
+  const maskInfo = await fetchMaskMetadata(path, true, { frameIndex: requestedFrameIndex, createNew });
+  const imageWidth = Math.max(1, Number(maskInfo.image_width || imgNatW || 1));
+  const imageHeight = Math.max(1, Number(maskInfo.image_height || imgNatH || 1));
+  const previewScaleX = imageWidth / Math.max(1, imgNatW || imageWidth);
+  const previewScaleY = imageHeight / Math.max(1, imgNatH || imageHeight);
+  const image = await loadMaskImage(buildImageApiUrl("mask/image", path, {
+    ensure: true,
+    frame_index: maskInfo.frame_index,
+    create_new: createNew,
+    mask_v: maskInfo.mtime || Date.now(),
+  }));
+
+  previewMaskCanvas.width = imageWidth;
+  previewMaskCanvas.height = imageHeight;
+  const ctx = previewMaskCanvas.getContext("2d");
+  ctx.clearRect(0, 0, imageWidth, imageHeight);
+  ctx.drawImage(image, 0, 0, imageWidth, imageHeight);
+
+  state.maskEditor.path = path;
+  state.maskEditor.mediaType = "video";
+  state.maskEditor.frameIndex = Number(maskInfo.frame_index || requestedFrameIndex || 0);
+  state.maskEditor.requestedFrameIndex = Number(maskInfo.requested_frame_index || requestedFrameIndex || 0);
+  state.maskEditor.sourceFrameIndex = maskInfo.source_frame_index == null ? null : Number(maskInfo.source_frame_index || 0);
+  state.maskEditor.switchingKeyframe = false;
+  state.maskEditor.imageWidth = imageWidth;
+  state.maskEditor.imageHeight = imageHeight;
+  state.maskEditor.previewScaleX = previewScaleX;
+  state.maskEditor.previewScaleY = previewScaleY;
+  state.maskEditor.latentImageDirty = true;
+  stopMaskPaint();
+  refreshMaskBaseCanvas();
+  resetMaskHistory();
+  setVideoMaskKeyframes(path, maskInfo.keyframes || []);
+  setImageMaskPresence(path, true, maskInfo.mtime || Date.now(), maskInfo.mask_count);
+  applyMaskCanvasTransform();
+  applyMaskLatentPreviewTransform();
+  renderMaskEditorUi();
+  renderVideoEditPanel();
+  scheduleMaskLatentPreviewRender({ imageDirty: true });
+  return maskInfo;
+}
+
+async function loadMaskEditorForPath(path, options = {}) {
+  if (getMediaType(path) === "video") {
+    return loadVideoMaskEditorForPath(path, options);
+  }
+  return loadImageMaskEditorForPath(path);
+}
+
+async function enterMaskEditMode(options = {}) {
+  const { createNew = false } = options;
   if (!isMaskEditAvailable()) return;
   if (state.cropDraft || state.cropInteraction) {
     clearCropDraft();
@@ -1567,8 +1795,12 @@ async function enterMaskEditMode() {
   state.maskEditor.path = state.previewPath;
   renderMaskEditorUi();
   try {
-    await loadMaskEditorForPath(state.previewPath);
-    statusBar.textContent = `Editing mask for ${getFileLabel(state.previewPath)}`;
+    const maskInfo = await loadMaskEditorForPath(state.previewPath, { createNew });
+    if (state.maskEditor.mediaType === "video") {
+      statusBar.textContent = `Editing key-frame mask for ${getFileLabel(state.previewPath)} at ${formatVideoMaskFrameHint(maskInfo.frame_index, state.previewPath)}`;
+    } else {
+      statusBar.textContent = `Editing mask for ${getFileLabel(state.previewPath)}`;
+    }
   } catch (err) {
     state.maskEditor.active = false;
     previewMaskCanvas.style.display = "none";
@@ -1577,6 +1809,69 @@ async function enterMaskEditMode() {
   } finally {
     state.maskEditor.loading = false;
     renderMaskEditorUi();
+  }
+}
+
+async function enterVideoMaskAddMode() {
+  if (!isVideoMaskEditAvailable()) return;
+  if (state.maskEditor.active && state.maskEditor.mediaType === "video") {
+    if (state.maskEditor.loading || state.maskEditor.saving || state.maskEditor.painting || state.maskEditor.switchingKeyframe) {
+      return;
+    }
+    state.maskEditor.switchingKeyframe = true;
+    renderMaskEditorUi();
+    try {
+      if (state.maskEditor.dirty) {
+        await saveMaskEdit({ closeAfterSave: false });
+      }
+      const requestedFrameIndex = getCurrentVideoMaskFrameIndex(state.previewPath);
+      const maskInfo = await loadVideoMaskEditorForPath(state.previewPath, {
+        createNew: true,
+        requestedFrameIndex,
+      });
+      statusBar.textContent = `Editing key-frame mask for ${getFileLabel(state.previewPath)} at ${formatVideoMaskFrameHint(maskInfo.frame_index, state.previewPath)}`;
+    } finally {
+      state.maskEditor.switchingKeyframe = false;
+      renderMaskEditorUi();
+      renderVideoEditPanel();
+    }
+    return;
+  }
+  return enterMaskEditMode({ createNew: true });
+}
+
+async function syncActiveVideoMaskEditorToSeekPosition() {
+  if (!state.maskEditor.active || state.maskEditor.mediaType !== "video" || !state.previewPath) {
+    return;
+  }
+  if (state.maskEditor.loading || state.maskEditor.saving || state.maskEditor.painting || state.maskEditor.switchingKeyframe) {
+    return;
+  }
+
+  const requestedFrameIndex = getCurrentVideoMaskFrameIndex(state.previewPath);
+  state.maskEditor.requestedFrameIndex = requestedFrameIndex;
+  const nextFrameIndex = getResolvedVideoMaskKeyframeForFrame(state.previewPath, requestedFrameIndex);
+  if (nextFrameIndex == null || Number(nextFrameIndex) === Number(state.maskEditor.frameIndex)) {
+    renderMaskEditorUi();
+    renderVideoEditPanel();
+    return;
+  }
+
+  state.maskEditor.switchingKeyframe = true;
+  renderMaskEditorUi();
+  try {
+    if (state.maskEditor.dirty) {
+      await saveMaskEdit({ closeAfterSave: false });
+    }
+    const maskInfo = await loadVideoMaskEditorForPath(state.previewPath, {
+      createNew: false,
+      requestedFrameIndex,
+    });
+    statusBar.textContent = `Editing key-frame mask for ${getFileLabel(state.previewPath)} at ${formatVideoMaskFrameHint(maskInfo.frame_index, state.previewPath)}`;
+  } finally {
+    state.maskEditor.switchingKeyframe = false;
+    renderMaskEditorUi();
+    renderVideoEditPanel();
   }
 }
 
@@ -1593,7 +1888,12 @@ function closeMaskEditor(options = {}) {
   state.maskEditor.loading = false;
   state.maskEditor.saving = false;
   state.maskEditor.dirty = false;
+  state.maskEditor.switchingKeyframe = false;
   state.maskEditor.path = null;
+  state.maskEditor.mediaType = null;
+  state.maskEditor.frameIndex = null;
+  state.maskEditor.requestedFrameIndex = null;
+  state.maskEditor.sourceFrameIndex = null;
   state.maskEditor.imageWidth = 0;
   state.maskEditor.imageHeight = 0;
   state.maskEditor.previewScaleX = 1;
@@ -1611,6 +1911,11 @@ function closeMaskEditor(options = {}) {
   state.maskEditor.strokeBaseCanvas = null;
   state.maskEditor.strokeInfluenceValues = null;
   state.maskEditor.strokeDirtyRect = null;
+  revokeMaskEditorVideoSnapshot();
+  if (state.previewMediaType === "video") {
+    previewImg.removeAttribute("src");
+    previewImg.style.display = "none";
+  }
   previewMaskCanvas.width = 0;
   previewMaskCanvas.height = 0;
   previewMaskCanvas.style.display = "none";
@@ -1650,8 +1955,14 @@ async function saveMaskEdit(options = {}) {
       }, "image/png");
     });
     const formData = new FormData();
-    formData.append("image_path", state.previewPath);
-    formData.append("mask", blob, `${getFileLabel(state.previewPath)}.mask.png`);
+    const targetPath = state.maskEditor.path || state.previewPath;
+    if (state.maskEditor.mediaType === "video") {
+      formData.append("media_path", targetPath);
+      formData.append("frame_index", String(Math.max(0, Number(state.maskEditor.frameIndex || 0))));
+    } else {
+      formData.append("image_path", targetPath);
+    }
+    formData.append("mask", blob, `${getFileLabel(targetPath)}.mask.png`);
 
     const resp = await fetch("/api/mask", {
       method: "POST",
@@ -1664,8 +1975,14 @@ async function saveMaskEdit(options = {}) {
     refreshMaskBaseCanvas();
     state.maskEditor.cleanHistoryIndex = state.maskEditor.historyIndex;
     syncMaskEditorDirtyState();
-    setImageMaskPresence(state.previewPath, true, data.mtime || Date.now());
-    statusBar.textContent = `Saved mask for ${getFileLabel(state.previewPath)}`;
+    if (state.maskEditor.mediaType === "video") {
+      setVideoMaskKeyframes(targetPath, data.keyframes || []);
+    }
+    setImageMaskPresence(targetPath, true, data.mtime || Date.now(), data.mask_count);
+    renderVideoEditPanel();
+    statusBar.textContent = state.maskEditor.mediaType === "video"
+      ? `Saved key-frame mask for ${getFileLabel(targetPath)} at ${formatVideoMaskFrameHint(state.maskEditor.frameIndex, targetPath)}`
+      : `Saved mask for ${getFileLabel(targetPath)}`;
     if (closeAfterSave) {
       closeMaskEditor();
     } else {
@@ -1810,10 +2127,17 @@ function bumpMaskVersion(path, version = Date.now()) {
   state.imageMaskVersions[path] = Number(version || Date.now()) || Date.now();
 }
 
-function setImageMaskPresence(path, hasMask, version = null) {
+function setImageMaskPresence(path, hasMask, version = null, maskCount = null) {
   const image = state.images.find((item) => item.path === path);
   if (image) {
     image.has_mask = !!hasMask;
+    if (maskCount != null) {
+      image.mask_count = Math.max(0, Number(maskCount || 0));
+    } else if (!hasMask) {
+      image.mask_count = 0;
+    } else if (!(Number(image.mask_count || 0) > 0)) {
+      image.mask_count = 1;
+    }
   }
   if (hasMask) {
     bumpMaskVersion(path, version ?? Date.now());
@@ -2158,6 +2482,7 @@ function updateCropButtons() {
   cropApplyBtn.classList.toggle("visible", !videoCrop && editable && hasDraft && state.cropDirty);
   cropApplyBtn.textContent = "Apply";
   rotateControls.classList.toggle("visible", !videoCrop && editable && !hasDraft);
+  renderGifConvertButton();
 }
 
 function renderCropOverlay() {
@@ -2529,6 +2854,7 @@ function updateActionButtons() {
   addFreeTextNowBtn.title = state.autoCaptioning && state.autoCaptionMode === "free-text-only"
     ? "Stop the running free-text enhancement"
     : "Ask Ollama to add only free-text details for the selected media";
+  renderGifConvertButton();
   renderVideoEditPanel();
 }
 
@@ -2655,6 +2981,264 @@ function appendModelLog(text, kind = "") {
   renderModelLog();
 }
 
+function slugifyVideoTrainingPresetKey(value, fallback = "profile") {
+  const raw = String(value || fallback).trim().toLowerCase();
+  let result = "";
+  let previousDash = false;
+  for (const char of raw) {
+    if ((char >= "a" && char <= "z") || (char >= "0" && char <= "9")) {
+      result += char;
+      previousDash = false;
+      continue;
+    }
+    if (previousDash) continue;
+    result += "-";
+    previousDash = true;
+  }
+  return result.replace(/^-+|-+$/g, "") || fallback;
+}
+
+function roundVideoTrainingSeconds(value) {
+  return Math.round(Math.max(0, Number(value || 0)) * 1000) / 1000;
+}
+
+function normalizeEditableVideoTrainingPreset(rawPreset, index, usedKeys) {
+  if (!rawPreset || typeof rawPreset !== "object" || Array.isArray(rawPreset)) return null;
+
+  const fallbackKey = `profile-${index + 1}`;
+  const baseKey = slugifyVideoTrainingPresetKey(
+    rawPreset.key || rawPreset.label || rawPreset.name,
+    fallbackKey
+  );
+  let key = baseKey;
+  let counter = 2;
+  while (usedKeys.has(key)) {
+    key = `${baseKey}-${counter}`;
+    counter += 1;
+  }
+  usedKeys.add(key);
+
+  const label = String(rawPreset.label || rawPreset.name || key).trim() || key;
+  let targetFamily = String(rawPreset.target_family || "custom").trim().toLowerCase() || "custom";
+  if (!["wan", "ltx", "hunyuan", "custom"].includes(targetFamily)) {
+    targetFamily = "custom";
+  }
+
+  const numFrames = Math.max(1, Number.parseInt(rawPreset.num_frames, 10) || 1);
+  const fps = Math.max(1, Number.parseInt(rawPreset.fps, 10) || 16);
+  const shortClipFactor = Math.max(0.25, Math.min(1.0, Number(rawPreset.short_clip_factor || 0.8) || 0.8));
+  const longClipFactor = Math.max(shortClipFactor, Math.min(4.0, Number(rawPreset.long_clip_factor || 1.5) || 1.5));
+  const preferredExtensions = [];
+  for (const extension of Array.isArray(rawPreset.preferred_extensions) ? rawPreset.preferred_extensions : []) {
+    let normalizedExtension = String(extension || "").trim().toLowerCase();
+    if (!normalizedExtension) continue;
+    if (!normalizedExtension.startsWith(".")) {
+      normalizedExtension = `.${normalizedExtension}`;
+    }
+    if (!VIDEO_FILE_EXTENSIONS.has(normalizedExtension) || preferredExtensions.includes(normalizedExtension)) continue;
+    preferredExtensions.push(normalizedExtension);
+  }
+
+  const idealClipSeconds = roundVideoTrainingSeconds(numFrames / Math.max(1, fps));
+  return {
+    key,
+    label,
+    target_family: targetFamily,
+    num_frames: numFrames,
+    fps,
+    shrink_video_to_frames: rawPreset.shrink_video_to_frames !== false,
+    short_clip_factor: shortClipFactor,
+    long_clip_factor: longClipFactor,
+    ideal_clip_seconds: idealClipSeconds,
+    min_clip_seconds: roundVideoTrainingSeconds(idealClipSeconds * shortClipFactor),
+    max_clip_seconds: roundVideoTrainingSeconds(idealClipSeconds * longClipFactor),
+    preferred_extensions: preferredExtensions,
+    description: String(rawPreset.description || "").trim(),
+  };
+}
+
+function normalizeEditableVideoTrainingPresets(rawPresets) {
+  const normalized = [];
+  const usedKeys = new Set();
+  for (const [index, rawPreset] of (Array.isArray(rawPresets) ? rawPresets : []).entries()) {
+    const preset = normalizeEditableVideoTrainingPreset(rawPreset, index, usedKeys);
+    if (preset) {
+      normalized.push(preset);
+    }
+  }
+  return normalized;
+}
+
+function parseVideoTrainingPresetsText(rawText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(rawText || "").trim());
+  } catch {
+    throw new Error("Video training presets must be valid JSON.");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error("Video training presets JSON must be an array.");
+  }
+  const normalized = normalizeEditableVideoTrainingPresets(parsed);
+  if (!normalized.length) {
+    throw new Error("Video training presets JSON must contain at least one preset object.");
+  }
+  return normalized;
+}
+
+function getDefaultVideoTrainingPresetsStatus() {
+  return state.folder
+    ? "Edit the preset library as JSON. Save to apply the library and the current folder selection."
+    : "Edit the preset library as JSON. Load a folder to choose a per-folder profile.";
+}
+
+function setVideoTrainingPresetsStatus(message = "", options = {}) {
+  const { isError = false } = options;
+  settingsVideoPresetsStatus.textContent = String(message || getDefaultVideoTrainingPresetsStatus()).trim();
+  settingsVideoPresetsStatus.classList.toggle("is-error", !!isError);
+}
+
+function findVideoTrainingProfileByKey(key, presets = state.videoTrainingPresets) {
+  const normalizedKey = String(key || "").trim();
+  if (!normalizedKey) return null;
+  return (Array.isArray(presets) ? presets : []).find((preset) => String(preset?.key || "").trim() === normalizedKey) || null;
+}
+
+function populateVideoTrainingProfileSelect(presets = state.videoTrainingPresets, selectedKey = state.videoTrainingProfileKey) {
+  const profileList = Array.isArray(presets) ? presets : [];
+  const options = [];
+  if (state.folder && profileList.length > 0) {
+    const resolvedProfile = findVideoTrainingProfileByKey(selectedKey, profileList) || profileList[0] || null;
+    for (const preset of profileList) {
+      options.push({
+        value: String(preset.key || ""),
+        label: `${preset.label} (${preset.num_frames}f @ ${preset.fps} fps)`,
+      });
+    }
+    settingsVideoProfileInput.innerHTML = "";
+    for (const optionData of options) {
+      const option = document.createElement("option");
+      option.value = optionData.value;
+      option.textContent = optionData.label;
+      settingsVideoProfileInput.appendChild(option);
+    }
+    settingsVideoProfileInput.disabled = false;
+    settingsVideoProfileInput.value = resolvedProfile ? resolvedProfile.key : "";
+    return;
+  }
+
+  settingsVideoProfileInput.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = state.folder ? "No presets configured" : "Load a folder to choose a profile";
+  settingsVideoProfileInput.appendChild(placeholder);
+  settingsVideoProfileInput.value = "";
+  settingsVideoProfileInput.disabled = true;
+}
+
+function getSelectedVideoTrainingProfileFromState() {
+  return findVideoTrainingProfileByKey(state.videoTrainingProfileKey)
+    || findVideoTrainingProfileByKey(state.videoTrainingProfile?.key)
+    || state.videoTrainingProfile
+    || (Array.isArray(state.videoTrainingPresets) && state.videoTrainingPresets.length > 0 ? state.videoTrainingPresets[0] : null);
+}
+
+function getVideoTrainingPreferredExtensionsLabel(profile) {
+  const extensions = Array.isArray(profile?.preferred_extensions)
+    ? profile.preferred_extensions.map((extension) => String(extension || "").trim()).filter(Boolean)
+    : [];
+  return extensions.join(", ");
+}
+
+function renderVideoTrainingSummary() {
+  const visible = state.previewMediaType === "video" && !!state.previewPath && state.selectedPaths.size === 1;
+  if (!visible) {
+    videoTrainingProfileLabel.textContent = "";
+    videoTrainingGuidanceLabel.textContent = "";
+    return;
+  }
+
+  const profile = getSelectedVideoTrainingProfileFromState();
+  if (!profile) {
+    videoTrainingProfileLabel.textContent = "No folder video profile selected";
+    videoTrainingGuidanceLabel.textContent = "Open Settings > Video Training and choose a profile for this folder.";
+    return;
+  }
+
+  const duration = getEffectiveVideoDuration(state.previewPath);
+  const draft = getVideoClipDraft(state.previewPath);
+  const selectionDuration = duration > 0
+    ? Math.max(0, duration * Math.max(0, Number(draft?.endFraction || 0) - Number(draft?.startFraction || 0)))
+    : 0;
+  const minSeconds = Math.max(0, Number(profile.min_clip_seconds || 0));
+  const maxSeconds = Math.max(minSeconds, Number(profile.max_clip_seconds || 0));
+  const idealSeconds = Math.max(0, Number(profile.ideal_clip_seconds || 0));
+  let selectionState = "";
+  if (duration > 0) {
+    if (selectionDuration < minSeconds) {
+      selectionState = "short";
+    } else if (selectionDuration > maxSeconds) {
+      selectionState = "long";
+    } else {
+      selectionState = "within target";
+    }
+  }
+
+  const guidance = [
+    `Target ${formatDurationSeconds(idealSeconds)}`,
+    `recommended ${formatDurationSeconds(minSeconds)}-${formatDurationSeconds(maxSeconds)}`,
+  ];
+  if (duration > 0) {
+    guidance.push(`selection ${formatDurationSeconds(selectionDuration)}${selectionState ? ` (${selectionState})` : ""}`);
+  } else {
+    guidance.push("loading duration...");
+  }
+  const preferredExtensions = getVideoTrainingPreferredExtensionsLabel(profile);
+  if (preferredExtensions) {
+    guidance.push(`prefer ${preferredExtensions}`);
+  }
+  if (profile.description) {
+    guidance.push(profile.description);
+  }
+
+  videoTrainingProfileLabel.textContent = `${profile.label} • ${profile.num_frames}f @ ${profile.fps} fps`;
+  videoTrainingGuidanceLabel.textContent = guidance.join(" • ");
+}
+
+function isGifMediaPath(path = state.previewPath) {
+  return getImageExtension(path) === ".gif";
+}
+
+function renderGifConvertButton() {
+  const visible = !!state.previewPath
+    && state.previewMediaType === "image"
+    && state.selectedPaths.size === 1
+    && isGifMediaPath(state.previewPath)
+    && !state.maskEditor.active;
+  const hasVideoJobs = !!(state.videoJobs?.activeJob || state.videoJobs?.queuedJobs?.length);
+  gifConvertBtn.classList.toggle("visible", visible);
+  gifConvertBtn.disabled = !visible || !!state.cropDraft || state.autoCaptioning || state.cloning || state.uploading || hasVideoJobs;
+  gifConvertBtn.title = hasVideoJobs
+    ? "Wait for queued video jobs to finish before converting this GIF"
+    : "Convert this GIF into an MP4 beside the original GIF";
+}
+
+function handleVideoTrainingPresetsInput() {
+  const currentSelection = String(settingsVideoProfileInput.value || state.videoTrainingProfileKey || "").trim();
+  try {
+    const presets = parseVideoTrainingPresetsText(settingsVideoPresetsInput.value);
+    populateVideoTrainingProfileSelect(presets, currentSelection);
+    setVideoTrainingPresetsStatus("Preset library parsed. Save to apply changes.");
+  } catch (err) {
+    setVideoTrainingPresetsStatus(err.message || "Invalid video training preset JSON.", { isError: true });
+  }
+}
+
+function handleVideoTrainingProfileInputChange() {
+  if (!state.folder) return;
+  setVideoTrainingPresetsStatus("Save to apply the selected profile to the current folder.");
+}
+
 function applySettings(settings) {
   const thumbSize = Number(settings.thumb_size || state.thumbSize || 160) || 160;
   state.thumbSize = Math.max(60, Math.min(400, thumbSize));
@@ -2677,10 +3261,29 @@ function applySettings(settings) {
   state.ollamaGroupPromptTemplate = settings.ollama_group_prompt_template || state.ollamaGroupPromptTemplate;
   state.ollamaEnableFreeText = settings.ollama_enable_free_text ?? state.ollamaEnableFreeText;
   state.ollamaFreeTextPromptTemplate = settings.ollama_free_text_prompt_template || state.ollamaFreeTextPromptTemplate;
+  if (Object.prototype.hasOwnProperty.call(settings, "video_training_presets")) {
+    state.videoTrainingPresets = Array.isArray(settings.video_training_presets) ? settings.video_training_presets : [];
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, "video_training_profile_key")) {
+    state.videoTrainingProfileKey = String(settings.video_training_profile_key || "").trim();
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, "video_training_profile")) {
+    state.videoTrainingProfile = settings.video_training_profile || null;
+  }
+  if (!findVideoTrainingProfileByKey(state.videoTrainingProfileKey) && Array.isArray(state.videoTrainingPresets) && state.videoTrainingPresets.length > 0) {
+    state.videoTrainingProfileKey = String(state.videoTrainingProfile?.key || state.videoTrainingPresets[0].key || "").trim();
+  }
+  state.videoTrainingProfile = findVideoTrainingProfileByKey(state.videoTrainingProfileKey)
+    || state.videoTrainingProfile
+    || null;
   if (settings.sections) {
     state.sections = normalizeSectionsData(settings.sections);
   }
   autoFreeTextCheckbox.checked = !!state.ollamaEnableFreeText;
+  populateVideoTrainingProfileSelect();
+  setVideoTrainingPresetsStatus();
+  renderVideoTrainingSummary();
+  renderGifConvertButton();
   if (state.images.length) {
     renderGrid();
   }
@@ -2742,6 +3345,9 @@ function fillSettingsForm() {
   settingsProcessingReservedCoresInput.value = String(state.processingReservedCores);
   settingsFfmpegThreadsInput.value = String(state.ffmpegThreads);
   settingsFfmpegHwaccelInput.value = state.ffmpegHwaccel;
+  settingsVideoPresetsInput.value = JSON.stringify(Array.isArray(state.videoTrainingPresets) ? state.videoTrainingPresets : [], null, 2);
+  populateVideoTrainingProfileSelect(state.videoTrainingPresets, state.videoTrainingProfileKey);
+  setVideoTrainingPresetsStatus();
   settingsPromptInput.value = state.ollamaPromptTemplate;
   settingsGroupPromptInput.value = state.ollamaGroupPromptTemplate;
   settingsAutoFreeTextEnabled.checked = !!state.ollamaEnableFreeText;
@@ -2927,6 +3533,24 @@ function handlePreviewVideoTimeUpdate() {
     snapPreviewVideoIntoLoopRange();
   }
   syncPreviewVideoPlaybackState();
+  if (
+    !previewVideo.paused
+    && state.maskEditor.active
+    && state.maskEditor.mediaType === "video"
+    && !state.maskEditor.loading
+    && !state.maskEditor.saving
+    && !state.maskEditor.painting
+    && !state.maskEditor.switchingKeyframe
+  ) {
+    const requestedFrameIndex = getCurrentVideoMaskFrameIndex(state.previewPath);
+    const nextFrameIndex = getResolvedVideoMaskKeyframeForFrame(state.previewPath, requestedFrameIndex);
+    if (nextFrameIndex == null || Number(nextFrameIndex) === Number(state.maskEditor.frameIndex)) {
+      return;
+    }
+    syncActiveVideoMaskEditorToSeekPosition().catch((err) => {
+      showErrorToast(`Mask error: ${err.message || err}`);
+    });
+  }
 }
 
 function handlePreviewVideoEnded() {
@@ -2938,6 +3562,24 @@ function handlePreviewVideoEnded() {
     return;
   }
   syncPreviewVideoPlaybackState();
+}
+
+function handlePreviewVideoPause() {
+  syncPreviewVideoPlaybackState();
+  if (state.maskEditor.active && state.maskEditor.mediaType === "video") {
+    syncActiveVideoMaskEditorToSeekPosition().catch((err) => {
+      showErrorToast(`Mask error: ${err.message || err}`);
+    });
+  }
+}
+
+function handlePreviewVideoSeeked() {
+  syncPreviewVideoPlaybackState();
+  if (state.maskEditor.active && state.maskEditor.mediaType === "video") {
+    syncActiveVideoMaskEditorToSeekPosition().catch((err) => {
+      showErrorToast(`Mask error: ${err.message || err}`);
+    });
+  }
 }
 
 function togglePreviewVideoPlayback() {
@@ -3292,6 +3934,7 @@ async function ensureVideoTimelineLoaded(path) {
 
 function renderVideoTimelineOverlay(path = state.previewPath) {
   if (!path || !isVideoMediaPath(path)) {
+    videoTimelineOverlay.querySelectorAll(".video-timeline-mask-key").forEach((node) => node.remove());
     videoTimelineSelection.style.width = "0px";
     videoTimelineStartHandle.style.left = "0px";
     videoTimelineEndHandle.style.left = "0px";
@@ -3307,11 +3950,35 @@ function renderVideoTimelineOverlay(path = state.previewPath) {
     ? clamp(Number(previewVideo.currentTime || 0) / duration, 0, 1)
     : 0;
   const playheadX = playheadFraction * metrics.trackWidth;
+  const requestedFrameIndex = getCurrentVideoMaskFrameIndex(path);
+  const currentTargetFrameIndex = getResolvedVideoMaskKeyframeForFrame(path, requestedFrameIndex);
   videoTimelineSelection.style.left = `${startX}px`;
   videoTimelineSelection.style.width = `${Math.max(0, endX - startX)}px`;
   videoTimelineStartHandle.style.left = `${startX}px`;
   videoTimelineEndHandle.style.left = `${endX}px`;
   videoTimelinePlayhead.style.left = `${playheadX}px`;
+
+  const existingMarkers = [...videoTimelineOverlay.querySelectorAll(".video-timeline-mask-key")];
+  const keyframes = getVideoMaskKeyframes(path);
+  for (let index = 0; index < keyframes.length; index += 1) {
+    const frameIndex = keyframes[index];
+    const marker = existingMarkers[index] || document.createElement("div");
+    marker.className = "video-timeline-mask-key";
+    const markerFraction = clamp(
+      (Math.max(0, frameIndex) / Math.max(1, getEffectiveVideoMaskFps(path))) / Math.max(duration, 0.001),
+      0,
+      1,
+    );
+    marker.style.left = `${markerFraction * metrics.trackWidth}px`;
+    marker.title = `Mask key ${formatVideoMaskFrameHint(frameIndex, path)}`;
+    marker.classList.toggle("active", state.maskEditor.mediaType === "video" && state.maskEditor.path === path && Number(state.maskEditor.frameIndex) === frameIndex);
+    marker.classList.toggle("current-target", currentTargetFrameIndex != null && Number(currentTargetFrameIndex) === frameIndex);
+    marker.setAttribute("aria-hidden", "true");
+    if (!marker.parentElement) {
+      videoTimelineOverlay.appendChild(marker);
+    }
+  }
+  existingMarkers.slice(keyframes.length).forEach((node) => node.remove());
 }
 
 function updateVideoTimeRangeLabel(path = state.previewPath) {
@@ -3348,6 +4015,7 @@ function syncVideoTimelineState(path = state.previewPath) {
   videoTimelineEndHandle.disabled = !hasDuration;
   videoTimelinePlayhead.disabled = !hasDuration;
   videoTimelineViewport.classList.toggle("disabled", !hasDuration);
+  renderVideoTrainingSummary();
 }
 
 function setVideoClipFractions(path, startFraction, endFraction, seekFraction = null) {
@@ -3434,6 +4102,7 @@ function renderVideoEditPanel() {
   const visible = videoVisible;
   videoEditPanel.classList.toggle("visible", visible);
   videoEditPanel.classList.toggle("crop-mode", false);
+  renderVideoTrainingSummary();
   if (!visible) {
     videoDownloadBtn.disabled = true;
     syncPreviewVideoPlaybackState();
@@ -3492,6 +4161,46 @@ async function queueCurrentVideoClip() {
   }
 }
 
+
+async function enqueueGifConvertJob(path) {
+  const resp = await fetch("/api/media/jobs/convert-gif", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ media_path: path }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.detail || "Failed to queue GIF conversion job");
+  }
+  return data.job || null;
+}
+
+async function queueCurrentGifConversion() {
+  if (!state.previewPath || !isGifMediaPath(state.previewPath)) return;
+  statusBar.textContent = "Queueing GIF conversion...";
+  try {
+    await enqueueGifConvertJob(state.previewPath);
+    await pollVideoJobStatus();
+    statusBar.textContent = `Queued GIF conversion for ${getFileLabel(state.previewPath)}`;
+  } catch (err) {
+    statusBar.textContent = `GIF conversion error: ${err.message}`;
+    showErrorToast(`GIF conversion error: ${err.message}`);
+  }
+}
+
+function getVideoJobPresentTenseLabel(type) {
+  if (type === "clip") return "Clipping";
+  if (type === "crop") return "Cropping";
+  if (type === "gif_to_mp4") return "Converting";
+  return "Processing";
+}
+
+function getVideoJobPastLabel(type) {
+  if (type === "clip") return "Clip";
+  if (type === "crop") return "Crop";
+  if (type === "gif_to_mp4") return "GIF conversion";
+  return "Video";
+}
 async function enqueueVideoCropJob(path, crop) {
   const resp = await fetch("/api/video/jobs/crop", {
     method: "POST",
@@ -3582,7 +4291,7 @@ function renderVideoJobStatus() {
   const percent = Math.max(0, Math.min(100, ((completed + activeFraction) / total) * 100));
   const parts = [];
   if (activeJob) {
-    parts.push(`${activeJob.type === "clip" ? "Clipping" : "Cropping"} ${getFileLabel(activeJob.video_path)}`);
+    parts.push(`${getVideoJobPresentTenseLabel(activeJob.type)} ${getFileLabel(activeJob.video_path)}`);
     if (activeJob.message) parts.push(activeJob.message);
   }
   if (queuedCount > 0) {
@@ -3592,13 +4301,14 @@ function renderVideoJobStatus() {
   videoJobText.textContent = parts.join(" • ");
   videoJobProgressFill.style.width = `${percent}%`;
   videoJobProgressFill.classList.toggle("active", running);
+  renderGifConvertButton();
 }
 
 async function handleCompletedVideoJobs(jobs) {
   const relevantJobs = (jobs || []).filter((job) => String(job.folder || "") === String(state.folder || ""));
   if (!relevantJobs.length) return;
   const generatedOutputPaths = relevantJobs
-    .filter((job) => job.status === "completed" && (job.type === "clip" || job.type === "crop") && job.output_path)
+    .filter((job) => job.status === "completed" && (job.type === "clip" || job.type === "crop" || job.type === "gif_to_mp4") && job.output_path)
     .map((job) => job.output_path);
   if (generatedOutputPaths.length) {
     resetPreviewVideoElement();
@@ -3636,7 +4346,7 @@ async function pollVideoJobStatus() {
       const completed = unseenFinished.filter((job) => job.status === "completed");
       const failed = unseenFinished.filter((job) => job.status === "error");
       if (failed.length > 0) {
-        showErrorToast(failed[0].error || `${failed[0].type === "clip" ? "Clip" : "Crop"} job failed`);
+        showErrorToast(failed[0].error || `${getVideoJobPastLabel(failed[0].type)} job failed`);
       }
       if (completed.length > 0) {
         await handleCompletedVideoJobs(completed);
@@ -3796,53 +4506,70 @@ async function saveOllamaSettingsFromForm() {
   const groupPromptTemplate = settingsGroupPromptInput.value || state.ollamaGroupPromptTemplate;
   const enableFreeText = settingsAutoFreeTextEnabled.checked;
   const freeTextPromptTemplate = settingsFreeTextPromptInput.value || state.ollamaFreeTextPromptTemplate;
+  let videoTrainingPresets;
+  try {
+    videoTrainingPresets = parseVideoTrainingPresetsText(settingsVideoPresetsInput.value);
+    populateVideoTrainingProfileSelect(videoTrainingPresets, settingsVideoProfileInput.value || state.videoTrainingProfileKey);
+    setVideoTrainingPresetsStatus();
+  } catch (err) {
+    setActiveSettingsTab("video-training");
+    setVideoTrainingPresetsStatus(err.message || "Invalid video training preset JSON.", { isError: true });
+    statusBar.textContent = `Settings error: ${err.message}`;
+    return;
+  }
+  const selectedVideoTrainingProfile = state.folder
+    ? (findVideoTrainingProfileByKey(settingsVideoProfileInput.value, videoTrainingPresets) || videoTrainingPresets[0] || null)
+    : null;
+  const settingsPayload = {
+    https_certfile: httpsCertFile,
+    https_keyfile: httpsKeyFile,
+    https_port: httpsPort,
+    remote_http_mode: remoteHttpMode,
+    ffmpeg_path: ffmpegPath,
+    processing_reserved_cores: processingReservedCores,
+    ffmpeg_threads: ffmpegThreads,
+    ffmpeg_hwaccel: ffmpegHwaccel,
+    ollama_server: server,
+    ollama_port: port,
+    ollama_timeout_seconds: timeoutSeconds,
+    ollama_model: model,
+    crop_aspect_ratios: cropAspectRatios,
+    video_training_presets: videoTrainingPresets,
+    ollama_prompt_template: promptTemplate,
+    ollama_group_prompt_template: groupPromptTemplate,
+    ollama_enable_free_text: enableFreeText,
+    ollama_free_text_prompt_template: freeTextPromptTemplate,
+  };
+  if (state.folder) {
+    settingsPayload.folder = state.folder;
+    settingsPayload.video_training_profile_key = selectedVideoTrainingProfile?.key || "";
+  }
   try {
     const resp = await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        https_certfile: httpsCertFile,
-        https_keyfile: httpsKeyFile,
-        https_port: httpsPort,
-        remote_http_mode: remoteHttpMode,
-        ffmpeg_path: ffmpegPath,
-        processing_reserved_cores: processingReservedCores,
-        ffmpeg_threads: ffmpegThreads,
-        ffmpeg_hwaccel: ffmpegHwaccel,
-        ollama_server: server,
-        ollama_port: port,
-        ollama_timeout_seconds: timeoutSeconds,
-        ollama_model: model,
-        crop_aspect_ratios: cropAspectRatios,
-        ollama_prompt_template: promptTemplate,
-        ollama_group_prompt_template: groupPromptTemplate,
-        ollama_enable_free_text: enableFreeText,
-        ollama_free_text_prompt_template: freeTextPromptTemplate,
-      }),
+      body: JSON.stringify(settingsPayload),
     });
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
       throw new Error(data.detail || "Failed to save settings");
     }
-    applySettings({
-      https_certfile: httpsCertFile,
-      https_keyfile: httpsKeyFile,
-      https_port: httpsPort,
-      remote_http_mode: remoteHttpMode,
-      ffmpeg_path: ffmpegPath,
-      processing_reserved_cores: processingReservedCores,
-      ffmpeg_threads: ffmpegThreads,
-      ffmpeg_hwaccel: ffmpegHwaccel,
-      ollama_server: server,
-      ollama_port: port,
-      ollama_timeout_seconds: timeoutSeconds,
-      ollama_model: model,
-      crop_aspect_ratios: cropAspectRatios,
-      ollama_prompt_template: promptTemplate,
-      ollama_group_prompt_template: groupPromptTemplate,
-      ollama_enable_free_text: enableFreeText,
-      ollama_free_text_prompt_template: freeTextPromptTemplate,
-    });
+
+    let nextSettings = null;
+    const refreshUrl = state.folder
+      ? `/api/settings?folder=${encodeURIComponent(state.folder)}`
+      : "/api/settings";
+    const refreshResp = await fetch(refreshUrl);
+    if (refreshResp.ok) {
+      nextSettings = await refreshResp.json();
+    }
+    if (!nextSettings) {
+      nextSettings = {
+        ...settingsPayload,
+        video_training_profile: selectedVideoTrainingProfile,
+      };
+    }
+    applySettings(nextSettings);
     const networkChanged = previousNetworkSettings.httpsCertFile !== state.httpsCertFile
       || previousNetworkSettings.httpsKeyFile !== state.httpsKeyFile
       || previousNetworkSettings.httpsPort !== state.httpsPort
@@ -3857,11 +4584,265 @@ async function saveOllamaSettingsFromForm() {
   }
 }
 
+function normalizeFolderPathForCompare(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[\\/]+/g, "/")
+    .replace(/\/$/, "")
+    .toLowerCase();
+}
+
+function renderFolderAutocomplete() {
+  const autocomplete = state.folderAutocomplete;
+  const items = Array.isArray(autocomplete.items) ? autocomplete.items : [];
+  const visible = autocomplete.visible && items.length > 0;
+
+  folderSuggestionsList.replaceChildren();
+
+  if (visible) {
+    items.forEach((item, index) => {
+      const option = document.createElement("div");
+      option.id = `folder-suggestion-option-${index}`;
+      option.className = "folder-suggestion";
+      if (index === autocomplete.highlightedIndex) {
+        option.classList.add("active");
+      }
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", index === autocomplete.highlightedIndex ? "true" : "false");
+
+      const name = document.createElement("div");
+      name.className = "folder-suggestion-name";
+      name.textContent = item.name || item.path || "";
+      option.appendChild(name);
+
+      if (item.parent || item.path !== item.name) {
+        const meta = document.createElement("div");
+        meta.className = "folder-suggestion-meta";
+        meta.textContent = item.parent || item.path || "";
+        option.appendChild(meta);
+      }
+
+      option.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+      });
+      option.addEventListener("mouseenter", () => {
+        if (state.folderAutocomplete.highlightedIndex === index) return;
+        state.folderAutocomplete.highlightedIndex = index;
+        renderFolderAutocomplete();
+      });
+      option.addEventListener("click", () => {
+        applyFolderAutocompleteSelection(index);
+      });
+
+      folderSuggestionsList.appendChild(option);
+    });
+  }
+
+  folderSuggestionsList.hidden = !visible;
+  folderSuggestionsList.classList.toggle("open", visible);
+  folderInput.setAttribute("aria-expanded", String(visible));
+
+  if (!visible || autocomplete.highlightedIndex < 0 || autocomplete.highlightedIndex >= items.length) {
+    folderInput.removeAttribute("aria-activedescendant");
+    return;
+  }
+
+  const activeOptionId = `folder-suggestion-option-${autocomplete.highlightedIndex}`;
+  folderInput.setAttribute("aria-activedescendant", activeOptionId);
+  const activeOption = document.getElementById(activeOptionId);
+  if (activeOption) {
+    activeOption.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function hideFolderAutocomplete() {
+  state.folderAutocomplete.visible = false;
+  renderFolderAutocomplete();
+}
+
+function clearFolderAutocomplete(options = {}) {
+  const { cancelPending = false } = options;
+  const autocomplete = state.folderAutocomplete;
+  if (cancelPending) {
+    if (autocomplete.debounceTimer) {
+      window.clearTimeout(autocomplete.debounceTimer);
+      autocomplete.debounceTimer = 0;
+    }
+    if (autocomplete.abortController) {
+      autocomplete.abortController.abort();
+      autocomplete.abortController = null;
+    }
+  }
+  autocomplete.items = [];
+  autocomplete.highlightedIndex = -1;
+  autocomplete.visible = false;
+  renderFolderAutocomplete();
+}
+
+function setFolderAutocompleteItems(items) {
+  const autocomplete = state.folderAutocomplete;
+  const normalizedItems = Array.isArray(items) ? items.filter(item => item?.path) : [];
+  const normalizedInputValue = normalizeFolderPathForCompare(folderInput.value);
+  const exactIndex = normalizedItems.findIndex((item) => normalizeFolderPathForCompare(item.path) === normalizedInputValue);
+  autocomplete.items = normalizedItems;
+  autocomplete.highlightedIndex = normalizedItems.length === 0 ? -1 : Math.max(0, exactIndex);
+  autocomplete.visible = normalizedItems.length > 0;
+  renderFolderAutocomplete();
+}
+
+function moveFolderAutocompleteHighlight(delta) {
+  const autocomplete = state.folderAutocomplete;
+  const items = autocomplete.items || [];
+  if (!items.length) return false;
+
+  let nextIndex = autocomplete.highlightedIndex;
+  if (nextIndex < 0) {
+    nextIndex = delta >= 0 ? 0 : items.length - 1;
+  } else {
+    nextIndex = (nextIndex + delta + items.length) % items.length;
+  }
+
+  autocomplete.highlightedIndex = nextIndex;
+  autocomplete.visible = true;
+  renderFolderAutocomplete();
+  return true;
+}
+
+function applyFolderAutocompleteSelection(index) {
+  const item = state.folderAutocomplete.items[index];
+  if (!item?.path) return false;
+  folderInput.value = item.path;
+  hideFolderAutocomplete();
+  folderInput.focus();
+  return true;
+}
+
+async function fetchFolderAutocompleteSuggestions(query) {
+  const trimmedQuery = String(query || "").trim();
+  if (!trimmedQuery) {
+    clearFolderAutocomplete({ cancelPending: true });
+    return;
+  }
+
+  const autocomplete = state.folderAutocomplete;
+  if (autocomplete.abortController) {
+    autocomplete.abortController.abort();
+    autocomplete.abortController = null;
+  }
+
+  const requestSeq = ++autocomplete.requestSeq;
+  const controller = new AbortController();
+  autocomplete.abortController = controller;
+
+  try {
+    const resp = await fetch(`/api/folders/suggest?query=${encodeURIComponent(trimmedQuery)}`, {
+      signal: controller.signal,
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (requestSeq !== autocomplete.requestSeq) return;
+    if (!resp.ok) {
+      clearFolderAutocomplete();
+      return;
+    }
+    setFolderAutocompleteItems(data.suggestions || []);
+  } catch (err) {
+    if (err?.name === "AbortError") return;
+    if (requestSeq !== autocomplete.requestSeq) return;
+    clearFolderAutocomplete();
+  } finally {
+    if (autocomplete.abortController === controller) {
+      autocomplete.abortController = null;
+    }
+  }
+}
+
+function scheduleFolderAutocompleteRefresh(options = {}) {
+  const { immediate = false } = options;
+  const autocomplete = state.folderAutocomplete;
+  if (autocomplete.debounceTimer) {
+    window.clearTimeout(autocomplete.debounceTimer);
+    autocomplete.debounceTimer = 0;
+  }
+
+  autocomplete.debounceTimer = window.setTimeout(() => {
+    autocomplete.debounceTimer = 0;
+    fetchFolderAutocompleteSuggestions(folderInput.value);
+  }, immediate ? 0 : 120);
+}
+
+function handleFolderInputInput() {
+  scheduleFolderAutocompleteRefresh();
+}
+
+function handleFolderInputFocus() {
+  if (!folderInput.value.trim()) {
+    clearFolderAutocomplete({ cancelPending: true });
+    return;
+  }
+  scheduleFolderAutocompleteRefresh({ immediate: true });
+}
+
+function handleFolderInputBlur() {
+  window.setTimeout(() => {
+    if (document.activeElement === folderInput) return;
+    hideFolderAutocomplete();
+  }, 120);
+}
+
+function handleFolderInputKeydown(event) {
+  if (event.key === "ArrowDown") {
+    if (moveFolderAutocompleteHighlight(1)) {
+      event.preventDefault();
+    }
+    return;
+  }
+
+  if (event.key === "ArrowUp") {
+    if (moveFolderAutocompleteHighlight(-1)) {
+      event.preventDefault();
+    }
+    return;
+  }
+
+  if (event.key === "Escape") {
+    if (state.folderAutocomplete.visible) {
+      event.preventDefault();
+      hideFolderAutocomplete();
+    }
+    return;
+  }
+
+  if (event.key === "Tab") {
+    const highlightedItem = state.folderAutocomplete.items[state.folderAutocomplete.highlightedIndex];
+    if (state.folderAutocomplete.visible && highlightedItem) {
+      applyFolderAutocompleteSelection(state.folderAutocomplete.highlightedIndex);
+    }
+    return;
+  }
+
+  if (event.key !== "Enter") return;
+
+  event.preventDefault();
+  const highlightedItem = state.folderAutocomplete.items[state.folderAutocomplete.highlightedIndex];
+  if (state.folderAutocomplete.visible && highlightedItem) {
+    const currentValue = normalizeFolderPathForCompare(folderInput.value);
+    const highlightedValue = normalizeFolderPathForCompare(highlightedItem.path);
+    if (currentValue !== highlightedValue) {
+      applyFolderAutocompleteSelection(state.folderAutocomplete.highlightedIndex);
+      return;
+    }
+  }
+
+  clearFolderAutocomplete({ cancelPending: true });
+  loadFolder();
+}
+
 // ===== FOLDER LOADING =====
 async function loadFolder(options = {}) {
   const { preserveScrollTop = null } = options;
   const folder = folderInput.value.trim();
   if (!folder) return;
+  clearFolderAutocomplete({ cancelPending: true });
   state.folder = folder;
   state.selectedPaths.clear();
   state.lastClickedIndex = -1;
@@ -4487,10 +5468,12 @@ function fitImageToPanel() {
 
 function applyTransform() {
   const previewEl = getActivePreviewElement();
-  if (!previewEl) return;
-  previewEl.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
-  previewEl.style.width = imgNatW + "px";
-  previewEl.style.height = imgNatH + "px";
+  if (previewEl) {
+    applyTransformToElement(previewEl);
+  }
+  if (state.previewMediaType === "video" && state.maskEditor.active && state.maskEditor.videoSnapshotUrl) {
+    applyTransformToElement(previewImg);
+  }
   applyMaskCanvasTransform();
   applyMaskLatentPreviewTransform();
   renderCropOverlay();
@@ -4628,6 +5611,7 @@ async function showPreview(path) {
   renderPreviewCaptionOverlay();
   renderVideoEditPanel();
   renderMaskEditorUi();
+  renderGifConvertButton();
 }
 
 function hidePreview() {
@@ -4645,6 +5629,7 @@ function hidePreview() {
   renderPreviewCaptionOverlay();
   clearCropDraft();
   renderVideoEditPanel();
+  renderGifConvertButton();
 }
 
 // ===== ZOOM & PAN =====
@@ -4880,6 +5865,7 @@ cropBox.querySelectorAll("[data-handle]").forEach(handleEl => {
   });
 });
 maskEditBtn.addEventListener("click", enterMaskEditMode);
+videoMaskAddBtn.addEventListener("click", enterVideoMaskAddMode);
 maskApplyBtn.addEventListener("click", () => saveMaskEdit().catch(() => {}));
 maskCancelBtn.addEventListener("click", cancelMaskEdit);
 maskUndoBtn.addEventListener("click", undoMaskEdit);
@@ -4928,9 +5914,9 @@ previewVideo.addEventListener("click", (e) => {
   togglePreviewVideoPlayback();
 });
 previewVideo.addEventListener("play", syncPreviewVideoPlaybackState);
-previewVideo.addEventListener("pause", syncPreviewVideoPlaybackState);
+previewVideo.addEventListener("pause", handlePreviewVideoPause);
 previewVideo.addEventListener("timeupdate", handlePreviewVideoTimeUpdate);
-previewVideo.addEventListener("seeked", syncPreviewVideoPlaybackState);
+previewVideo.addEventListener("seeked", handlePreviewVideoSeeked);
 previewVideo.addEventListener("ended", handlePreviewVideoEnded);
 previewVideo.addEventListener("loadedmetadata", syncPreviewVideoPlaybackState);
 videoPlayToggleBtn.addEventListener("click", togglePreviewVideoPlayback);

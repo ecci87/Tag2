@@ -62,10 +62,14 @@ from tag2_images import (
     _get_image_crop,
     _get_image_mask_info,
     _get_image_mask_path,
+    _get_video_mask_frame_info,
+    _get_video_mask_info,
     _get_thumbnail,
+    _convert_gif_to_mp4_file,
     _is_image_path,
     _is_mask_sidecar_path,
     _is_video_path,
+    _list_video_mask_paths,
     _load_oriented_image,
     _normalize_crop_rect,
     _normalize_exif_bytes,
@@ -76,7 +80,9 @@ from tag2_images import (
     _rotate_image,
     _rotate_image_file,
     _save_image_mask,
+    _save_video_mask,
     _save_image_file,
+    _write_default_video_mask,
     _write_default_image_mask,
 )
 from tag2_ollama import (
@@ -174,7 +180,46 @@ DEFAULT_FFMPEG_PATH = ""
 DEFAULT_FFMPEG_THREADS = 0
 DEFAULT_FFMPEG_HWACCEL = "auto"
 DEFAULT_PROCESSING_RESERVED_CORES = INITIAL_RESERVED_CORES
+DEFAULT_FOLDER_SUGGESTION_LIMIT = 12
 REMOTE_HTTP_MODES = {"allow", "redirect-to-https", "block"}
+DEFAULT_VIDEO_TRAINING_PRESET_DEFINITIONS = [
+    {
+        "key": "wan-40f-16fps",
+        "label": "Wan 40f @ 16 fps",
+        "target_family": "wan",
+        "num_frames": 40,
+        "fps": 16,
+        "shrink_video_to_frames": True,
+        "short_clip_factor": 0.75,
+        "long_clip_factor": 1.5,
+        "preferred_extensions": [".mp4", ".mov", ".webm"],
+        "description": "Good baseline for short Wan character or identity clips.",
+    },
+    {
+        "key": "wan-81f-16fps",
+        "label": "Wan 81f @ 16 fps",
+        "target_family": "wan",
+        "num_frames": 81,
+        "fps": 16,
+        "shrink_video_to_frames": True,
+        "short_clip_factor": 0.8,
+        "long_clip_factor": 1.35,
+        "preferred_extensions": [".mp4", ".mov", ".webm"],
+        "description": "Longer Wan motion clips with more temporal context.",
+    },
+    {
+        "key": "ltx-97f-24fps",
+        "label": "LTX 97f @ 24 fps",
+        "target_family": "ltx",
+        "num_frames": 97,
+        "fps": 24,
+        "shrink_video_to_frames": True,
+        "short_clip_factor": 0.8,
+        "long_clip_factor": 1.3,
+        "preferred_extensions": [".mp4", ".mov"],
+        "description": "Default LTX profile with a tighter duration window.",
+    },
+]
 DEFAULT_OLLAMA_PROMPT_TEMPLATE = (
     "You are verifying a caption for one media item. "
     "Reply with exactly one word: YES or NO. "
@@ -243,6 +288,7 @@ def _load_config() -> dict:
         "ffmpeg_threads": DEFAULT_FFMPEG_THREADS,
         "ffmpeg_hwaccel": DEFAULT_FFMPEG_HWACCEL,
         "processing_reserved_cores": DEFAULT_PROCESSING_RESERVED_CORES,
+        "video_training_presets": copy.deepcopy(DEFAULT_VIDEO_TRAINING_PRESET_DEFINITIONS),
         # Local Ollama server settings
         "ollama_server": DEFAULT_OLLAMA_SERVER,
         "ollama_port": DEFAULT_OLLAMA_PORT,
@@ -288,6 +334,152 @@ def _save_config(cfg: dict):
     """Persist config to disk with pretty formatting for easy hand-editing."""
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+
+def _slugify_video_training_preset_key(value: str, fallback: str) -> str:
+    """Convert a preset label or key into a config-safe identifier."""
+    raw = str(value or fallback).strip().lower()
+    pieces: list[str] = []
+    previous_dash = False
+    for char in raw:
+        if char.isalnum():
+            pieces.append(char)
+            previous_dash = False
+            continue
+        if previous_dash:
+            continue
+        pieces.append("-")
+        previous_dash = True
+    normalized = "".join(pieces).strip("-")
+    return normalized or fallback
+
+
+def _normalize_video_training_preset(raw_preset: dict, index: int, used_keys: set[str]) -> dict | None:
+    """Validate and normalize one editable video training preset."""
+    if not isinstance(raw_preset, dict):
+        return None
+    fallback_key = f"profile-{index + 1}"
+    base_key = _slugify_video_training_preset_key(
+        raw_preset.get("key") or raw_preset.get("label") or raw_preset.get("name"),
+        fallback_key,
+    )
+    key = base_key
+    counter = 2
+    while key in used_keys:
+        key = f"{base_key}-{counter}"
+        counter += 1
+    used_keys.add(key)
+
+    label = str(raw_preset.get("label") or raw_preset.get("name") or key).strip() or key
+    target_family = str(raw_preset.get("target_family") or "custom").strip().lower() or "custom"
+    if target_family not in {"wan", "ltx", "hunyuan", "custom"}:
+        target_family = "custom"
+    try:
+        num_frames = max(1, int(raw_preset.get("num_frames") or 1))
+    except (TypeError, ValueError):
+        num_frames = 1
+    try:
+        fps = max(1, int(raw_preset.get("fps") or 16))
+    except (TypeError, ValueError):
+        fps = 16
+    try:
+        short_clip_factor = float(raw_preset.get("short_clip_factor") or 0.8)
+    except (TypeError, ValueError):
+        short_clip_factor = 0.8
+    try:
+        long_clip_factor = float(raw_preset.get("long_clip_factor") or 1.5)
+    except (TypeError, ValueError):
+        long_clip_factor = 1.5
+    short_clip_factor = max(0.25, min(1.0, short_clip_factor))
+    long_clip_factor = max(short_clip_factor, min(4.0, long_clip_factor))
+    preferred_extensions: list[str] = []
+    for extension in raw_preset.get("preferred_extensions") or []:
+        normalized_extension = str(extension or "").strip().lower()
+        if not normalized_extension:
+            continue
+        if not normalized_extension.startswith("."):
+            normalized_extension = f".{normalized_extension}"
+        if normalized_extension not in VIDEO_EXTENSIONS or normalized_extension in preferred_extensions:
+            continue
+        preferred_extensions.append(normalized_extension)
+    ideal_clip_seconds = round(num_frames / max(1, fps), 3)
+    return {
+        "key": key,
+        "label": label,
+        "target_family": target_family,
+        "num_frames": num_frames,
+        "fps": fps,
+        "shrink_video_to_frames": bool(raw_preset.get("shrink_video_to_frames", True)),
+        "short_clip_factor": short_clip_factor,
+        "long_clip_factor": long_clip_factor,
+        "ideal_clip_seconds": ideal_clip_seconds,
+        "min_clip_seconds": round(ideal_clip_seconds * short_clip_factor, 3),
+        "max_clip_seconds": round(ideal_clip_seconds * long_clip_factor, 3),
+        "preferred_extensions": preferred_extensions,
+        "description": str(raw_preset.get("description") or "").strip(),
+    }
+
+
+def _normalize_video_training_presets(raw_presets) -> list[dict]:
+    """Return normalized editable video training presets."""
+    preset_source = raw_presets if isinstance(raw_presets, list) else copy.deepcopy(DEFAULT_VIDEO_TRAINING_PRESET_DEFINITIONS)
+    normalized: list[dict] = []
+    used_keys: set[str] = set()
+    for index, raw_preset in enumerate(preset_source):
+        preset = _normalize_video_training_preset(raw_preset, index, used_keys)
+        if preset is not None:
+            normalized.append(preset)
+    if normalized:
+        return normalized
+    fallback_used_keys: set[str] = set()
+    fallback_presets: list[dict] = []
+    for index, raw_preset in enumerate(DEFAULT_VIDEO_TRAINING_PRESET_DEFINITIONS):
+        preset = _normalize_video_training_preset(raw_preset, index, fallback_used_keys)
+        if preset is not None:
+            fallback_presets.append(preset)
+    return fallback_presets
+
+
+def _get_video_training_presets(cfg: dict) -> list[dict]:
+    """Return the normalized video training preset library."""
+    return _normalize_video_training_presets(cfg.get("video_training_presets"))
+
+
+def _get_video_training_profile_by_key(presets: list[dict], key: str | None) -> dict | None:
+    """Return one normalized preset by key."""
+    normalized_key = str(key or "").strip()
+    if not normalized_key:
+        return presets[0] if presets else None
+    for preset in presets:
+        if preset.get("key") == normalized_key:
+            return preset
+    return presets[0] if presets else None
+
+
+def _get_folder_video_training_profile_key(cfg: dict, folder: str, presets: list[dict] | None = None) -> str:
+    """Return the selected video training preset key for a folder."""
+    normalized_folder = os.path.normpath(str(folder or ""))
+    presets = presets if presets is not None else _get_video_training_presets(cfg)
+    default_key = presets[0].get("key") if presets else ""
+    folder_cfg = cfg.get("folders", {}).get(normalized_folder, {}) if normalized_folder else {}
+    selected_key = str(folder_cfg.get("video_training_profile_key") or "").strip()
+    if _get_video_training_profile_by_key(presets, selected_key):
+        return selected_key or default_key
+    return default_key
+
+
+def _set_folder_video_training_profile_key(cfg: dict, folder: str, profile_key: str, presets: list[dict] | None = None) -> str:
+    """Persist the selected video training preset key for a folder."""
+    normalized_folder = os.path.normpath(str(folder or ""))
+    if not normalized_folder:
+        return ""
+    presets = presets if presets is not None else _get_video_training_presets(cfg)
+    selected_preset = _get_video_training_profile_by_key(presets, profile_key)
+    selected_key = selected_preset.get("key") if selected_preset else ""
+    folders_cfg = cfg.setdefault("folders", {})
+    folder_cfg = folders_cfg.setdefault(normalized_folder, {})
+    folder_cfg["video_training_profile_key"] = selected_key
+    return selected_key
 
 
 def _resolve_config_path(path_value: str | None) -> str:
@@ -359,15 +551,21 @@ def _build_media_entry(entry: Path) -> dict:
     """Build a list response payload for a supported media file."""
     stat = entry.stat()
     caption_file = entry.with_suffix(".txt")
-    mask_file = _get_image_mask_path(str(entry)) if _is_image_path(str(entry)) else None
+    media_type = _get_media_type_for_path(str(entry))
+    mask_count = 0
+    if media_type == "image":
+        mask_count = 1 if _get_image_mask_path(str(entry)).exists() else 0
+    elif media_type == "video":
+        mask_count = int(_get_video_mask_info(str(entry)).get("count") or 0)
     return {
         "name": entry.name,
         "path": str(entry),
         "size": stat.st_size,
         "mtime": stat.st_mtime,
         "has_caption": caption_file.exists(),
-        "has_mask": bool(mask_file and mask_file.exists()),
-        "media_type": _get_media_type_for_path(str(entry)),
+        "has_mask": mask_count > 0,
+        "mask_count": mask_count,
+        "media_type": media_type,
     }
 
 
@@ -444,7 +642,7 @@ def _snapshot_video_jobs() -> dict:
 
 
 def _run_video_job(job_id: str) -> None:
-    """Execute a queued video crop or clip job."""
+    """Execute a queued video crop, clip, or conversion job."""
     job = video_job_registry.get(job_id)
     if not job:
         return
@@ -496,6 +694,30 @@ def _run_video_job(job_id: str) -> None:
             status="completed",
             progress=1.0,
             message="Clip complete",
+            output_path=result.get("output_path") or job.get("output_path") or "",
+            result=result,
+        )
+        return
+
+    if job.get("type") == "gif_to_mp4":
+        result = _convert_gif_to_mp4_file(
+            job["video_path"],
+            job.get("output_path"),
+            ffmpeg_path,
+            ffprobe_path,
+            ffmpeg_threads,
+            ffmpeg_hwaccel,
+            on_progress=on_progress,
+        )
+        source_caption = _get_caption_path(job["video_path"])
+        output_caption = _get_caption_path(result.get("output_path") or job.get("output_path") or "")
+        if source_caption.exists() and str(output_caption) and not output_caption.exists():
+            shutil.copy2(source_caption, output_caption)
+        _update_video_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message="GIF conversion complete",
             output_path=result.get("output_path") or job.get("output_path") or "",
             result=result,
         )
@@ -722,6 +944,18 @@ async def list_images(folder: str = Query(...)):
     return {"images": images, "folder": str(folder_path.resolve())}
 
 
+@app.get("/api/folders/suggest")
+async def suggest_folders(
+    query: str = Query(default=""),
+    limit: int = Query(default=DEFAULT_FOLDER_SUGGESTION_LIMIT, ge=1, le=50),
+):
+    """Return matching directory suggestions for the current folder input query."""
+    return {
+        "query": query,
+        "suggestions": _suggest_folder_paths(query, limit),
+    }
+
+
 @app.post("/api/images/upload")
 async def upload_images(
     folder: str = Form(...),
@@ -884,6 +1118,12 @@ async def get_video_meta(path: str = Query(...)):
         "width": int(metadata.get("width") or 0),
         "height": int(metadata.get("height") or 0),
         "duration": float(metadata.get("duration") or 0.0),
+        "fps": float(metadata.get("fps") or 0.0),
+        "mask_keyframes": [
+            int(keyframe.get("frame_index") or 0)
+            for keyframe in (_get_video_mask_info(path).get("keyframes") or [])
+            if int(keyframe.get("frame_index") or 0) >= 0
+        ],
     }
 
 
@@ -937,6 +1177,10 @@ class VideoClipJobRequest(BaseModel):
     start_seconds: float
     end_seconds: float
     crop: Optional[dict] = None
+
+
+class GifConvertJobRequest(BaseModel):
+    media_path: str
 
 
 @app.get("/api/video/jobs/status")
@@ -1000,6 +1244,26 @@ async def enqueue_video_clip_job(data: VideoClipJobRequest):
         "start_seconds": start_seconds,
         "end_seconds": end_seconds,
         "crop": crop,
+        "output_path": output_path,
+    })
+    return {"ok": True, "job": queued}
+
+
+@app.post("/api/media/jobs/convert-gif")
+async def enqueue_gif_convert_job(data: GifConvertJobRequest):
+    """Queue a GIF-to-MP4 conversion job in the current folder."""
+    media_path = os.path.abspath(os.path.normpath(str(data.media_path or "").strip()))
+    if not os.path.isfile(media_path):
+        raise HTTPException(status_code=404, detail="GIF file not found")
+    if Path(media_path).suffix.lower() != ".gif":
+        raise HTTPException(status_code=400, detail="Only GIF files can be converted with this action")
+
+    folder_path = Path(media_path).parent
+    output_path = str(_get_unique_upload_path(folder_path, f"{Path(media_path).stem}.mp4"))
+    queued = _enqueue_video_job({
+        "type": "gif_to_mp4",
+        "video_path": media_path,
+        "folder": str(folder_path),
         "output_path": output_path,
     })
     return {"ok": True, "job": queued}
@@ -1088,6 +1352,83 @@ def _resolve_folder_path(folder: str, *, detail: str = "Not a valid directory") 
     return folder_path
 
 
+def _build_folder_suggestion_entry(path: Path) -> dict:
+    resolved_path = path.resolve()
+    normalized_path = os.path.normpath(str(resolved_path))
+    parent_path = os.path.normpath(str(resolved_path.parent))
+    return {
+        "path": normalized_path,
+        "name": resolved_path.name or normalized_path,
+        "parent": "" if parent_path == normalized_path else parent_path,
+    }
+
+
+def _list_windows_drive_roots(prefix: str = "") -> list[Path]:
+    normalized_prefix = str(prefix or "").strip().upper()
+    roots: list[Path] = []
+    for code in range(ord("A"), ord("Z") + 1):
+        drive_letter = chr(code)
+        if normalized_prefix and not drive_letter.startswith(normalized_prefix):
+            continue
+        drive_root = Path(f"{drive_letter}:\\")
+        if drive_root.is_dir():
+            roots.append(drive_root)
+    return roots
+
+
+def _suggest_folder_paths(query: str, limit: int = DEFAULT_FOLDER_SUGGESTION_LIMIT) -> list[dict]:
+    expanded_query = os.path.expandvars(os.path.expanduser(str(query or "").strip()))
+    if not expanded_query or limit <= 0:
+        return []
+
+    query_value = expanded_query.replace("/", "\\") if os.name == "nt" else expanded_query
+
+    if os.name == "nt":
+        if len(query_value) == 1 and query_value.isalpha():
+            return [
+                _build_folder_suggestion_entry(path)
+                for path in _list_windows_drive_roots(query_value)[:limit]
+            ]
+        if len(query_value) == 2 and query_value[0].isalpha() and query_value[1] == ":":
+            drive_root = Path(f"{query_value[0].upper()}:\\")
+            return [_build_folder_suggestion_entry(drive_root)] if drive_root.is_dir() else []
+
+    has_trailing_separator = query_value[-1] in {"/", "\\"}
+    if has_trailing_separator:
+        base_query = query_value
+        prefix = ""
+    else:
+        base_query = os.path.dirname(query_value)
+        prefix = os.path.basename(query_value)
+
+    if os.name == "nt" and len(base_query) == 2 and base_query[0].isalpha() and base_query[1] == ":":
+        base_query = f"{base_query}\\"
+
+    try:
+        base_path = Path(base_query or ".").resolve()
+    except OSError:
+        return []
+
+    if not base_path.is_dir():
+        return []
+
+    prefix_casefold = prefix.casefold()
+    suggestions: list[dict] = []
+    try:
+        for entry in sorted(base_path.iterdir(), key=lambda item: item.name.lower()):
+            if not entry.is_dir():
+                continue
+            if prefix_casefold and not entry.name.casefold().startswith(prefix_casefold):
+                continue
+            suggestions.append(_build_folder_suggestion_entry(entry))
+            if len(suggestions) >= limit:
+                break
+    except (OSError, PermissionError):
+        return []
+
+    return suggestions
+
+
 def _sanitize_upload_filename(name: str) -> str:
     raw_name = str(name or "").replace("\\", "/")
     base_name = os.path.basename(raw_name).strip()
@@ -1146,9 +1487,13 @@ def _prepare_clone_plan(source_folder: str, requested_name: str, image_paths: li
             caption_path = _get_caption_path(str(image_path))
             if caption_path.exists():
                 copy_items.append((caption_path, target_path / caption_path.name))
-            mask_path = _get_image_mask_path(str(image_path))
-            if mask_path.exists():
-                copy_items.append((mask_path, target_path / mask_path.name))
+            if _is_image_path(str(image_path)):
+                mask_path = _get_image_mask_path(str(image_path))
+                if mask_path.exists():
+                    copy_items.append((mask_path, target_path / mask_path.name))
+            elif _is_video_path(str(image_path)):
+                for mask_path in _list_video_mask_paths(str(image_path)):
+                    copy_items.append((mask_path, target_path / mask_path.name))
     else:
         for entry in sorted(source_path.iterdir(), key=lambda item: item.name.lower()):
             dest_entry = target_path / entry.name
@@ -1238,36 +1583,100 @@ async def get_crop(path: str = Query(...)):
 
 
 @app.get("/api/mask")
-async def get_mask(path: str = Query(...), ensure: bool = Query(default=False)):
-    """Return mask sidecar metadata for an image, optionally creating a default mask."""
+async def get_mask(
+    path: str = Query(...),
+    ensure: bool = Query(default=False),
+    frame_index: Optional[int] = Query(default=None),
+    create_new: bool = Query(default=False),
+):
+    """Return mask sidecar metadata for an image or video key frame."""
     if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail="Image file not found")
-    if not _is_image_path(path):
-        raise HTTPException(status_code=400, detail="Mask editing is only available for image files")
+        raise HTTPException(status_code=404, detail="Media file not found")
 
     loop = asyncio.get_event_loop()
-    info = await loop.run_in_executor(executor, _write_default_image_mask if ensure else _get_image_mask_info, path)
-    if not ensure:
-        image_width, image_height = await loop.run_in_executor(executor, _get_display_image_size, path)
-        info["created"] = False
-        info["image_width"] = image_width
-        info["image_height"] = image_height
+    if _is_image_path(path):
+        info = await loop.run_in_executor(executor, _write_default_image_mask if ensure else _get_image_mask_info, path)
+        if not ensure:
+            image_width, image_height = await loop.run_in_executor(executor, _get_display_image_size, path)
+            info["created"] = False
+            info["image_width"] = image_width
+            info["image_height"] = image_height
+        info["media_type"] = "image"
+        return info
+
+    if not _is_video_path(path):
+        raise HTTPException(status_code=400, detail="Mask editing is only available for image and video files")
+    if frame_index is None:
+        raise HTTPException(status_code=400, detail="Frame index is required for video mask editing")
+
+    cfg = _load_config()
+    _, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+    video_info = await loop.run_in_executor(executor, _probe_video_info, path, ffprobe_path)
+    image_width = int(video_info.get("width") or 0)
+    image_height = int(video_info.get("height") or 0)
+    if image_width <= 0 or image_height <= 0:
+        raise HTTPException(status_code=503, detail="Could not determine video dimensions")
+
+    info = await loop.run_in_executor(
+        executor,
+        _write_default_video_mask if ensure else _get_video_mask_frame_info,
+        path,
+        int(frame_index),
+        image_width,
+        image_height,
+        bool(create_new),
+    )
+    info["media_type"] = "video"
+    info["video_width"] = image_width
+    info["video_height"] = image_height
+    info["video_fps"] = float(video_info.get("fps") or 0.0)
     return info
 
 
 @app.get("/api/mask/image")
-async def get_mask_image(path: str = Query(...), ensure: bool = Query(default=False)):
-    """Serve the grayscale mask sidecar for an image."""
+async def get_mask_image(
+    path: str = Query(...),
+    ensure: bool = Query(default=False),
+    frame_index: Optional[int] = Query(default=None),
+    create_new: bool = Query(default=False),
+):
+    """Serve the grayscale mask sidecar for an image or video key frame."""
     if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail="Image file not found")
-    if not _is_image_path(path):
-        raise HTTPException(status_code=400, detail="Mask editing is only available for image files")
+        raise HTTPException(status_code=404, detail="Media file not found")
 
     loop = asyncio.get_event_loop()
-    if ensure:
-        await loop.run_in_executor(executor, _write_default_image_mask, path)
+    if _is_image_path(path):
+        if ensure:
+            await loop.run_in_executor(executor, _write_default_image_mask, path)
 
-    mask_path = _get_image_mask_path(path)
+        mask_path = _get_image_mask_path(path)
+        if not mask_path.is_file():
+            raise HTTPException(status_code=404, detail="Mask file not found")
+        return FileResponse(mask_path, media_type="image/png")
+
+    if not _is_video_path(path):
+        raise HTTPException(status_code=400, detail="Mask editing is only available for image and video files")
+    if frame_index is None:
+        raise HTTPException(status_code=400, detail="Frame index is required for video mask editing")
+
+    cfg = _load_config()
+    _, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+    video_info = await loop.run_in_executor(executor, _probe_video_info, path, ffprobe_path)
+    image_width = int(video_info.get("width") or 0)
+    image_height = int(video_info.get("height") or 0)
+    if image_width <= 0 or image_height <= 0:
+        raise HTTPException(status_code=503, detail="Could not determine video dimensions")
+
+    info = await loop.run_in_executor(
+        executor,
+        _write_default_video_mask if ensure else _get_video_mask_frame_info,
+        path,
+        int(frame_index),
+        image_width,
+        image_height,
+        bool(create_new),
+    )
+    mask_path = Path(str(info.get("path") or ""))
     if not mask_path.is_file():
         raise HTTPException(status_code=404, detail="Mask file not found")
 
@@ -1276,21 +1685,40 @@ async def get_mask_image(path: str = Query(...), ensure: bool = Query(default=Fa
 
 @app.post("/api/mask")
 async def save_mask(
-    image_path: str = Form(...),
+    image_path: Optional[str] = Form(default=None),
+    media_path: Optional[str] = Form(default=None),
+    frame_index: Optional[int] = Form(default=None),
     mask: UploadFile = File(...),
 ):
-    """Save a grayscale PNG mask sidecar for an image."""
-    if not os.path.isfile(image_path):
-        raise HTTPException(status_code=404, detail="Image file not found")
-    if not _is_image_path(image_path):
-        raise HTTPException(status_code=400, detail="Mask editing is only available for image files")
+    """Save a grayscale PNG mask sidecar for an image or video key frame."""
+    target_path = str(media_path or image_path or "").strip()
+    if not target_path or not os.path.isfile(target_path):
+        raise HTTPException(status_code=404, detail="Media file not found")
 
     try:
         mask_bytes = await mask.read()
         if not mask_bytes:
             raise HTTPException(status_code=400, detail="Mask upload is empty")
         loop = asyncio.get_event_loop()
-        info = await loop.run_in_executor(executor, _save_image_mask, image_path, mask_bytes)
+        if _is_image_path(target_path):
+            info = await loop.run_in_executor(executor, _save_image_mask, target_path, mask_bytes)
+            info["media_type"] = "image"
+            return {"ok": True, **info}
+
+        if not _is_video_path(target_path):
+            raise HTTPException(status_code=400, detail="Mask editing is only available for image and video files")
+        if frame_index is None:
+            raise HTTPException(status_code=400, detail="Frame index is required for video mask editing")
+
+        cfg = _load_config()
+        _, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+        video_info = await loop.run_in_executor(executor, _probe_video_info, target_path, ffprobe_path)
+        image_width = int(video_info.get("width") or 0)
+        image_height = int(video_info.get("height") or 0)
+        if image_width <= 0 or image_height <= 0:
+            raise HTTPException(status_code=503, detail="Could not determine video dimensions")
+        info = await loop.run_in_executor(executor, _save_video_mask, target_path, int(frame_index), mask_bytes, image_width, image_height)
+        info["media_type"] = "video"
         return {"ok": True, **info}
     except HTTPException:
         raise
@@ -1369,6 +1797,7 @@ async def delete_images(data: BatchDeleteImagesRequest):
 
         caption_path = _get_caption_path(normalized_path)
         mask_path = _get_image_mask_path(normalized_path) if _is_image_path(normalized_path) else None
+        video_mask_paths = _list_video_mask_paths(normalized_path) if _is_video_path(normalized_path) else []
         backup_path = _get_crop_backup_path(normalized_path) if _is_image_path(normalized_path) else ""
 
         try:
@@ -1377,6 +1806,9 @@ async def delete_images(data: BatchDeleteImagesRequest):
                 caption_path.unlink()
             if mask_path and mask_path.exists():
                 mask_path.unlink()
+            for video_mask_path in video_mask_paths:
+                if video_mask_path.exists():
+                    video_mask_path.unlink()
             if backup_path and os.path.isfile(backup_path):
                 os.remove(backup_path)
             _clear_thumbnail_cache_for_path(normalized_path)
@@ -2293,6 +2725,8 @@ class SettingsUpdate(BaseModel):
     last_folder: Optional[str] = None
     sections: Optional[list[dict]] = None
     folder: Optional[str] = None  # which folder these sections belong to
+    video_training_presets: Optional[list[dict]] = None
+    video_training_profile_key: Optional[str] = None
     thumb_size: Optional[int] = None
     crop_aspect_ratios: Optional[list[str]] = None
     https_certfile: Optional[str] = None
@@ -2318,10 +2752,12 @@ class SettingsUpdate(BaseModel):
 async def get_settings(folder: Optional[str] = Query(default=None)):
     """Get full settings. If folder is specified, include sections for that folder."""
     cfg = _load_config()
+    video_training_presets = _get_video_training_presets(cfg)
     result = {
         "last_folder": cfg.get("last_folder", ""),
         "thumb_size": int(cfg.get("thumb_size", 160) or 160),
         "crop_aspect_ratios": _get_crop_aspect_ratios(cfg, DEFAULT_CROP_ASPECT_RATIOS),
+        "video_training_presets": video_training_presets,
         "https_certfile": str(cfg.get("https_certfile") or ""),
         "https_keyfile": str(cfg.get("https_keyfile") or ""),
         "https_port": _get_https_port(cfg, DEFAULT_HTTPS_PORT),
@@ -2343,6 +2779,9 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
     if folder:
         result["sections"] = _get_folder_sections(cfg, folder)
         result["folder"] = os.path.normpath(folder)
+        profile_key = _get_folder_video_training_profile_key(cfg, folder, video_training_presets)
+        result["video_training_profile_key"] = profile_key
+        result["video_training_profile"] = _get_video_training_profile_by_key(video_training_presets, profile_key)
     return result
 
 
@@ -2373,6 +2812,8 @@ async def update_settings(data: SettingsUpdate):
     cfg = _load_config()
     if data.last_folder is not None:
         cfg["last_folder"] = data.last_folder
+    if data.video_training_presets is not None:
+        cfg["video_training_presets"] = _normalize_video_training_presets(data.video_training_presets)
     if data.thumb_size is not None:
         cfg["thumb_size"] = max(60, min(400, int(data.thumb_size)))
     if data.crop_aspect_ratios is not None:
@@ -2415,6 +2856,9 @@ async def update_settings(data: SettingsUpdate):
     if data.ollama_free_text_prompt_template is not None:
         cfg["ollama_free_text_prompt_template"] = data.ollama_free_text_prompt_template or DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE
     cfg["ollama_host"] = _compose_ollama_host(cfg.get("ollama_server"), cfg.get("ollama_port"), DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
+    if data.video_training_profile_key is not None and data.folder:
+        presets = _get_video_training_presets(cfg)
+        _set_folder_video_training_profile_key(cfg, data.folder, data.video_training_profile_key, presets)
     if data.sections is not None and data.folder:
         _set_folder_sections(cfg, data.folder, data.sections)
     _save_config(cfg)

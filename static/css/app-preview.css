@@ -237,23 +237,23 @@
 .crop-edge[data-handle="w"] { left: -6px; cursor: ew-resize; }
 .crop-edge[data-handle="e"] { right: -6px; cursor: ew-resize; }
 #crop-apply-btn {
-  position: absolute; left: 50%; bottom: 40px; transform: translateX(calc(-50% - 56px));
-  display: none; padding: 7px 18px; border: 1px solid rgba(166,227,161,0.35); border-radius: 8px;
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(calc(-50% - 52px));
+  display: none; padding: 5px 14px; border: 1px solid rgba(166,227,161,0.35); border-radius: 8px;
   background: var(--accent2); color: #1e1e2e; font-weight: 700; cursor: pointer; pointer-events: auto;
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
 }
 #crop-apply-btn.visible { display: block; }
 #crop-apply-btn:hover { filter: brightness(1.08); }
 #crop-cancel-btn {
-  position: absolute; left: 50%; bottom: 40px; transform: translateX(calc(-50% + 56px));
-  display: none; padding: 7px 18px; border: 1px solid rgba(243,139,168,0.35); border-radius: 8px;
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(calc(-50% + 52px));
+  display: none; padding: 5px 14px; border: 1px solid rgba(243,139,168,0.35); border-radius: 8px;
   background: rgba(243,139,168,0.14); color: #f38ba8; font-weight: 700; cursor: pointer; pointer-events: auto;
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
 }
 #crop-cancel-btn.visible { display: block; }
 #crop-cancel-btn:hover { filter: brightness(1.08); }
 #crop-remove-btn {
-  position: absolute; bottom: 40px; display: none; padding: 7px 18px; border-radius: 8px;
+  position: absolute; bottom: 16px; display: none; padding: 5px 14px; border-radius: 8px;
   font-weight: 700; cursor: pointer; pointer-events: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
 }
 #crop-remove-btn {
@@ -263,6 +263,8 @@
 #crop-remove-btn.visible { display: block; }
 #crop-remove-btn:hover { filter: brightness(1.08); }
 #mask-edit-btn,
+#video-mask-add-btn,
+#gif-convert-btn,
 #mask-apply-btn,
 #mask-cancel-btn,
 #mask-undo-btn,
@@ -271,9 +273,11 @@
 #mask-latent-preview-btn,
 #mask-reset-btn {
   display: none;
-  padding: 7px 18px;
+  padding: 5px 14px;
   border-radius: 8px;
+  font-size: 12px;
   font-weight: 700;
+  line-height: 1.1;
   cursor: pointer;
   pointer-events: auto;
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
@@ -281,21 +285,45 @@
 }
 #mask-edit-btn {
   position: absolute;
-  right: 18px;
-  bottom: 40px;
+  right: 64px;
+  bottom: 16px;
   background: rgba(250, 220, 140, 0.96);
   color: #181822;
   border: 1px solid rgba(250, 220, 140, 0.38);
 }
 #mask-edit-btn.visible { display: block; }
+#video-mask-add-btn {
+  position: absolute;
+  right: 18px;
+  bottom: 16px;
+  min-width: 34px;
+  padding: 5px 0;
+  text-align: center;
+  background: rgba(166,227,161,0.18);
+  color: #d8ffd4;
+  border: 1px solid rgba(166,227,161,0.34);
+}
+#video-mask-add-btn.visible { display: block; }
+#video-mask-add-btn.in-editor {
+  bottom: 16px;
+}
+#gif-convert-btn {
+  position: absolute;
+  right: 18px;
+  bottom: 16px;
+  background: rgba(137,180,250,0.16);
+  color: #b8d6ff;
+  border: 1px solid rgba(137,180,250,0.36);
+}
+#gif-convert-btn.visible { display: block; }
 #mask-action-bar {
   position: absolute;
   right: 18px;
-  bottom: 40px;
+  bottom: 16px;
   display: none;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
   max-width: calc(100% - 36px);
   flex-wrap: wrap;
   pointer-events: auto;
@@ -303,6 +331,9 @@
 }
 #mask-action-bar.visible {
   display: flex;
+}
+#mask-action-bar.with-video-key-add {
+  right: 64px;
 }
 #mask-apply-btn {
   background: var(--accent2);
@@ -349,6 +380,8 @@
   display: block;
 }
 #mask-edit-btn:hover,
+#video-mask-add-btn:hover,
+#gif-convert-btn:hover,
 #mask-apply-btn:hover,
 #mask-cancel-btn:hover,
 #mask-undo-btn:hover,
@@ -372,21 +405,21 @@
 #rotate-controls {
   position: absolute;
   left: 18px;
-  bottom: 40px;
+  bottom: 16px;
   display: none;
-  gap: 10px;
+  gap: 8px;
   pointer-events: auto;
   z-index: 5;
 }
 #rotate-controls.visible { display: flex; }
 .rotate-btn {
-  width: 40px;
-  height: 36px;
+  width: 34px;
+  height: 30px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: rgba(38,38,55,0.92);
   color: var(--fg);
-  font-size: 20px;
+  font-size: 17px;
   line-height: 1;
   cursor: pointer;
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
@@ -404,6 +437,23 @@
 }
 #video-edit-panel.visible {
   display: flex;
+}
+#video-training-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--fg-dim);
+  flex-wrap: wrap;
+}
+#video-training-profile-label {
+  color: var(--fg);
+  font-weight: 700;
+}
+#video-training-guidance-label {
+  color: var(--fg-dim);
 }
 #video-playback-controls {
   display: flex;
@@ -538,6 +588,26 @@
   background: linear-gradient(180deg, rgba(166,227,161,0.16), rgba(166,227,161,0.10));
   box-shadow: 0 0 0 9999px rgba(0,0,0,0.34);
 }
+.video-timeline-mask-key {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 999px;
+  background: rgba(245, 194, 231, 0.88);
+  box-shadow: 0 0 0 1px rgba(16,18,28,0.72), 0 0 10px rgba(245, 194, 231, 0.24);
+  pointer-events: none;
+  z-index: 2;
+}
+.video-timeline-mask-key.active {
+  background: rgba(249, 226, 175, 0.98);
+  box-shadow: 0 0 0 1px rgba(16,18,28,0.82), 0 0 12px rgba(249, 226, 175, 0.4);
+}
+.video-timeline-mask-key.current-target {
+  width: 4px;
+  margin-left: -2px;
+}
 #video-timeline-start-handle,
 #video-timeline-end-handle,
 #video-timeline-playhead {
@@ -648,9 +718,12 @@
   color: var(--fg-dim); font-size: 16px; text-align: center; padding: 20px;
 }
 #preview-info {
-  position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  max-width: clamp(160px, calc(100% - 180px), 480px);
+  overflow: hidden;
+  text-overflow: ellipsis;
   background: rgba(0,0,0,0.7); color: #fff; padding: 4px 12px; border-radius: 12px;
-  font-size: 11px; display: none; white-space: nowrap;
+  font-size: 11px; display: none; white-space: nowrap; pointer-events: none; z-index: 4;
 }
   #preview-caption-overlay {
     position: absolute;
