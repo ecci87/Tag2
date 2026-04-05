@@ -63,6 +63,11 @@ const state = {
     latentImageDirty: false,
     latentBaseMaskCanvas: null,
     latentGridCanvas: null,
+    latentSignalValues: null,
+    latentSignalIntegral: null,
+    latentSignalWidth: 0,
+    latentSignalHeight: 0,
+    latentSignalTotalValue: 0,
     history: [],
     historyIndex: -1,
     cleanHistoryIndex: -1,
@@ -78,6 +83,12 @@ const state = {
     brushColor: "#ff5a5a",
     brushCore: 30,
     brushSteepness: 8,
+    signalProbeMode: false,
+    signalProbeDragging: false,
+    signalProbeAnchor: null,
+    signalProbeRect: null,
+    signalProbePercent: 0,
+    signalProbeAreaPercent: 0,
     painting: false,
     lastPoint: null,
     imageBaseCanvas: null,
@@ -228,6 +239,9 @@ const maskBrushCoreInput = $("#mask-brush-core");
 const maskBrushCoreLabel = $("#mask-brush-core-label");
 const maskBrushSteepnessInput = $("#mask-brush-steepness");
 const maskBrushSteepnessLabel = $("#mask-brush-steepness-label");
+const maskSignalProbeControls = $("#mask-signal-probe-controls");
+const maskSignalProbeBtn = $("#mask-signal-probe-btn");
+const maskSignalProbeLabel = $("#mask-signal-probe-label");
 const maskLatentPreviewControls = $("#mask-latent-preview-controls");
 const maskLatentBaseWidthInput = $("#mask-latent-base-width");
 const maskLatentBaseWidthLabel = $("#mask-latent-base-width-label");
@@ -238,6 +252,8 @@ const maskLatentGridSizeLabel = $("#mask-latent-grid-size-label");
 const maskLatentSignalLabel = $("#mask-latent-signal-label");
 const maskLatentReductionLabel = $("#mask-latent-reduction-label");
 const maskMiniPreview = $("#mask-mini-preview");
+const maskSignalProbeRect = $("#mask-signal-probe-rect");
+const maskSignalProbeRectLabel = $("#mask-signal-probe-rect-label");
 const maskCursor = $("#mask-cursor");
 const cropOverlay = $("#crop-overlay");
 const cropGuideV = $("#crop-guide-v");

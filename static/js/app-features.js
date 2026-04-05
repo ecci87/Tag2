@@ -1138,6 +1138,301 @@ function clearMaskCursor() {
   maskCursor.classList.remove("visible");
 }
 
+function isMaskSignalProbeMode() {
+  return isMaskEditorMaskMode() && !!state.maskEditor.latentPreviewEnabled && !!state.maskEditor.signalProbeMode;
+}
+
+function getMaskSignalProbeRect() {
+  const rect = state.maskEditor.signalProbeRect;
+  const maxWidth = Math.max(1, Number(state.maskEditor.imageWidth || previewMaskCanvas.width || 1));
+  const maxHeight = Math.max(1, Number(state.maskEditor.imageHeight || previewMaskCanvas.height || 1));
+  if (!rect) return null;
+  const left = clamp(Number(rect.x || 0), 0, Math.max(0, maxWidth - 1));
+  const top = clamp(Number(rect.y || 0), 0, Math.max(0, maxHeight - 1));
+  const right = clamp(left + Math.max(1, Number(rect.w || 0)), Math.min(maxWidth, left + 1), maxWidth);
+  const bottom = clamp(top + Math.max(1, Number(rect.h || 0)), Math.min(maxHeight, top + 1), maxHeight);
+  const width = Math.max(0, Math.round(right - left));
+  const height = Math.max(0, Math.round(bottom - top));
+  if (width <= 0 || height <= 0) return null;
+  return {
+    x: Math.round(left),
+    y: Math.round(top),
+    w: width,
+    h: height,
+  };
+}
+
+function hasMaskSignalProbeRect() {
+  return !!getMaskSignalProbeRect();
+}
+
+function getMaskSignalLatentRect() {
+  const rect = getMaskSignalProbeRect();
+  const latentWidth = Math.max(0, Number(state.maskEditor.latentSignalWidth || 0));
+  const latentHeight = Math.max(0, Number(state.maskEditor.latentSignalHeight || 0));
+  const maskWidth = Math.max(1, Number(previewMaskCanvas.width || state.maskEditor.imageWidth || 1));
+  const maskHeight = Math.max(1, Number(previewMaskCanvas.height || state.maskEditor.imageHeight || 1));
+  if (!rect || !latentWidth || !latentHeight) return null;
+  const scaleX = latentWidth / maskWidth;
+  const scaleY = latentHeight / maskHeight;
+  const left = clamp(rect.x * scaleX, 0, latentWidth);
+  const top = clamp(rect.y * scaleY, 0, latentHeight);
+  const right = clamp((rect.x + rect.w) * scaleX, left, latentWidth);
+  const bottom = clamp((rect.y + rect.h) * scaleY, top, latentHeight);
+  if (right <= left || bottom <= top) return null;
+  return { left, top, right, bottom };
+}
+
+function getLatentSignalIntegralIndex(x, y, width = state.maskEditor.latentSignalWidth) {
+  const stride = Math.max(1, Number(width || 0)) + 1;
+  return (y * stride) + x;
+}
+
+function queryLatentSignalIntegral(left, top, right, bottom) {
+  const integral = state.maskEditor.latentSignalIntegral;
+  if (!integral || right <= left || bottom <= top) return 0;
+  return integral[getLatentSignalIntegralIndex(right, bottom)]
+    - integral[getLatentSignalIntegralIndex(left, bottom)]
+    - integral[getLatentSignalIntegralIndex(right, top)]
+    + integral[getLatentSignalIntegralIndex(left, top)];
+}
+
+function getLatentSignalCellValue(x, y) {
+  const values = state.maskEditor.latentSignalValues;
+  const width = Math.max(0, Number(state.maskEditor.latentSignalWidth || 0));
+  const height = Math.max(0, Number(state.maskEditor.latentSignalHeight || 0));
+  if (!values || x < 0 || y < 0 || x >= width || y >= height) {
+    return 0;
+  }
+  return values[(y * width) + x] || 0;
+}
+
+function sumLatentSignalRect(left, top, right, bottom) {
+  const width = Math.max(0, Number(state.maskEditor.latentSignalWidth || 0));
+  const height = Math.max(0, Number(state.maskEditor.latentSignalHeight || 0));
+  if (!width || !height) return 0;
+  const clampedLeft = clamp(left, 0, width);
+  const clampedTop = clamp(top, 0, height);
+  const clampedRight = clamp(right, clampedLeft, width);
+  const clampedBottom = clamp(bottom, clampedTop, height);
+  if (clampedRight <= clampedLeft || clampedBottom <= clampedTop) {
+    return 0;
+  }
+
+  const fullLeft = Math.ceil(clampedLeft);
+  const fullTop = Math.ceil(clampedTop);
+  const fullRight = Math.floor(clampedRight);
+  const fullBottom = Math.floor(clampedBottom);
+  let sum = queryLatentSignalIntegral(fullLeft, fullTop, fullRight, fullBottom);
+
+  const startX = Math.max(0, Math.floor(clampedLeft));
+  const endX = Math.min(width - 1, Math.ceil(clampedRight) - 1);
+  const startY = Math.max(0, Math.floor(clampedTop));
+  const endY = Math.min(height - 1, Math.ceil(clampedBottom) - 1);
+
+  for (let y = startY; y <= endY; y += 1) {
+    const overlapY = Math.min(clampedBottom, y + 1) - Math.max(clampedTop, y);
+    if (overlapY <= 0) continue;
+    const yIsInterior = y >= fullTop && y < fullBottom;
+    if (!yIsInterior) {
+      for (let x = startX; x <= endX; x += 1) {
+        const overlapX = Math.min(clampedRight, x + 1) - Math.max(clampedLeft, x);
+        if (overlapX <= 0) continue;
+        sum += getLatentSignalCellValue(x, y) * overlapX * overlapY;
+      }
+      continue;
+    }
+
+    const leftBoundaryX = Math.floor(clampedLeft);
+    if (leftBoundaryX >= startX && leftBoundaryX <= endX && leftBoundaryX < fullLeft) {
+      const overlapX = Math.min(clampedRight, leftBoundaryX + 1) - Math.max(clampedLeft, leftBoundaryX);
+      if (overlapX > 0) {
+        sum += getLatentSignalCellValue(leftBoundaryX, y) * overlapX * overlapY;
+      }
+    }
+
+    const rightBoundaryX = Math.ceil(clampedRight) - 1;
+    if (rightBoundaryX >= startX && rightBoundaryX <= endX && rightBoundaryX >= fullRight && rightBoundaryX !== leftBoundaryX) {
+      const overlapX = Math.min(clampedRight, rightBoundaryX + 1) - Math.max(clampedLeft, rightBoundaryX);
+      if (overlapX > 0) {
+        sum += getLatentSignalCellValue(rightBoundaryX, y) * overlapX * overlapY;
+      }
+    }
+  }
+
+  return sum;
+}
+
+function updateMaskLatentSignalBuffer(sourceCanvas) {
+  const canvas = sourceCanvas || previewLatentMaskCanvas;
+  if (!canvas || !canvas.width || !canvas.height) {
+    state.maskEditor.latentSignalValues = null;
+    state.maskEditor.latentSignalIntegral = null;
+    state.maskEditor.latentSignalWidth = 0;
+    state.maskEditor.latentSignalHeight = 0;
+    state.maskEditor.latentSignalTotalValue = 0;
+    return;
+  }
+
+  const width = canvas.width;
+  const height = canvas.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const { data } = ctx.getImageData(0, 0, width, height);
+  const values = new Float32Array(width * height);
+  const integral = new Float64Array((width + 1) * (height + 1));
+  let totalValue = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    let rowSum = 0;
+    for (let x = 0; x < width; x += 1) {
+      const value = data[((y * width) + x) * 4] || 0;
+      values[(y * width) + x] = value;
+      rowSum += value;
+      totalValue += value;
+      integral[getLatentSignalIntegralIndex(x + 1, y + 1, width)] = integral[getLatentSignalIntegralIndex(x + 1, y, width)] + rowSum;
+    }
+  }
+
+  state.maskEditor.latentSignalValues = values;
+  state.maskEditor.latentSignalIntegral = integral;
+  state.maskEditor.latentSignalWidth = width;
+  state.maskEditor.latentSignalHeight = height;
+  state.maskEditor.latentSignalTotalValue = totalValue;
+}
+
+function renderMaskSignalProbeOverlay() {
+  const rect = getMaskSignalProbeRect();
+  const signalPercent = clamp(Number(state.maskEditor.signalProbePercent || 0), 0, 100);
+  const visible = isMaskSignalProbeMode() && !!rect && !!imgNatW && !!imgNatH;
+  maskSignalProbeRect.classList.toggle("visible", visible);
+  maskSignalProbeRect.classList.toggle("is-good", visible && signalPercent >= 30);
+  maskSignalProbeRect.classList.toggle("is-low", visible && signalPercent < 30);
+  if (!visible) {
+    return;
+  }
+  const previewScaleX = Math.max(0.0001, Number(state.maskEditor.previewScaleX || 1));
+  const previewScaleY = Math.max(0.0001, Number(state.maskEditor.previewScaleY || 1));
+  const left = panX + ((rect.x / previewScaleX) * zoomLevel);
+  const top = panY + ((rect.y / previewScaleY) * zoomLevel);
+  const width = Math.max(1, (rect.w / previewScaleX) * zoomLevel);
+  const height = Math.max(1, (rect.h / previewScaleY) * zoomLevel);
+  maskSignalProbeRect.style.left = `${left}px`;
+  maskSignalProbeRect.style.top = `${top}px`;
+  maskSignalProbeRect.style.width = `${width}px`;
+  maskSignalProbeRect.style.height = `${height}px`;
+  maskSignalProbeRectLabel.textContent = `${signalPercent.toFixed(1)}% of signal`;
+}
+
+function renderMaskSignalProbeUi() {
+  const active = isMaskEditorMaskMode();
+  const showControls = active && !!state.maskEditor.latentPreviewEnabled;
+  const interactive = showControls && !state.maskEditor.loading && !state.maskEditor.saving;
+  const hasRect = hasMaskSignalProbeRect();
+  const signalPercent = clamp(Number(state.maskEditor.signalProbePercent || 0), 0, 100);
+  const areaPercent = clamp(Number(state.maskEditor.signalProbeAreaPercent || 0), 0, 100);
+  maskSignalProbeControls.classList.toggle("visible", showControls);
+  maskSignalProbeBtn.disabled = !interactive;
+  maskSignalProbeBtn.setAttribute("aria-pressed", showControls && state.maskEditor.signalProbeMode ? "true" : "false");
+  maskSignalProbeBtn.title = state.maskEditor.signalProbeMode
+    ? "Probe mode is on. Right-drag in the latent preview to draw or redraw the signal rectangle."
+    : "Enable probe mode, then right-drag in the latent preview to measure signal for a detail area.";
+  if (!hasRect) {
+    maskSignalProbeLabel.textContent = showControls && state.maskEditor.signalProbeMode
+      ? "Right-drag an area to measure signal"
+      : "No probe area";
+  } else {
+    maskSignalProbeLabel.textContent = `Signal ${signalPercent.toFixed(1)}% of total · Area ${areaPercent.toFixed(1)}%`;
+  }
+  maskSignalProbeLabel.title = hasRect
+    ? "Signal inside the selected rectangle against the current total latent signal. Aim for roughly 30% or more."
+    : "Enable probe mode and right-drag in the latent preview to measure the selected detail area.";
+  maskSignalProbeLabel.classList.toggle("has-value", hasRect);
+  maskSignalProbeLabel.classList.toggle("is-good", hasRect && signalPercent >= 30);
+  maskSignalProbeLabel.classList.toggle("is-low", hasRect && signalPercent < 30);
+  renderMaskSignalProbeOverlay();
+}
+
+function updateMaskSignalProbeStats() {
+  const rect = getMaskSignalProbeRect();
+  const latentRect = getMaskSignalLatentRect();
+  const totalSignalValue = Math.max(0, Number(state.maskEditor.latentSignalTotalValue || 0));
+  if (!isMaskEditorMaskMode() || !rect || !latentRect || !previewMaskCanvas.width || !previewMaskCanvas.height) {
+    state.maskEditor.signalProbePercent = 0;
+    state.maskEditor.signalProbeAreaPercent = 0;
+    renderMaskSignalProbeUi();
+    return;
+  }
+  const rectSignalValue = sumLatentSignalRect(latentRect.left, latentRect.top, latentRect.right, latentRect.bottom);
+  const latentArea = Math.max(1, Number(state.maskEditor.latentSignalWidth || 0) * Number(state.maskEditor.latentSignalHeight || 0));
+  const rectArea = Math.max(0, (latentRect.right - latentRect.left) * (latentRect.bottom - latentRect.top));
+  state.maskEditor.signalProbePercent = totalSignalValue > 0
+    ? clamp((rectSignalValue / totalSignalValue) * 100, 0, 100)
+    : 0;
+  state.maskEditor.signalProbeAreaPercent = clamp((rectArea / latentArea) * 100, 0, 100);
+  renderMaskSignalProbeUi();
+}
+
+function beginMaskSignalProbeDrag(event) {
+  const maxWidth = Math.max(1, Number(state.maskEditor.imageWidth || previewMaskCanvas.width || 1));
+  const maxHeight = Math.max(1, Number(state.maskEditor.imageHeight || previewMaskCanvas.height || 1));
+  const anchorPoint = previewPointToMaskPoint(screenToImage(event.clientX, event.clientY));
+  const anchor = {
+    x: clamp(anchorPoint.x, 0, Math.max(0, maxWidth - 1)),
+    y: clamp(anchorPoint.y, 0, Math.max(0, maxHeight - 1)),
+  };
+  state.maskEditor.signalProbeDragging = true;
+  state.maskEditor.signalProbeAnchor = anchor;
+  state.maskEditor.signalProbeRect = {
+    x: Math.round(anchor.x),
+    y: Math.round(anchor.y),
+    w: 1,
+    h: 1,
+  };
+  updateMaskSignalProbeStats();
+}
+
+function updateMaskSignalProbeDrag(clientX, clientY) {
+  if (!state.maskEditor.signalProbeDragging || !state.maskEditor.signalProbeAnchor) return;
+  const point = previewPointToMaskPoint(screenToImage(clientX, clientY));
+  const maxWidth = Math.max(1, Number(state.maskEditor.imageWidth || previewMaskCanvas.width || 1));
+  const maxHeight = Math.max(1, Number(state.maskEditor.imageHeight || previewMaskCanvas.height || 1));
+  const left = clamp(Math.min(state.maskEditor.signalProbeAnchor.x, point.x), 0, maxWidth);
+  const top = clamp(Math.min(state.maskEditor.signalProbeAnchor.y, point.y), 0, maxHeight);
+  const right = clamp(Math.max(state.maskEditor.signalProbeAnchor.x, point.x), 0, maxWidth);
+  const bottom = clamp(Math.max(state.maskEditor.signalProbeAnchor.y, point.y), 0, maxHeight);
+  state.maskEditor.signalProbeRect = {
+    x: Math.round(left),
+    y: Math.round(top),
+    w: Math.max(1, Math.round(right - left)),
+    h: Math.max(1, Math.round(bottom - top)),
+  };
+  updateMaskSignalProbeStats();
+}
+
+function stopMaskSignalProbeDrag() {
+  if (!state.maskEditor.signalProbeDragging) return;
+  state.maskEditor.signalProbeDragging = false;
+  state.maskEditor.signalProbeAnchor = null;
+  renderMaskSignalProbeUi();
+  if (hasMaskSignalProbeRect()) {
+    statusBar.textContent = `Signal rectangle ${state.maskEditor.signalProbePercent.toFixed(1)}%`;
+  }
+}
+
+function toggleMaskSignalProbeMode() {
+  if (!isMaskEditorMaskMode()) return;
+  state.maskEditor.signalProbeMode = !state.maskEditor.signalProbeMode;
+  state.maskEditor.signalProbeDragging = false;
+  state.maskEditor.signalProbeAnchor = null;
+  clearMaskCursor();
+  renderMaskEditorUi();
+  statusBar.textContent = state.maskEditor.signalProbeMode
+    ? "Signal rectangle mode enabled. Right-drag to measure a detail area."
+    : (hasMaskSignalProbeRect()
+      ? `Signal rectangle hidden. Live signal ${state.maskEditor.signalProbePercent.toFixed(1)}%`
+      : "Signal rectangle mode disabled");
+}
+
 function getMaskBrushReferenceSize() {
   return Math.max(1, Number(state.maskEditor.imageWidth || 0), Number(state.maskEditor.imageHeight || 0), Number(imgNatW || 0), Number(imgNatH || 0));
 }
@@ -1266,6 +1561,7 @@ function updateMaskLatentSignalStats(sourceCanvas) {
   if (!canvas || !canvas.width || !canvas.height) {
     state.maskEditor.latentSignalPercent = 0;
     state.maskEditor.latentReductionPercent = 100;
+    updateMaskLatentSignalBuffer(null);
     return;
   }
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -1278,6 +1574,7 @@ function updateMaskLatentSignalStats(sourceCanvas) {
   const signalPercent = clamp((sum / (pixelCount * 255)) * 100, 0, 100);
   state.maskEditor.latentSignalPercent = signalPercent;
   state.maskEditor.latentReductionPercent = 100 - signalPercent;
+  updateMaskLatentSignalBuffer(canvas);
 }
 
 function scheduleMaskLatentPreviewRender(options = {}) {
@@ -1285,7 +1582,7 @@ function scheduleMaskLatentPreviewRender(options = {}) {
   if (imageDirty) {
     state.maskEditor.latentImageDirty = true;
   }
-  if (!state.maskEditor.active || !state.maskEditor.latentPreviewEnabled) {
+  if (!state.maskEditor.active || !isMaskEditorMaskMode()) {
     return;
   }
   if (state.maskEditor.latentPreviewQueued) return;
@@ -1297,7 +1594,7 @@ function scheduleMaskLatentPreviewRender(options = {}) {
 }
 
 function renderMaskLatentPreview() {
-  if (!state.maskEditor.active || !state.maskEditor.latentPreviewEnabled || !previewMaskCanvas.width || !previewMaskCanvas.height) {
+  if (!state.maskEditor.active || !isMaskEditorMaskMode() || !previewMaskCanvas.width || !previewMaskCanvas.height) {
     return;
   }
 
@@ -1337,7 +1634,9 @@ function renderMaskLatentPreview() {
   latentMaskCtx.imageSmoothingEnabled = false;
   latentMaskCtx.drawImage(latentGridCanvas, 0, 0);
   updateMaskLatentSignalStats(previewLatentMaskCanvas);
+  updateMaskSignalProbeStats();
   updateMaskControlLabels();
+  renderMaskSignalProbeUi();
 }
 
 function scheduleMaskMiniPreviewRender() {
@@ -1460,6 +1759,7 @@ function applyEditorHistoryEntry(entry, direction = "after") {
 function finalizeHistoryPlayback() {
   scheduleMaskMiniPreviewRender();
   if (isMaskEditorMaskMode()) {
+    updateMaskSignalProbeStats();
     scheduleMaskLatentPreviewRender();
   }
   renderMaskEditorUi();
@@ -1584,6 +1884,7 @@ function renderMaskEditorUi() {
   updateMaskViewModeButton();
   updateMaskLatentPreviewButton();
   updateMaskHistoryButtons();
+  renderMaskSignalProbeUi();
   renderPreviewActionBar();
   maskEditorPanel.classList.toggle("visible", active);
   maskBrushSizeInput.disabled = !interactive;
@@ -1609,6 +1910,7 @@ function renderMaskEditorUi() {
   maskLatentPreviewBtn.classList.toggle("visible", active && maskMode);
   maskResetBtn.classList.toggle("visible", active);
   maskLatentPreviewControls.classList.toggle("visible", showLatentPreview);
+  previewStage.classList.toggle("mask-signal-probe-mode", isMaskSignalProbeMode());
   if (state.previewMediaType === "video") {
     maskEditBtn.textContent = "Edit Key Mask";
     maskEditBtn.title = videoAvailable
@@ -1690,6 +1992,10 @@ function isClientInsidePreviewImage(clientX, clientY) {
 }
 
 function updateMaskCursor(clientX, clientY) {
+  if (isMaskSignalProbeMode()) {
+    clearMaskCursor();
+    return;
+  }
   if (!isMaskEditorVisible() || !imgNatW || !imgNatH || !isClientInsidePreviewImage(clientX, clientY)) {
     clearMaskCursor();
     return;
@@ -1798,6 +2104,7 @@ function renderMaskStrokePreview() {
   }
 
   state.maskEditor.dirty = true;
+  updateMaskSignalProbeStats();
   scheduleMaskMiniPreviewRender();
   if (isMaskEditorMaskMode()) {
     scheduleMaskLatentPreviewRender();
@@ -2042,6 +2349,7 @@ async function loadImageMaskEditorForPath(path) {
   stopMaskPaint();
   refreshMaskBaseCanvas();
   resetMaskHistory();
+  updateMaskSignalProbeStats();
   setImageMaskPresence(path, true, maskInfo.mtime || Date.now());
   applyMaskCanvasTransform();
   applyMaskLatentPreviewTransform();
@@ -2095,6 +2403,7 @@ async function loadVideoMaskEditorForPath(path, options = {}) {
   stopMaskPaint();
   refreshMaskBaseCanvas();
   resetMaskHistory();
+  updateMaskSignalProbeStats();
   setVideoMaskKeyframes(path, maskInfo.keyframes || []);
   setImageMaskPresence(path, true, maskInfo.mtime || Date.now(), maskInfo.mask_count);
   applyMaskCanvasTransform();
@@ -2258,6 +2567,12 @@ function closeMaskEditor(options = {}) {
   state.maskEditor.history = [];
   state.maskEditor.historyIndex = 0;
   state.maskEditor.cleanHistoryIndex = 0;
+  state.maskEditor.signalProbeMode = false;
+  state.maskEditor.signalProbeDragging = false;
+  state.maskEditor.signalProbeAnchor = null;
+  state.maskEditor.signalProbeRect = null;
+  state.maskEditor.signalProbePercent = 0;
+  state.maskEditor.signalProbeAreaPercent = 0;
   state.maskEditor.imageBaseCanvas = null;
   state.maskEditor.baseCanvas = null;
   state.maskEditor.latentPreviewQueued = false;
@@ -2266,6 +2581,11 @@ function closeMaskEditor(options = {}) {
   state.maskEditor.latentReductionPercent = 50;
   state.maskEditor.latentBaseMaskCanvas = null;
   state.maskEditor.latentGridCanvas = null;
+  state.maskEditor.latentSignalValues = null;
+  state.maskEditor.latentSignalIntegral = null;
+  state.maskEditor.latentSignalWidth = 0;
+  state.maskEditor.latentSignalHeight = 0;
+  state.maskEditor.latentSignalTotalValue = 0;
   state.maskEditor.strokeBaseCanvas = null;
   state.maskEditor.strokeInfluenceValues = null;
   state.maskEditor.strokeDirtyTiles = null;
@@ -2470,6 +2790,7 @@ function resetMaskEditToDefault() {
   ctx.restore();
   pushMaskHistorySnapshot({ beforeCanvas, tileKeys: fullTileKeys });
   syncMaskEditorDirtyState();
+  updateMaskSignalProbeStats();
   scheduleMaskMiniPreviewRender();
   scheduleMaskLatentPreviewRender();
   renderMaskEditorUi();
@@ -6006,6 +6327,7 @@ function applyTransform() {
   applyImageEditCanvasTransform();
   applyMaskCanvasTransform();
   applyMaskLatentPreviewTransform();
+  renderMaskSignalProbeOverlay();
   renderCropOverlay();
   renderPreviewCaptionOverlay();
 }
@@ -6250,6 +6572,17 @@ function hidePreview() {
   let dragStartX, dragStartY, dragPanStartX, dragPanStartY;
 
   panel.addEventListener("mousedown", (e) => {
+    if (isMaskSignalProbeMode() && e.button === 2) {
+      if (e.target.closest("#video-edit-panel, #preview-caption-overlay, #mask-editor-panel, #preview-action-bar, #mask-action-bar, #mask-edit-btn, #image-edit-btn, #duplicate-image-btn, #mask-apply-btn, #mask-cancel-btn, #mask-undo-btn, #mask-redo-btn, #mask-view-mode-btn, #mask-latent-preview-btn, #mask-reset-btn")) {
+        return;
+      }
+      if (!isClientInsidePreviewImage(e.clientX, e.clientY)) {
+        return;
+      }
+      beginMaskSignalProbeDrag(e);
+      e.preventDefault();
+      return;
+    }
     if (isMaskEditorVisible() && e.button === 2) {
       if (e.target.closest("#video-edit-panel, #preview-caption-overlay, #mask-editor-panel, #preview-action-bar, #mask-action-bar, #mask-edit-btn, #image-edit-btn, #duplicate-image-btn, #mask-apply-btn, #mask-cancel-btn, #mask-undo-btn, #mask-redo-btn, #mask-view-mode-btn, #mask-latent-preview-btn, #mask-reset-btn")) {
         return;
@@ -6299,6 +6632,10 @@ function hidePreview() {
       return;
     }
     updateMaskCursor(e.clientX, e.clientY);
+    if (state.maskEditor.signalProbeDragging && isMaskSignalProbeMode()) {
+      updateMaskSignalProbeDrag(e.clientX, e.clientY);
+      return;
+    }
     if (state.maskEditor.painting && isMaskEditorVisible()) {
       paintMaskAtClient(e.clientX, e.clientY);
       return;
@@ -6347,6 +6684,9 @@ function hidePreview() {
     if (videoTimelineInteraction) {
       finishVideoTimelineInteraction(e.clientX);
       return;
+    }
+    if (state.maskEditor.signalProbeDragging) {
+      stopMaskSignalProbeDrag();
     }
     if (state.maskEditor.painting) {
       stopMaskPaint();
@@ -6404,6 +6744,7 @@ maskUndoBtn.addEventListener("click", undoMaskEdit);
 maskRedoBtn.addEventListener("click", redoMaskEdit);
 maskViewModeBtn.addEventListener("click", toggleMaskEditorViewMode);
 maskLatentPreviewBtn.addEventListener("click", toggleMaskLatentPreview);
+maskSignalProbeBtn.addEventListener("click", toggleMaskSignalProbeMode);
 maskResetBtn.addEventListener("click", resetMaskEditToDefault);
 maskBrushSizeInput.addEventListener("input", (e) => {
   state.maskEditor.brushSizePercent = clamp(Number(e.target.value || 6), 0.2, 100);
