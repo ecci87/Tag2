@@ -43,6 +43,7 @@ const state = {
   cropInteraction: null,
   maskEditor: {
     active: false,
+    mode: null,
     loading: false,
     saving: false,
     dirty: false,
@@ -66,22 +67,26 @@ const state = {
     historyIndex: -1,
     cleanHistoryIndex: -1,
     path: null,
+    sourceWidth: 0,
+    sourceHeight: 0,
     imageWidth: 0,
     imageHeight: 0,
     previewScaleX: 1,
     previewScaleY: 1,
     brushSizePercent: 6,
     brushValue: 100,
+    brushColor: "#ff5a5a",
     brushCore: 30,
     brushSteepness: 8,
     painting: false,
     lastPoint: null,
+    imageBaseCanvas: null,
     baseCanvas: null,
     strokeBaseCanvas: null,
     strokeInfluenceValues: null,
     previewQueued: false,
     strokeRenderFrameId: 0,
-    strokeDirtyRect: null,
+    strokeDirtyTiles: null,
   },
   collapsedSections: {},
   collapsedGroups: {},
@@ -105,6 +110,7 @@ const state = {
   modelLogLines: [],
   modelLogOpen: false,
   cloning: false,
+  duplicatingImage: false,
   folderAutocomplete: {
     items: [],
     highlightedIndex: -1,
@@ -202,16 +208,22 @@ const centerPanel = $("#center-panel");
 const previewStage = $("#preview-stage");
 const previewImg = $("#preview-img");
 const previewVideo = $("#preview-video");
+const previewImageEditCanvas = $("#preview-image-edit-canvas");
 const previewMaskCanvas = $("#preview-mask-canvas");
 const previewLatentImageCanvas = $("#preview-latent-image-canvas");
 const previewLatentMaskCanvas = $("#preview-latent-mask-canvas");
 const fileDropHint = $("#file-drop-hint");
 const maskEditorPanel = $("#mask-editor-panel");
+const maskEditorTitle = $("#mask-editor-title");
 const maskEditorStatus = $("#mask-editor-status");
 const maskBrushSizeInput = $("#mask-brush-size");
 const maskBrushSizeLabel = $("#mask-brush-size-label");
 const maskBrushValueInput = $("#mask-brush-value");
+const maskBrushValueTitle = $("#mask-brush-value-title");
 const maskBrushValueLabel = $("#mask-brush-value-label");
+const maskBrushColorField = $("#mask-brush-color-field");
+const maskBrushColorInput = $("#mask-brush-color");
+const maskBrushColorLabel = $("#mask-brush-color-label");
 const maskBrushCoreInput = $("#mask-brush-core");
 const maskBrushCoreLabel = $("#mask-brush-core-label");
 const maskBrushSteepnessInput = $("#mask-brush-steepness");
@@ -235,6 +247,9 @@ const cropLabel = cropBox.querySelector(".crop-label");
 const cropApplyBtn = $("#crop-apply-btn");
 const cropCancelBtn = $("#crop-cancel-btn");
 const cropRemoveBtn = $("#crop-remove-btn");
+const previewActionBar = $("#preview-action-bar");
+const duplicateImageBtn = $("#duplicate-image-btn");
+const imageEditBtn = $("#image-edit-btn");
 const maskEditBtn = $("#mask-edit-btn");
 const videoMaskAddBtn = $("#video-mask-add-btn");
 const gifConvertBtn = $("#gif-convert-btn");

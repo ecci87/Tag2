@@ -958,6 +958,26 @@ class TestCloneFolder:
         assert (target_folder / mask_b.name).exists()
 
 
+class TestDuplicateImage:
+    def test_duplicate_image_copies_caption_and_mask(self, client, img_dir):
+        image_path = str(img_dir / "photo1.jpg")
+        (img_dir / "photo1.txt").write_text("caption one", encoding="utf-8")
+        server._write_default_image_mask(image_path)
+
+        resp = client.post("/api/image/duplicate", json={
+            "image_path": image_path,
+            "new_name": "photo1-copy",
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        duplicated_path = Path(data["image_path"])
+        assert duplicated_path.name == "photo1-copy.jpg"
+        assert duplicated_path.exists()
+        assert (img_dir / "photo1-copy.txt").exists()
+        assert (img_dir / "photo1-copy.jpg.mask.png").exists()
+
+
 class TestThumbnail:
     def test_get_thumbnail(self, client, single_image):
         resp = client.get("/api/thumbnail", params={"path": single_image, "size": 128})
@@ -1925,6 +1945,30 @@ class TestMaskAPI:
             assert mask_image.mode == "L"
             assert mask_image.size == (96, 54)
             assert mask_image.getpixel((10, 10)) == 255
+
+
+class TestImageEditAPI:
+    def test_save_image_edit_normalizes_uploaded_image(self, client, single_image):
+        buffer = BytesIO()
+        Image.new("RGB", (32, 24), color=(24, 200, 80)).save(buffer, format="PNG")
+        buffer.seek(0)
+
+        resp = client.post(
+            "/api/image/edit",
+            data={"image_path": single_image},
+            files={"image": ("edited.png", buffer, "image/png")},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["image_width"] == 100
+        assert data["image_height"] == 100
+        with Image.open(single_image) as edited_image:
+            assert edited_image.size == (100, 100)
+            pixel = edited_image.convert("RGB").getpixel((50, 50))
+            assert pixel[1] > pixel[0]
+            assert pixel[1] > pixel[2]
 
 
 class TestAutoCaptionAPI:

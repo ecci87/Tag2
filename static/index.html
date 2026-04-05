@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Image Captioning Tool</title>
 <link rel="stylesheet" href="/static/css/app-shell.css?v=20260404g">
-<link rel="stylesheet" href="/static/css/app-preview.css?v=20260404f">
+<link rel="stylesheet" href="/static/css/app-preview.css?v=20260405a">
 <link rel="stylesheet" href="/static/css/app-captions.css?v=20260315d">
 <link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260404b">
 </head>
@@ -89,6 +89,7 @@
       <div id="preview-stage">
         <img id="preview-img" alt="Preview">
         <video id="preview-video" preload="metadata" playsinline></video>
+        <canvas id="preview-image-edit-canvas" aria-hidden="true"></canvas>
         <canvas id="preview-mask-canvas" aria-hidden="true"></canvas>
         <canvas id="preview-latent-image-canvas" aria-hidden="true"></canvas>
         <canvas id="preview-latent-mask-canvas" aria-hidden="true"></canvas>
@@ -110,9 +111,14 @@
             <span id="mask-brush-size-label">6.0% · 0 px</span>
           </label>
           <label class="mask-editor-field" for="mask-brush-value">
-            <span>Value</span>
+            <span id="mask-brush-value-title">Value</span>
             <input id="mask-brush-value" type="range" min="0" max="100" step="1" value="100">
             <span id="mask-brush-value-label">100%</span>
+          </label>
+          <label class="mask-editor-field mask-editor-color-field" id="mask-brush-color-field" for="mask-brush-color">
+            <span>Color</span>
+            <input id="mask-brush-color" type="color" value="#ff5a5a">
+            <span id="mask-brush-color-label">#ff5a5a</span>
           </label>
           <label class="mask-editor-field" for="mask-brush-core">
             <span>Core</span>
@@ -164,9 +170,13 @@
           <button id="crop-apply-btn" type="button">Apply</button>
           <button id="crop-cancel-btn" type="button">Cancel</button>
           <button id="crop-remove-btn" type="button">Remove Crop</button>
-          <button id="mask-edit-btn" type="button">Mask</button>
+          <div id="preview-action-bar">
+            <button id="duplicate-image-btn" type="button">Duplicate</button>
+            <button id="image-edit-btn" type="button">Edit Image</button>
+            <button id="mask-edit-btn" type="button">Mask</button>
+            <button id="gif-convert-btn" type="button">GIF to MP4</button>
+          </div>
           <button id="video-mask-add-btn" type="button" aria-label="Add new key-frame mask" title="Add a new key-frame mask at the current video frame">+</button>
-          <button id="gif-convert-btn" type="button">GIF to MP4</button>
           <div id="mask-action-bar">
             <button id="mask-apply-btn" type="button">Save Mask</button>
             <button id="mask-cancel-btn" type="button">Cancel Mask</button>
@@ -396,8 +406,8 @@
   </div>
 </div>
 
-<script defer src="/static/js/app-shared.js?v=20260404d"></script>
-<script defer src="/static/js/app-features.js?v=20260404g"></script>
+<script defer src="/static/js/app-shared.js?v=20260405a"></script>
+<script defer src="/static/js/app-features.js?v=20260405a"></script>
 <script defer src="/static/js/app-init.js?v=20260404d"></script>
 </body>
 </html>

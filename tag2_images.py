@@ -347,6 +347,48 @@ def _save_image_mask(image_path: str, mask_bytes: bytes) -> dict:
     return _save_mask_file(_get_image_mask_path(image_path), mask_bytes, image_width, image_height)
 
 
+def _normalize_display_image_to_size(image: Image.Image, image_width: int, image_height: int) -> Image.Image:
+    """Normalize an uploaded display-space image to the requested oriented size."""
+    normalized_image = ImageOps.exif_transpose(image)
+    if normalized_image.size != (image_width, image_height):
+        normalized_image = normalized_image.resize((image_width, image_height), Image.Resampling.LANCZOS)
+    return normalized_image
+
+
+def _save_edited_image(image_path: str, image_bytes: bytes) -> dict:
+    """Persist an uploaded edited image while preserving the source format and metadata.
+
+    If the image currently has a reversible crop backup, saving an edit commits the
+    cropped pixels as the new source because the edit cannot be projected back onto
+    the uncropped backup image.
+    """
+    current_image, original_format, exif_bytes, icc_profile = _load_oriented_image(image_path)
+    try:
+        image_width, image_height = current_image.size
+    finally:
+        current_image.close()
+
+    with Image.open(BytesIO(image_bytes)) as uploaded_image:
+        normalized_image = _normalize_display_image_to_size(uploaded_image, image_width, image_height)
+        _save_image_file(image_path, normalized_image, original_format, exif_bytes, icc_profile)
+
+    committed_crop = False
+    backup_path = _get_crop_backup_path(image_path)
+    if os.path.isfile(backup_path):
+        os.remove(backup_path)
+        committed_crop = True
+
+    _clear_thumbnail_cache_for_path(image_path)
+    return {
+        "path": image_path,
+        "mtime": os.path.getmtime(image_path),
+        "image_width": image_width,
+        "image_height": image_height,
+        "crop": _get_image_crop(image_path),
+        "committed_crop": committed_crop,
+    }
+
+
 def _get_crop_backup_dir() -> str:
     """Return the folder used for reversible crop backups."""
     return RUNTIME_CROP_BACKUP_DIR

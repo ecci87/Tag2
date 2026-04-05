@@ -7,6 +7,13 @@ function getDefaultCloneFolderName() {
   return `${baseName}-copy`;
 }
 
+function getDefaultDuplicateImageName(path = state.previewPath) {
+  const fileName = getFileLabel(path || "image") || "image";
+  const extension = getImageExtension(fileName);
+  const stem = extension ? fileName.slice(0, -extension.length) : fileName;
+  return `${stem}-copy${extension}`;
+}
+
 async function cloneCurrentFolder() {
   if (!state.folder) {
     showErrorToast("Load a folder first.");
@@ -139,6 +146,54 @@ async function cloneCurrentFolder() {
     state.cloning = false;
     updateActionButtons();
     resetAutoCaptionProgress();
+  }
+}
+
+async function duplicateCurrentImage() {
+  if (!isImageEditAvailable()) {
+    showErrorToast("Select a single image first.");
+    return;
+  }
+  if (state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading) {
+    showErrorToast("Finish the current operation before duplicating an image.");
+    return;
+  }
+
+  const sourcePath = state.previewPath;
+  const requestedName = prompt(`Duplicate ${getFileLabel(sourcePath)} as:`, getDefaultDuplicateImageName(sourcePath));
+  if (requestedName === null) return;
+  const trimmedName = String(requestedName || "").trim();
+  if (!trimmedName) {
+    showErrorToast("Duplicate cancelled: image name is required.");
+    return;
+  }
+
+  state.duplicatingImage = true;
+  renderMaskEditorUi();
+  statusBar.textContent = `Duplicating ${getFileLabel(sourcePath)}...`;
+  try {
+    const resp = await fetch("/api/image/duplicate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_path: sourcePath,
+        new_name: trimmedName,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to duplicate image");
+    }
+    const preserveScrollTop = fileGridContainer.scrollTop;
+    await loadFolder({ preserveScrollTop });
+    await selectUploadedImages([data.image_path]);
+    statusBar.textContent = `Duplicated ${getFileLabel(sourcePath)} as ${getFileLabel(data.image_path)}`;
+  } catch (err) {
+    showErrorToast(`Duplicate error: ${err.message}`);
+    statusBar.textContent = `Duplicate error: ${err.message}`;
+  } finally {
+    state.duplicatingImage = false;
+    renderMaskEditorUi();
   }
 }
 
@@ -928,6 +983,14 @@ function isMaskEditAvailable() {
     && !!imgNatH;
 }
 
+function isImageEditAvailable() {
+  return state.selectedPaths.size === 1
+    && !!state.previewPath
+    && state.previewMediaType === "image"
+    && !!imgNatW
+    && !!imgNatH;
+}
+
 function isVideoMaskEditAvailable() {
   return state.selectedPaths.size === 1
     && !!state.previewPath
@@ -938,6 +1001,34 @@ function isVideoMaskEditAvailable() {
 
 function isMaskEditorVisible() {
   return !!state.maskEditor.active;
+}
+
+function isMaskEditorMaskMode() {
+  return state.maskEditor.active && state.maskEditor.mode === "mask";
+}
+
+function isMaskEditorImageMode() {
+  return state.maskEditor.active && state.maskEditor.mode === "image";
+}
+
+function getActiveEditCanvas() {
+  return isMaskEditorImageMode() ? previewImageEditCanvas : previewMaskCanvas;
+}
+
+function hexToRgb(hexColor) {
+  const normalized = String(hexColor || "").trim().replace(/^#/, "");
+  if (normalized.length !== 6) {
+    return { r: 255, g: 90, b: 90 };
+  }
+  const value = Number.parseInt(normalized, 16);
+  if (!Number.isFinite(value)) {
+    return { r: 255, g: 90, b: 90 };
+  }
+  return {
+    r: (value >> 16) & 255,
+    g: (value >> 8) & 255,
+    b: value & 255,
+  };
 }
 
 function getEffectiveVideoMaskFps(path = state.previewPath) {
@@ -1083,24 +1174,39 @@ function getMaskBrushInfluence(distanceFraction) {
 }
 
 function updateMaskControlLabels() {
+  const imageMode = isMaskEditorImageMode();
   const brushSizePercent = clamp(Number(state.maskEditor.brushSizePercent || 6), 0.2, 100);
   const brushValue = Math.max(0, Math.min(100, Number(state.maskEditor.brushValue || 0)));
   const brushCore = clamp(Number(state.maskEditor.brushCore || 30), 0, 95);
   const brushSteepness = clamp(Number(state.maskEditor.brushSteepness || 8), 1, 32);
   const brushDiameterMaskPx = getMaskBrushDiameterMaskPx();
   const latentMetrics = getMaskLatentPreviewMetrics();
+  const brushColor = String(state.maskEditor.brushColor || "#ff5a5a").toLowerCase();
+  maskEditorTitle.textContent = imageMode ? "Image" : "Mask";
   maskBrushSizeInput.value = String(brushSizePercent);
   maskBrushValueInput.value = String(Math.round(brushValue));
+  maskBrushColorInput.value = brushColor;
   maskBrushCoreInput.value = String(Math.round(brushCore));
   maskBrushSteepnessInput.value = String(brushSteepness);
   maskLatentBaseWidthInput.value = String(latentMetrics.baseWidth);
   maskLatentDividerInput.value = String(latentMetrics.divider);
+  maskBrushValueTitle.textContent = imageMode ? "Strength" : "Value";
   maskBrushSizeLabel.textContent = `${brushSizePercent.toFixed(1)}% · ${Math.round(brushDiameterMaskPx)} px`;
   maskBrushValueLabel.textContent = `${Math.round(brushValue)}%`;
-  maskResetBtn.textContent = `Reset ${Math.round(brushValue)}%`;
-  maskResetBtn.title = `Fill the full mask with ${Math.round(brushValue)}%`;
+  maskBrushColorLabel.textContent = brushColor;
   maskBrushCoreLabel.textContent = `${Math.round(brushCore)}%`;
   maskBrushSteepnessLabel.textContent = brushSteepness.toFixed(1);
+  if (imageMode) {
+    maskResetBtn.textContent = "Reset Image";
+    maskResetBtn.title = "Restore the image edit overlay to the original image";
+    maskEditorStatus.textContent = state.maskEditor.loading
+      ? "Loading..."
+      : (state.maskEditor.saving ? "Saving..." : `${Math.round(brushValue)}% · ${brushColor}`);
+    return;
+  }
+
+  maskResetBtn.textContent = `Reset ${Math.round(brushValue)}%`;
+  maskResetBtn.title = `Fill the full mask with ${Math.round(brushValue)}%`;
   maskLatentBaseWidthLabel.textContent = `${latentMetrics.baseWidth}px`;
   maskLatentDividerLabel.textContent = `/${latentMetrics.divider}`;
   maskLatentBaseSizeLabel.textContent = `Base ${latentMetrics.baseWidth}×${latentMetrics.baseHeight}`;
@@ -1246,14 +1352,29 @@ function scheduleMaskMiniPreviewRender() {
 function renderMaskMiniPreview() {
   const ctx = maskMiniPreview.getContext("2d");
   ctx.clearRect(0, 0, maskMiniPreview.width, maskMiniPreview.height);
-  if (!isMaskEditorVisible() || !previewMaskCanvas.width || !previewMaskCanvas.height) {
+  if (!isMaskEditorVisible()) {
+    return;
+  }
+  if (isMaskEditorImageMode()) {
+    if (!previewImageEditCanvas.width || !previewImageEditCanvas.height || !state.maskEditor.imageBaseCanvas) {
+      return;
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(state.maskEditor.imageBaseCanvas, 0, 0, maskMiniPreview.width, maskMiniPreview.height);
+    ctx.save();
+    ctx.globalCompositeOperation = "color";
+    ctx.drawImage(previewImageEditCanvas, 0, 0, maskMiniPreview.width, maskMiniPreview.height);
+    ctx.restore();
+    return;
+  }
+  if (!previewMaskCanvas.width || !previewMaskCanvas.height) {
     return;
   }
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(previewMaskCanvas, 0, 0, maskMiniPreview.width, maskMiniPreview.height);
 }
 
-function cloneMaskCanvasSnapshot(sourceCanvas = previewMaskCanvas) {
+function cloneMaskCanvasSnapshot(sourceCanvas = getActiveEditCanvas()) {
   const snapshot = document.createElement("canvas");
   snapshot.width = sourceCanvas.width;
   snapshot.height = sourceCanvas.height;
@@ -1264,7 +1385,7 @@ function cloneMaskCanvasSnapshot(sourceCanvas = previewMaskCanvas) {
 }
 
 function refreshMaskBaseCanvas() {
-  state.maskEditor.baseCanvas = cloneMaskCanvasSnapshot();
+  state.maskEditor.baseCanvas = cloneMaskCanvasSnapshot(getActiveEditCanvas());
 }
 
 function syncMaskEditorDirtyState() {
@@ -1272,48 +1393,104 @@ function syncMaskEditorDirtyState() {
 }
 
 function resetMaskHistory() {
-  state.maskEditor.history = [cloneMaskCanvasSnapshot()];
+  state.maskEditor.history = [];
   state.maskEditor.historyIndex = 0;
   state.maskEditor.cleanHistoryIndex = 0;
   syncMaskEditorDirtyState();
 }
 
-function pushMaskHistorySnapshot() {
-  const nextSnapshot = cloneMaskCanvasSnapshot();
-  const nextHistory = state.maskEditor.history.slice(0, state.maskEditor.historyIndex + 1);
-  nextHistory.push(nextSnapshot);
+function collectEditorHistoryTiles(beforeCanvas, afterCanvas, tileKeys) {
+  const tileRects = getEditorTileRects(tileKeys, afterCanvas.width, afterCanvas.height);
+  if (!tileRects.length) {
+    return [];
+  }
+  const beforeCtx = beforeCanvas.getContext("2d", { willReadFrequently: true });
+  const afterCtx = afterCanvas.getContext("2d", { willReadFrequently: true });
+  const tiles = [];
+  for (const tileRect of tileRects) {
+    const beforeImageData = beforeCtx.getImageData(tileRect.left, tileRect.top, tileRect.width, tileRect.height);
+    const afterImageData = afterCtx.getImageData(tileRect.left, tileRect.top, tileRect.width, tileRect.height);
+    if (areImageDataEqual(beforeImageData, afterImageData)) {
+      continue;
+    }
+    tiles.push({
+      x: tileRect.left,
+      y: tileRect.top,
+      before: beforeImageData,
+      after: afterImageData,
+    });
+  }
+  return tiles;
+}
+
+function pushMaskHistorySnapshot(options = {}) {
+  const {
+    beforeCanvas = state.maskEditor.strokeBaseCanvas,
+    tileKeys = state.maskEditor.strokeDirtyTiles,
+  } = options;
+  const activeCanvas = getActiveEditCanvas();
+  if (!beforeCanvas || !activeCanvas.width || !activeCanvas.height || !tileKeys?.size) {
+    return;
+  }
+  if (state.maskEditor.cleanHistoryIndex > state.maskEditor.historyIndex) {
+    state.maskEditor.cleanHistoryIndex = -1;
+  }
+  const nextHistory = state.maskEditor.history.slice(0, state.maskEditor.historyIndex);
+  const nextEntry = {
+    tiles: collectEditorHistoryTiles(beforeCanvas, activeCanvas, tileKeys),
+  };
+  if (!nextEntry.tiles.length) {
+    return;
+  }
+  nextHistory.push(nextEntry);
   state.maskEditor.history = nextHistory;
-  state.maskEditor.historyIndex = nextHistory.length - 1;
+  state.maskEditor.historyIndex = nextHistory.length;
   syncMaskEditorDirtyState();
 }
 
-function restoreMaskHistorySnapshot(index) {
-  const snapshot = state.maskEditor.history[index];
-  if (!snapshot || !previewMaskCanvas.width || !previewMaskCanvas.height) return;
-  const ctx = previewMaskCanvas.getContext("2d");
-  ctx.clearRect(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
-  ctx.drawImage(snapshot, 0, 0);
-  state.maskEditor.historyIndex = index;
-  syncMaskEditorDirtyState();
-  refreshMaskBaseCanvas();
+function applyEditorHistoryEntry(entry, direction = "after") {
+  const activeCanvas = getActiveEditCanvas();
+  if (!entry?.tiles?.length || !activeCanvas.width || !activeCanvas.height) return;
+  const ctx = activeCanvas.getContext("2d");
+  for (const tile of entry.tiles) {
+    ctx.putImageData(direction === "before" ? tile.before : tile.after, tile.x, tile.y);
+  }
+}
+
+function finalizeHistoryPlayback() {
   scheduleMaskMiniPreviewRender();
-  scheduleMaskLatentPreviewRender();
+  if (isMaskEditorMaskMode()) {
+    scheduleMaskLatentPreviewRender();
+  }
   renderMaskEditorUi();
 }
 
 function undoMaskEdit() {
   if (!state.maskEditor.active || state.maskEditor.painting || state.maskEditor.historyIndex <= 0) return;
-  restoreMaskHistorySnapshot(state.maskEditor.historyIndex - 1);
-  statusBar.textContent = "Undid mask stroke";
+  const entry = state.maskEditor.history[state.maskEditor.historyIndex - 1];
+  applyEditorHistoryEntry(entry, "before");
+  state.maskEditor.historyIndex -= 1;
+  syncMaskEditorDirtyState();
+  finalizeHistoryPlayback();
+  statusBar.textContent = "Undid brush stroke";
 }
 
 function redoMaskEdit() {
-  if (!state.maskEditor.active || state.maskEditor.painting || state.maskEditor.historyIndex >= state.maskEditor.history.length - 1) return;
-  restoreMaskHistorySnapshot(state.maskEditor.historyIndex + 1);
-  statusBar.textContent = "Redid mask stroke";
+  if (!state.maskEditor.active || state.maskEditor.painting || state.maskEditor.historyIndex >= state.maskEditor.history.length) return;
+  const entry = state.maskEditor.history[state.maskEditor.historyIndex];
+  applyEditorHistoryEntry(entry, "after");
+  state.maskEditor.historyIndex += 1;
+  syncMaskEditorDirtyState();
+  finalizeHistoryPlayback();
+  statusBar.textContent = "Redid brush stroke";
 }
 
 function applyMaskViewMode() {
+  if (!isMaskEditorMaskMode()) {
+    previewMaskCanvas.dataset.viewMode = "overlay";
+    previewLatentMaskCanvas.dataset.viewMode = "overlay";
+    return;
+  }
   const viewMode = state.maskEditor.viewMode === "mask" ? "mask" : "overlay";
   previewMaskCanvas.dataset.viewMode = viewMode;
   previewLatentMaskCanvas.dataset.viewMode = viewMode;
@@ -1324,13 +1501,13 @@ function updateMaskViewModeButton() {
   maskViewModeBtn.textContent = showMask ? "Show Mask" : "Show Overlay";
   maskViewModeBtn.setAttribute("aria-pressed", showMask ? "false" : "true");
   maskViewModeBtn.title = showMask ? "Switch to grayscale mask view" : "Switch to overlay view";
-  maskViewModeBtn.disabled = !state.maskEditor.active || state.maskEditor.loading;
+  maskViewModeBtn.disabled = !isMaskEditorMaskMode() || state.maskEditor.loading;
 }
 
 function updateMaskHistoryButtons() {
   const active = state.maskEditor.active && !state.maskEditor.loading && !state.maskEditor.saving;
   maskUndoBtn.disabled = !active || state.maskEditor.painting || state.maskEditor.historyIndex <= 0;
-  maskRedoBtn.disabled = !active || state.maskEditor.painting || state.maskEditor.historyIndex >= state.maskEditor.history.length - 1;
+  maskRedoBtn.disabled = !active || state.maskEditor.painting || state.maskEditor.historyIndex >= state.maskEditor.history.length;
 }
 
 function updateMaskLatentPreviewButton() {
@@ -1340,14 +1517,33 @@ function updateMaskLatentPreviewButton() {
   maskLatentPreviewBtn.title = enabled
     ? "Switch back to the full-resolution preview"
     : "Show the latent-space preview built from the current mask";
-  maskLatentPreviewBtn.disabled = !state.maskEditor.active || state.maskEditor.loading;
+  maskLatentPreviewBtn.disabled = !isMaskEditorMaskMode() || state.maskEditor.loading;
+}
+
+function renderPreviewActionBar() {
+  const active = isMaskEditorVisible();
+  const imageAvailable = isImageEditAvailable();
+  const maskAvailable = isMaskEditAvailable();
+  duplicateImageBtn.classList.toggle("visible", imageAvailable && !active);
+  imageEditBtn.classList.toggle("visible", imageAvailable && !active);
+  maskEditBtn.classList.toggle("visible", maskAvailable && !active);
+  duplicateImageBtn.disabled = !imageAvailable || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading;
+  imageEditBtn.disabled = !imageAvailable || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading;
+  maskEditBtn.disabled = !maskAvailable || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading;
+  duplicateImageBtn.textContent = state.duplicatingImage ? "Duplicating..." : "Duplicate";
+  duplicateImageBtn.title = "Duplicate this image with its caption and mask sidecars";
+  imageEditBtn.title = "Paint a color overlay that preserves the image detail and shading";
+  renderGifConvertButton();
+  const visible = !active && [duplicateImageBtn, imageEditBtn, maskEditBtn, gifConvertBtn].some((button) => button.classList.contains("visible"));
+  previewActionBar.classList.toggle("visible", visible);
 }
 
 function syncMaskPreviewLayerVisibility() {
   const active = isMaskEditorVisible();
-  const showLatentPreview = active && !!state.maskEditor.latentPreviewEnabled;
+  const imageMode = isMaskEditorImageMode();
+  const showLatentPreview = isMaskEditorMaskMode() && !!state.maskEditor.latentPreviewEnabled;
   if (state.previewMediaType === "image") {
-    previewImg.style.display = state.previewPath && imgNatW && (!active || !showLatentPreview) ? "block" : "none";
+    previewImg.style.display = state.previewPath && imgNatW ? "block" : "none";
   } else if (state.previewMediaType === "video") {
     const videoReady = state.previewPath && previewVideo.currentSrc && previewVideo.readyState >= 2;
     previewImg.style.display = active && !!state.maskEditor.videoSnapshotUrl && (showLatentPreview || !videoReady) ? "block" : "none";
@@ -1359,7 +1555,8 @@ function syncMaskPreviewLayerVisibility() {
       applyTransformToElement(previewVideo);
     }
   }
-  previewMaskCanvas.style.display = active && !showLatentPreview ? "block" : "none";
+  previewImageEditCanvas.style.display = imageMode ? "block" : "none";
+  previewMaskCanvas.style.display = isMaskEditorMaskMode() && !showLatentPreview ? "block" : "none";
   previewLatentImageCanvas.style.display = showLatentPreview ? "block" : "none";
   previewLatentMaskCanvas.style.display = showLatentPreview ? "block" : "none";
 }
@@ -1372,11 +1569,14 @@ function applyTransformToElement(element) {
 }
 
 function renderMaskEditorUi() {
-  const available = isMaskEditAvailable();
+  const maskAvailable = isMaskEditAvailable();
+  const imageAvailable = isImageEditAvailable();
   const videoAvailable = isVideoMaskEditAvailable();
   const active = isMaskEditorVisible();
+  const imageMode = isMaskEditorImageMode();
+  const maskMode = isMaskEditorMaskMode();
   const interactive = active && !state.maskEditor.loading && !state.maskEditor.saving;
-  const showLatentPreview = active && !!state.maskEditor.latentPreviewEnabled;
+  const showLatentPreview = maskMode && !!state.maskEditor.latentPreviewEnabled;
   const currentVideoFrameIndex = videoAvailable ? getCurrentVideoMaskFrameIndex() : null;
   const canCreateVideoKeyframe = videoAvailable && (!active || (!state.maskEditor.loading && !state.maskEditor.saving && !state.maskEditor.painting && !state.maskEditor.switchingKeyframe));
   updateMaskControlLabels();
@@ -1384,14 +1584,18 @@ function renderMaskEditorUi() {
   updateMaskViewModeButton();
   updateMaskLatentPreviewButton();
   updateMaskHistoryButtons();
+  renderPreviewActionBar();
   maskEditorPanel.classList.toggle("visible", active);
   maskBrushSizeInput.disabled = !interactive;
   maskBrushValueInput.disabled = !interactive;
+  maskBrushColorField.classList.toggle("visible", imageMode);
+  maskBrushColorInput.disabled = !interactive || !imageMode;
   maskBrushCoreInput.disabled = !interactive;
   maskBrushSteepnessInput.disabled = !interactive;
-  maskLatentBaseWidthInput.disabled = !interactive || !showLatentPreview;
-  maskLatentDividerInput.disabled = !interactive || !showLatentPreview;
-  maskEditBtn.classList.toggle("visible", available && !active);
+  maskLatentBaseWidthInput.disabled = !interactive || !showLatentPreview || !maskMode;
+  maskLatentDividerInput.disabled = !interactive || !showLatentPreview || !maskMode;
+  maskApplyBtn.textContent = imageMode ? "Save Image" : "Save Mask";
+  maskCancelBtn.textContent = imageMode ? "Cancel Edit" : "Cancel Mask";
   videoMaskAddBtn.classList.toggle("visible", videoAvailable);
   videoMaskAddBtn.classList.toggle("in-editor", active && videoAvailable);
   videoMaskAddBtn.disabled = !canCreateVideoKeyframe;
@@ -1401,8 +1605,8 @@ function renderMaskEditorUi() {
   maskCancelBtn.classList.toggle("visible", active);
   maskUndoBtn.classList.toggle("visible", active);
   maskRedoBtn.classList.toggle("visible", active);
-  maskViewModeBtn.classList.toggle("visible", active);
-  maskLatentPreviewBtn.classList.toggle("visible", active);
+  maskViewModeBtn.classList.toggle("visible", active && maskMode);
+  maskLatentPreviewBtn.classList.toggle("visible", active && maskMode);
   maskResetBtn.classList.toggle("visible", active);
   maskLatentPreviewControls.classList.toggle("visible", showLatentPreview);
   if (state.previewMediaType === "video") {
@@ -1420,7 +1624,9 @@ function renderMaskEditorUi() {
     maskEditBtn.title = "Edit the image mask";
     videoMaskAddBtn.title = "Add a new key-frame mask at the current video frame";
   }
+  imageEditBtn.textContent = "Edit Image";
   syncMaskPreviewLayerVisibility();
+  applyImageEditCanvasTransform();
   applyMaskCanvasTransform();
   applyMaskLatentPreviewTransform();
   if (showLatentPreview) {
@@ -1434,7 +1640,7 @@ function renderMaskEditorUi() {
 }
 
 function applyMaskCanvasTransform() {
-  if (!isMaskEditorVisible()) {
+  if (!isMaskEditorMaskMode()) {
     previewMaskCanvas.style.display = "none";
     return;
   }
@@ -1445,8 +1651,20 @@ function applyMaskCanvasTransform() {
   scheduleMaskMiniPreviewRender();
 }
 
+function applyImageEditCanvasTransform() {
+  const visible = isMaskEditorImageMode();
+  previewImageEditCanvas.style.display = visible ? "block" : "none";
+  if (!visible) {
+    return;
+  }
+  previewImageEditCanvas.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
+  previewImageEditCanvas.style.width = `${imgNatW}px`;
+  previewImageEditCanvas.style.height = `${imgNatH}px`;
+  scheduleMaskMiniPreviewRender();
+}
+
 function applyMaskLatentPreviewTransform() {
-  const visible = isMaskEditorVisible() && !!state.maskEditor.latentPreviewEnabled;
+  const visible = isMaskEditorMaskMode() && !!state.maskEditor.latentPreviewEnabled;
   previewLatentImageCanvas.style.display = visible ? "block" : "none";
   previewLatentMaskCanvas.style.display = visible ? "block" : "none";
   if (!visible) {
@@ -1490,8 +1708,9 @@ function getMaskBrushRadius() {
 }
 
 function ensureMaskStrokeCanvases() {
-  const width = Math.max(1, previewMaskCanvas.width || 1);
-  const height = Math.max(1, previewMaskCanvas.height || 1);
+  const activeCanvas = getActiveEditCanvas();
+  const width = Math.max(1, activeCanvas.width || 1);
+  const height = Math.max(1, activeCanvas.height || 1);
 
   if (!state.maskEditor.strokeBaseCanvas) {
     state.maskEditor.strokeBaseCanvas = document.createElement("canvas");
@@ -1515,52 +1734,74 @@ function clearMaskStrokeRenderFrame() {
 
 function renderMaskStrokePreview() {
   state.maskEditor.strokeRenderFrameId = 0;
-  if (!previewMaskCanvas.width || !previewMaskCanvas.height) return;
+  const activeCanvas = getActiveEditCanvas();
+  if (!activeCanvas.width || !activeCanvas.height) return;
   const strokeBaseCanvas = state.maskEditor.strokeBaseCanvas;
   const strokeInfluenceValues = state.maskEditor.strokeInfluenceValues;
-  const dirtyRect = state.maskEditor.strokeDirtyRect;
-  if (!strokeBaseCanvas || !strokeInfluenceValues || !dirtyRect) return;
+  const dirtyTiles = getEditorTileRects(state.maskEditor.strokeDirtyTiles, activeCanvas.width, activeCanvas.height);
+  if (!strokeBaseCanvas || !strokeInfluenceValues || !dirtyTiles.length) return;
 
-  const width = Math.max(1, Math.min(previewMaskCanvas.width, dirtyRect.maxX - dirtyRect.minX));
-  const height = Math.max(1, Math.min(previewMaskCanvas.height, dirtyRect.maxY - dirtyRect.minY));
-  const left = Math.max(0, Math.min(previewMaskCanvas.width - 1, dirtyRect.minX));
-  const top = Math.max(0, Math.min(previewMaskCanvas.height - 1, dirtyRect.minY));
   const targetValue = clamp(Number(state.maskEditor.brushValue || 0), 0, 100) * 2.55;
-  const canvasWidth = previewMaskCanvas.width;
-  const outputCtx = previewMaskCanvas.getContext("2d");
-  const baseCtx = strokeBaseCanvas.getContext("2d");
-  const baseImage = baseCtx.getImageData(left, top, width, height);
-  const outputImage = outputCtx.getImageData(left, top, width, height);
-  const baseData = baseImage.data;
-  const outputData = outputImage.data;
+  const canvasWidth = activeCanvas.width;
+  const outputCtx = activeCanvas.getContext("2d", { willReadFrequently: true });
+  const baseCtx = strokeBaseCanvas.getContext("2d", { willReadFrequently: true });
+  const imageMode = isMaskEditorImageMode();
+  const brushStrength = clamp(Number(state.maskEditor.brushValue || 0), 0, 100) / 100;
+  const targetColor = hexToRgb(state.maskEditor.brushColor);
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const pixelIndex = y * width + x;
-      const dataIndex = pixelIndex * 4;
-      const influenceIndex = (top + y) * canvasWidth + (left + x);
-      const influence = strokeInfluenceValues[influenceIndex] || 0;
-      if (influence <= 0) {
-        outputData[dataIndex] = baseData[dataIndex];
-        outputData[dataIndex + 1] = baseData[dataIndex + 1];
-        outputData[dataIndex + 2] = baseData[dataIndex + 2];
+  for (const tile of dirtyTiles) {
+    const baseImage = baseCtx.getImageData(tile.left, tile.top, tile.width, tile.height);
+    const outputImage = outputCtx.getImageData(tile.left, tile.top, tile.width, tile.height);
+    const baseData = baseImage.data;
+    const outputData = outputImage.data;
+
+    for (let y = 0; y < tile.height; y += 1) {
+      for (let x = 0; x < tile.width; x += 1) {
+        const pixelIndex = y * tile.width + x;
+        const dataIndex = pixelIndex * 4;
+        const influenceIndex = (tile.top + y) * canvasWidth + (tile.left + x);
+        const influence = strokeInfluenceValues[influenceIndex] || 0;
+        if (influence <= 0) {
+          outputData[dataIndex] = baseData[dataIndex];
+          outputData[dataIndex + 1] = baseData[dataIndex + 1];
+          outputData[dataIndex + 2] = baseData[dataIndex + 2];
+          outputData[dataIndex + 3] = imageMode ? baseData[dataIndex + 3] : 255;
+          continue;
+        }
+        if (imageMode) {
+          const targetAlpha = clamp(influence * brushStrength, 0, 1);
+          const baseAlpha = clamp((baseData[dataIndex + 3] || 0) / 255, 0, 1);
+          const outAlpha = targetAlpha + (baseAlpha * (1 - targetAlpha));
+          if (outAlpha <= 0) {
+            outputData[dataIndex] = 0;
+            outputData[dataIndex + 1] = 0;
+            outputData[dataIndex + 2] = 0;
+            outputData[dataIndex + 3] = 0;
+            continue;
+          }
+          const preservedBaseFactor = baseAlpha * (1 - targetAlpha);
+          outputData[dataIndex] = Math.round(((targetColor.r * targetAlpha) + (baseData[dataIndex] * preservedBaseFactor)) / outAlpha);
+          outputData[dataIndex + 1] = Math.round(((targetColor.g * targetAlpha) + (baseData[dataIndex + 1] * preservedBaseFactor)) / outAlpha);
+          outputData[dataIndex + 2] = Math.round(((targetColor.b * targetAlpha) + (baseData[dataIndex + 2] * preservedBaseFactor)) / outAlpha);
+          outputData[dataIndex + 3] = Math.round(outAlpha * 255);
+          continue;
+        }
+        const baseValue = baseData[dataIndex];
+        const nextValue = Math.round(baseValue * (1 - influence) + targetValue * influence);
+        outputData[dataIndex] = nextValue;
+        outputData[dataIndex + 1] = nextValue;
+        outputData[dataIndex + 2] = nextValue;
         outputData[dataIndex + 3] = 255;
-        continue;
       }
-      const baseValue = baseData[dataIndex];
-      const nextValue = Math.round(baseValue * (1 - influence) + targetValue * influence);
-      outputData[dataIndex] = nextValue;
-      outputData[dataIndex + 1] = nextValue;
-      outputData[dataIndex + 2] = nextValue;
-      outputData[dataIndex + 3] = 255;
     }
+    outputCtx.putImageData(outputImage, tile.left, tile.top);
   }
-
-  outputCtx.putImageData(outputImage, left, top);
 
   state.maskEditor.dirty = true;
   scheduleMaskMiniPreviewRender();
-  scheduleMaskLatentPreviewRender();
+  if (isMaskEditorMaskMode()) {
+    scheduleMaskLatentPreviewRender();
+  }
 }
 
 function scheduleMaskStrokePreviewRender() {
@@ -1570,19 +1811,20 @@ function scheduleMaskStrokePreviewRender() {
   });
 }
 
-function expandMaskStrokeDirtyRect(maskX, maskY, radius) {
-  const minX = Math.max(0, Math.floor(maskX - radius - 2));
-  const minY = Math.max(0, Math.floor(maskY - radius - 2));
-  const maxX = Math.min(previewMaskCanvas.width, Math.ceil(maskX + radius + 2));
-  const maxY = Math.min(previewMaskCanvas.height, Math.ceil(maskY + radius + 2));
-  if (!state.maskEditor.strokeDirtyRect) {
-    state.maskEditor.strokeDirtyRect = { minX, minY, maxX, maxY };
-    return;
+function markMaskStrokeDirtyTiles(maskX, maskY, radius) {
+  const activeCanvas = getActiveEditCanvas();
+  const minTileX = Math.max(0, Math.floor((maskX - radius - 2) / EDITOR_HISTORY_TILE_SIZE));
+  const minTileY = Math.max(0, Math.floor((maskY - radius - 2) / EDITOR_HISTORY_TILE_SIZE));
+  const maxTileX = Math.max(0, Math.floor((Math.min(activeCanvas.width, Math.ceil(maskX + radius + 2)) - 1) / EDITOR_HISTORY_TILE_SIZE));
+  const maxTileY = Math.max(0, Math.floor((Math.min(activeCanvas.height, Math.ceil(maskY + radius + 2)) - 1) / EDITOR_HISTORY_TILE_SIZE));
+  if (!state.maskEditor.strokeDirtyTiles) {
+    state.maskEditor.strokeDirtyTiles = new Set();
   }
-  state.maskEditor.strokeDirtyRect.minX = Math.min(state.maskEditor.strokeDirtyRect.minX, minX);
-  state.maskEditor.strokeDirtyRect.minY = Math.min(state.maskEditor.strokeDirtyRect.minY, minY);
-  state.maskEditor.strokeDirtyRect.maxX = Math.max(state.maskEditor.strokeDirtyRect.maxX, maxX);
-  state.maskEditor.strokeDirtyRect.maxY = Math.max(state.maskEditor.strokeDirtyRect.maxY, maxY);
+  for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
+    for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
+      state.maskEditor.strokeDirtyTiles.add(getEditorTileKey(tileX, tileY));
+    }
+  }
 }
 
 function previewPointToMaskPoint(point) {
@@ -1594,14 +1836,15 @@ function previewPointToMaskPoint(point) {
 
 function paintMaskStamp(maskX, maskY) {
   ensureMaskStrokeCanvases();
+  const activeCanvas = getActiveEditCanvas();
   const influenceValues = state.maskEditor.strokeInfluenceValues;
   if (!influenceValues) return;
   const radius = getMaskBrushRadius();
-  const width = previewMaskCanvas.width;
+  const width = activeCanvas.width;
   const minX = Math.max(0, Math.floor(maskX - radius - 2));
   const minY = Math.max(0, Math.floor(maskY - radius - 2));
-  const maxX = Math.min(previewMaskCanvas.width, Math.ceil(maskX + radius + 2));
-  const maxY = Math.min(previewMaskCanvas.height, Math.ceil(maskY + radius + 2));
+  const maxX = Math.min(activeCanvas.width, Math.ceil(maskX + radius + 2));
+  const maxY = Math.min(activeCanvas.height, Math.ceil(maskY + radius + 2));
 
   for (let y = minY; y < maxY; y += 1) {
     for (let x = minX; x < maxX; x += 1) {
@@ -1619,7 +1862,7 @@ function paintMaskStamp(maskX, maskY) {
     }
   }
 
-  expandMaskStrokeDirtyRect(maskX, maskY, radius);
+  markMaskStrokeDirtyTiles(maskX, maskY, radius);
   scheduleMaskStrokePreviewRender();
 }
 
@@ -1647,16 +1890,17 @@ function paintMaskAtClient(clientX, clientY) {
 function beginMaskPaint(event) {
   if (state.previewMediaType === "video" && !previewVideo.paused) {
     previewVideo.pause();
-    statusBar.textContent = "Paused video preview for mask painting";
+    statusBar.textContent = "Paused video preview for painting";
     return;
   }
   ensureMaskStrokeCanvases();
+  const activeCanvas = getActiveEditCanvas();
   const strokeBaseCtx = state.maskEditor.strokeBaseCanvas.getContext("2d");
   strokeBaseCtx.setTransform(1, 0, 0, 1, 0, 0);
   strokeBaseCtx.clearRect(0, 0, state.maskEditor.strokeBaseCanvas.width, state.maskEditor.strokeBaseCanvas.height);
-  strokeBaseCtx.drawImage(previewMaskCanvas, 0, 0);
+  strokeBaseCtx.drawImage(activeCanvas, 0, 0);
   state.maskEditor.strokeInfluenceValues?.fill(0);
-  state.maskEditor.strokeDirtyRect = null;
+  state.maskEditor.strokeDirtyTiles = new Set();
   state.maskEditor.painting = true;
   state.maskEditor.lastPoint = null;
   paintMaskAtClient(event.clientX, event.clientY);
@@ -1666,13 +1910,16 @@ function beginMaskPaint(event) {
 function stopMaskPaint() {
   clearMaskStrokeRenderFrame();
   if (state.maskEditor.painting) {
+    const historyIndexBefore = state.maskEditor.historyIndex;
     renderMaskStrokePreview();
     pushMaskHistorySnapshot();
-    refreshMaskBaseCanvas();
+    if (state.maskEditor.historyIndex === historyIndexBefore) {
+      syncMaskEditorDirtyState();
+    }
   }
   state.maskEditor.painting = false;
   state.maskEditor.lastPoint = null;
-  state.maskEditor.strokeDirtyRect = null;
+  state.maskEditor.strokeDirtyTiles = null;
   renderMaskEditorUi();
 }
 
@@ -1704,17 +1951,69 @@ function loadMaskImage(url) {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Failed to load mask image"));
+    image.onerror = () => reject(new Error("Failed to load image asset"));
     image.src = url;
   });
 }
 
+function getEditorSourceDimensions(path = state.previewPath) {
+  const cropState = path === state.previewPath ? getCurrentCropState() : (state.imageCrops[path] || null);
+  const image = state.images.find((item) => item.path === path) || null;
+  return {
+    width: Math.max(1, Number(cropState?.current_width || image?.width || imgNatW || 1)),
+    height: Math.max(1, Number(cropState?.current_height || image?.height || imgNatH || 1)),
+  };
+}
+
+async function loadImageEditEditorForPath(path) {
+  const sourceSize = getEditorSourceDimensions(path);
+  const previewSource = previewCache.get(path) || buildImageApiUrl("preview", path);
+  const image = await loadMaskImage(previewSource);
+  const imageWidth = Math.max(1, Number(image.naturalWidth || image.width || 1));
+  const imageHeight = Math.max(1, Number(image.naturalHeight || image.height || 1));
+  const previewScaleX = imageWidth / Math.max(1, imgNatW || imageWidth);
+  const previewScaleY = imageHeight / Math.max(1, imgNatH || imageHeight);
+  const baseCanvas = document.createElement("canvas");
+  baseCanvas.width = imageWidth;
+  baseCanvas.height = imageHeight;
+  baseCanvas.getContext("2d").drawImage(image, 0, 0, imageWidth, imageHeight);
+
+  previewImageEditCanvas.width = imageWidth;
+  previewImageEditCanvas.height = imageHeight;
+  previewImageEditCanvas.getContext("2d").clearRect(0, 0, imageWidth, imageHeight);
+
+  state.maskEditor.mode = "image";
+  state.maskEditor.path = path;
+  state.maskEditor.mediaType = "image";
+  state.maskEditor.frameIndex = null;
+  state.maskEditor.requestedFrameIndex = null;
+  state.maskEditor.sourceFrameIndex = null;
+  state.maskEditor.sourceWidth = sourceSize.width;
+  state.maskEditor.sourceHeight = sourceSize.height;
+  state.maskEditor.imageWidth = imageWidth;
+  state.maskEditor.imageHeight = imageHeight;
+  state.maskEditor.previewScaleX = previewScaleX;
+  state.maskEditor.previewScaleY = previewScaleY;
+  state.maskEditor.imageBaseCanvas = baseCanvas;
+  state.maskEditor.latentPreviewEnabled = false;
+  stopMaskPaint();
+  refreshMaskBaseCanvas();
+  resetMaskHistory();
+  applyImageEditCanvasTransform();
+  renderMaskEditorUi();
+  scheduleMaskMiniPreviewRender();
+  return { image_width: imageWidth, image_height: imageHeight };
+}
+
 async function loadImageMaskEditorForPath(path) {
   const maskInfo = await fetchMaskMetadata(path, true);
-  const imageWidth = Math.max(1, Number(maskInfo.image_width || 1));
-  const imageHeight = Math.max(1, Number(maskInfo.image_height || 1));
-  const previewScaleX = imageWidth / Math.max(1, imgNatW);
-  const previewScaleY = imageHeight / Math.max(1, imgNatH);
+  const sourceWidth = Math.max(1, Number(maskInfo.image_width || 1));
+  const sourceHeight = Math.max(1, Number(maskInfo.image_height || 1));
+  const workingSize = getCappedEditorDimensions(sourceWidth, sourceHeight);
+  const imageWidth = workingSize.width;
+  const imageHeight = workingSize.height;
+  const previewScaleX = imageWidth / Math.max(1, imgNatW || imageWidth);
+  const previewScaleY = imageHeight / Math.max(1, imgNatH || imageHeight);
   const image = await loadMaskImage(buildImageApiUrl("mask/image", path, {
     ensure: true,
     mask_v: maskInfo.mtime || Date.now(),
@@ -1726,15 +2025,19 @@ async function loadImageMaskEditorForPath(path) {
   ctx.clearRect(0, 0, imageWidth, imageHeight);
   ctx.drawImage(image, 0, 0, imageWidth, imageHeight);
 
+  state.maskEditor.mode = "mask";
   state.maskEditor.path = path;
   state.maskEditor.mediaType = "image";
   state.maskEditor.frameIndex = null;
   state.maskEditor.requestedFrameIndex = null;
   state.maskEditor.sourceFrameIndex = null;
+  state.maskEditor.sourceWidth = sourceWidth;
+  state.maskEditor.sourceHeight = sourceHeight;
   state.maskEditor.imageWidth = imageWidth;
   state.maskEditor.imageHeight = imageHeight;
   state.maskEditor.previewScaleX = previewScaleX;
   state.maskEditor.previewScaleY = previewScaleY;
+  state.maskEditor.imageBaseCanvas = null;
   state.maskEditor.latentImageDirty = true;
   stopMaskPaint();
   refreshMaskBaseCanvas();
@@ -1754,8 +2057,11 @@ async function loadVideoMaskEditorForPath(path, options = {}) {
     : Math.max(0, Number.parseInt(requestedFrameIndexOption, 10) || 0);
   await captureCurrentPreviewVideoFrameSnapshot(path);
   const maskInfo = await fetchMaskMetadata(path, true, { frameIndex: requestedFrameIndex, createNew });
-  const imageWidth = Math.max(1, Number(maskInfo.image_width || imgNatW || 1));
-  const imageHeight = Math.max(1, Number(maskInfo.image_height || imgNatH || 1));
+  const sourceWidth = Math.max(1, Number(maskInfo.image_width || imgNatW || 1));
+  const sourceHeight = Math.max(1, Number(maskInfo.image_height || imgNatH || 1));
+  const workingSize = getCappedEditorDimensions(sourceWidth, sourceHeight);
+  const imageWidth = workingSize.width;
+  const imageHeight = workingSize.height;
   const previewScaleX = imageWidth / Math.max(1, imgNatW || imageWidth);
   const previewScaleY = imageHeight / Math.max(1, imgNatH || imageHeight);
   const image = await loadMaskImage(buildImageApiUrl("mask/image", path, {
@@ -1771,16 +2077,20 @@ async function loadVideoMaskEditorForPath(path, options = {}) {
   ctx.clearRect(0, 0, imageWidth, imageHeight);
   ctx.drawImage(image, 0, 0, imageWidth, imageHeight);
 
+  state.maskEditor.mode = "mask";
   state.maskEditor.path = path;
   state.maskEditor.mediaType = "video";
   state.maskEditor.frameIndex = Number(maskInfo.frame_index || requestedFrameIndex || 0);
   state.maskEditor.requestedFrameIndex = Number(maskInfo.requested_frame_index || requestedFrameIndex || 0);
   state.maskEditor.sourceFrameIndex = maskInfo.source_frame_index == null ? null : Number(maskInfo.source_frame_index || 0);
   state.maskEditor.switchingKeyframe = false;
+  state.maskEditor.sourceWidth = sourceWidth;
+  state.maskEditor.sourceHeight = sourceHeight;
   state.maskEditor.imageWidth = imageWidth;
   state.maskEditor.imageHeight = imageHeight;
   state.maskEditor.previewScaleX = previewScaleX;
   state.maskEditor.previewScaleY = previewScaleY;
+  state.maskEditor.imageBaseCanvas = null;
   state.maskEditor.latentImageDirty = true;
   stopMaskPaint();
   refreshMaskBaseCanvas();
@@ -1824,6 +2134,31 @@ async function enterMaskEditMode(options = {}) {
     previewMaskCanvas.style.display = "none";
     showErrorToast(`Mask error: ${err.message}`);
     statusBar.textContent = `Mask error: ${err.message}`;
+  } finally {
+    state.maskEditor.loading = false;
+    renderMaskEditorUi();
+  }
+}
+
+async function enterImageEditMode() {
+  if (!isImageEditAvailable()) return;
+  if (state.cropDraft || state.cropInteraction) {
+    clearCropDraft();
+  }
+  state.maskEditor.active = true;
+  state.maskEditor.mode = "image";
+  state.maskEditor.loading = true;
+  state.maskEditor.path = state.previewPath;
+  renderMaskEditorUi();
+  try {
+    await loadImageEditEditorForPath(state.previewPath);
+    statusBar.textContent = `Editing image for ${getFileLabel(state.previewPath)}`;
+  } catch (err) {
+    state.maskEditor.active = false;
+    state.maskEditor.mode = null;
+    previewImageEditCanvas.style.display = "none";
+    showErrorToast(`Image edit error: ${err.message}`);
+    statusBar.textContent = `Image edit error: ${err.message}`;
   } finally {
     state.maskEditor.loading = false;
     renderMaskEditorUi();
@@ -1896,13 +2231,15 @@ async function syncActiveVideoMaskEditorToSeekPosition() {
 function closeMaskEditor(options = {}) {
   const { restoreBase = false } = options;
   clearMaskStrokeRenderFrame();
-  if (restoreBase && state.maskEditor.baseCanvas && previewMaskCanvas.width && previewMaskCanvas.height) {
-    const ctx = previewMaskCanvas.getContext("2d");
-    ctx.clearRect(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
+  const activeCanvas = getActiveEditCanvas();
+  if (restoreBase && state.maskEditor.baseCanvas && activeCanvas.width && activeCanvas.height) {
+    const ctx = activeCanvas.getContext("2d");
+    ctx.clearRect(0, 0, activeCanvas.width, activeCanvas.height);
     ctx.drawImage(state.maskEditor.baseCanvas, 0, 0);
   }
   stopMaskPaint();
   state.maskEditor.active = false;
+  state.maskEditor.mode = null;
   state.maskEditor.loading = false;
   state.maskEditor.saving = false;
   state.maskEditor.dirty = false;
@@ -1912,13 +2249,16 @@ function closeMaskEditor(options = {}) {
   state.maskEditor.frameIndex = null;
   state.maskEditor.requestedFrameIndex = null;
   state.maskEditor.sourceFrameIndex = null;
+  state.maskEditor.sourceWidth = 0;
+  state.maskEditor.sourceHeight = 0;
   state.maskEditor.imageWidth = 0;
   state.maskEditor.imageHeight = 0;
   state.maskEditor.previewScaleX = 1;
   state.maskEditor.previewScaleY = 1;
   state.maskEditor.history = [];
-  state.maskEditor.historyIndex = -1;
-  state.maskEditor.cleanHistoryIndex = -1;
+  state.maskEditor.historyIndex = 0;
+  state.maskEditor.cleanHistoryIndex = 0;
+  state.maskEditor.imageBaseCanvas = null;
   state.maskEditor.baseCanvas = null;
   state.maskEditor.latentPreviewQueued = false;
   state.maskEditor.latentImageDirty = true;
@@ -1928,12 +2268,15 @@ function closeMaskEditor(options = {}) {
   state.maskEditor.latentGridCanvas = null;
   state.maskEditor.strokeBaseCanvas = null;
   state.maskEditor.strokeInfluenceValues = null;
-  state.maskEditor.strokeDirtyRect = null;
+  state.maskEditor.strokeDirtyTiles = null;
   revokeMaskEditorVideoSnapshot();
   if (state.previewMediaType === "video") {
     previewImg.removeAttribute("src");
     previewImg.style.display = "none";
   }
+  previewImageEditCanvas.width = 0;
+  previewImageEditCanvas.height = 0;
+  previewImageEditCanvas.style.display = "none";
   previewMaskCanvas.width = 0;
   previewMaskCanvas.height = 0;
   previewMaskCanvas.style.display = "none";
@@ -1947,7 +2290,86 @@ function closeMaskEditor(options = {}) {
   renderMaskEditorUi();
 }
 
+async function composeEditedImageBlob() {
+  const targetPath = state.maskEditor.path || state.previewPath;
+  if (!targetPath || !previewImageEditCanvas.width || !previewImageEditCanvas.height) {
+    throw new Error("Image editor is not ready");
+  }
+  const sourceImage = await loadMaskImage(buildImageApiUrl("image", targetPath, { v: getImageVersion(targetPath) }));
+  const compositeCanvas = document.createElement("canvas");
+  compositeCanvas.width = Math.max(1, Number(sourceImage.naturalWidth || sourceImage.width || state.maskEditor.sourceWidth || 1));
+  compositeCanvas.height = Math.max(1, Number(sourceImage.naturalHeight || sourceImage.height || state.maskEditor.sourceHeight || 1));
+  const ctx = compositeCanvas.getContext("2d");
+  ctx.drawImage(sourceImage, 0, 0, compositeCanvas.width, compositeCanvas.height);
+  ctx.save();
+  ctx.globalCompositeOperation = "color";
+  ctx.drawImage(previewImageEditCanvas, 0, 0, compositeCanvas.width, compositeCanvas.height);
+  ctx.restore();
+  return new Promise((resolve, reject) => {
+    compositeCanvas.toBlob((nextBlob) => {
+      if (nextBlob) {
+        resolve(nextBlob);
+        return;
+      }
+      reject(new Error("Failed to encode edited image"));
+    }, "image/png");
+  });
+}
+
+async function saveImageEdit(options = {}) {
+  const { closeAfterSave = true } = options;
+  if (!state.maskEditor.active || !state.previewPath || !previewImageEditCanvas.width || !previewImageEditCanvas.height) {
+    return;
+  }
+  if (!state.maskEditor.dirty) {
+    if (closeAfterSave) {
+      closeMaskEditor();
+    }
+    return;
+  }
+
+  state.maskEditor.saving = true;
+  renderMaskEditorUi();
+  statusBar.textContent = "Saving image...";
+  try {
+    const blob = await composeEditedImageBlob();
+    const targetPath = state.maskEditor.path || state.previewPath;
+    const formData = new FormData();
+    formData.append("image_path", targetPath);
+    formData.append("image", blob, `${getFileLabel(targetPath)}.png`);
+
+    const resp = await fetch("/api/image/edit", {
+      method: "POST",
+      body: formData,
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to save image edit");
+    }
+
+    state.imageCrops[targetPath] = data.crop || null;
+    state.imageVersions[targetPath] = Number(data.mtime || Date.now()) || Date.now();
+    invalidateImageCaches(targetPath);
+    renderGrid({ preservePath: targetPath, preserveScrollTop: fileGridContainer.scrollTop });
+    closeMaskEditor();
+    await showPreview(targetPath);
+    statusBar.textContent = data.committed_crop
+      ? `Saved image edit for ${getFileLabel(targetPath)} and committed the active crop`
+      : `Saved image edit for ${getFileLabel(targetPath)}`;
+  } catch (err) {
+    showErrorToast(`Image edit error: ${err.message}`);
+    statusBar.textContent = `Image edit error: ${err.message}`;
+    throw err;
+  } finally {
+    state.maskEditor.saving = false;
+    renderMaskEditorUi();
+  }
+}
+
 async function saveMaskEdit(options = {}) {
+  if (isMaskEditorImageMode()) {
+    return saveImageEdit(options);
+  }
   const { closeAfterSave = true } = options;
   if (!state.maskEditor.active || !state.previewPath || !previewMaskCanvas.width || !previewMaskCanvas.height) {
     return;
@@ -2018,12 +2440,26 @@ async function saveMaskEdit(options = {}) {
 
 function cancelMaskEdit() {
   if (!state.maskEditor.active) return;
+  const imageMode = isMaskEditorImageMode();
   closeMaskEditor({ restoreBase: true });
-  statusBar.textContent = "Mask edit cancelled";
+  statusBar.textContent = imageMode ? "Image edit cancelled" : "Mask edit cancelled";
 }
 
 function resetMaskEditToDefault() {
-  if (!state.maskEditor.active || !previewMaskCanvas.width || !previewMaskCanvas.height) return;
+  const activeCanvas = getActiveEditCanvas();
+  if (!state.maskEditor.active || !activeCanvas.width || !activeCanvas.height) return;
+  const beforeCanvas = cloneMaskCanvasSnapshot(activeCanvas);
+  const fullTileKeys = getFullCanvasTileKeys(activeCanvas.width, activeCanvas.height);
+  if (isMaskEditorImageMode()) {
+    clearMaskStrokeRenderFrame();
+    activeCanvas.getContext("2d").clearRect(0, 0, activeCanvas.width, activeCanvas.height);
+    pushMaskHistorySnapshot({ beforeCanvas, tileKeys: fullTileKeys });
+    syncMaskEditorDirtyState();
+    scheduleMaskMiniPreviewRender();
+    renderMaskEditorUi();
+    statusBar.textContent = "Image edit reset";
+    return;
+  }
   const resetValue = clamp(Number(state.maskEditor.brushValue || 0), 0, 100);
   const resetChannelValue = Math.round(resetValue * 2.55);
   clearMaskStrokeRenderFrame();
@@ -2032,8 +2468,8 @@ function resetMaskEditToDefault() {
   ctx.fillStyle = `rgb(${resetChannelValue}, ${resetChannelValue}, ${resetChannelValue})`;
   ctx.fillRect(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
   ctx.restore();
-  pushMaskHistorySnapshot();
-  refreshMaskBaseCanvas();
+  pushMaskHistorySnapshot({ beforeCanvas, tileKeys: fullTileKeys });
+  syncMaskEditorDirtyState();
   scheduleMaskMiniPreviewRender();
   scheduleMaskLatentPreviewRender();
   renderMaskEditorUi();
@@ -2041,7 +2477,7 @@ function resetMaskEditToDefault() {
 }
 
 function toggleMaskEditorViewMode() {
-  if (!state.maskEditor.active) return;
+  if (!isMaskEditorMaskMode()) return;
   state.maskEditor.viewMode = state.maskEditor.viewMode === "mask" ? "overlay" : "mask";
   applyMaskViewMode();
   updateMaskViewModeButton();
@@ -2051,7 +2487,7 @@ function toggleMaskEditorViewMode() {
 }
 
 function toggleMaskLatentPreview() {
-  if (!state.maskEditor.active) return;
+  if (!isMaskEditorMaskMode()) return;
   state.maskEditor.latentPreviewEnabled = !state.maskEditor.latentPreviewEnabled;
   if (state.maskEditor.latentPreviewEnabled) {
     state.maskEditor.latentImageDirty = true;
@@ -2370,6 +2806,81 @@ function setCropAspectRatios(labels) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+const EDITOR_MAX_WORKING_EDGE = 2048;
+const EDITOR_HISTORY_TILE_SIZE = 256;
+
+function getCappedEditorDimensions(sourceWidth, sourceHeight) {
+  const width = Math.max(1, Number(sourceWidth || 1));
+  const height = Math.max(1, Number(sourceHeight || 1));
+  const scale = Math.min(1, EDITOR_MAX_WORKING_EDGE / Math.max(width, height));
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+    scale,
+  };
+}
+
+function getEditorTileKey(tileX, tileY) {
+  return `${tileX}:${tileY}`;
+}
+
+function parseEditorTileKey(tileKey) {
+  const [tileXText, tileYText] = String(tileKey || "").split(":");
+  return {
+    tileX: Number.parseInt(tileXText, 10) || 0,
+    tileY: Number.parseInt(tileYText, 10) || 0,
+  };
+}
+
+function getEditorTileRects(tileKeys, canvasWidth, canvasHeight) {
+  if (!tileKeys || !tileKeys.size || !canvasWidth || !canvasHeight) {
+    return [];
+  }
+  const tileRects = [];
+  for (const tileKey of tileKeys) {
+    const { tileX, tileY } = parseEditorTileKey(tileKey);
+    const left = tileX * EDITOR_HISTORY_TILE_SIZE;
+    const top = tileY * EDITOR_HISTORY_TILE_SIZE;
+    if (left >= canvasWidth || top >= canvasHeight) {
+      continue;
+    }
+    tileRects.push({
+      left,
+      top,
+      width: Math.min(EDITOR_HISTORY_TILE_SIZE, canvasWidth - left),
+      height: Math.min(EDITOR_HISTORY_TILE_SIZE, canvasHeight - top),
+    });
+  }
+  tileRects.sort((leftTile, rightTile) => (leftTile.top - rightTile.top) || (leftTile.left - rightTile.left));
+  return tileRects;
+}
+
+function getFullCanvasTileKeys(canvasWidth, canvasHeight) {
+  const keys = new Set();
+  const maxTileX = Math.max(0, Math.ceil(Math.max(1, canvasWidth) / EDITOR_HISTORY_TILE_SIZE) - 1);
+  const maxTileY = Math.max(0, Math.ceil(Math.max(1, canvasHeight) / EDITOR_HISTORY_TILE_SIZE) - 1);
+  for (let tileY = 0; tileY <= maxTileY; tileY += 1) {
+    for (let tileX = 0; tileX <= maxTileX; tileX += 1) {
+      keys.add(getEditorTileKey(tileX, tileY));
+    }
+  }
+  return keys;
+}
+
+function areImageDataEqual(leftImageData, rightImageData) {
+  const leftData = leftImageData?.data;
+  const rightData = rightImageData?.data;
+  if (!leftData || !rightData || leftData.length !== rightData.length) {
+    return false;
+  }
+  for (let index = 0; index < leftData.length; index += 1) {
+    if (leftData[index] !== rightData[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function invalidateImageCaches(path) {
@@ -2872,7 +3383,7 @@ function updateActionButtons() {
   addFreeTextNowBtn.title = state.autoCaptioning && state.autoCaptionMode === "free-text-only"
     ? "Stop the running free-text enhancement"
     : "Ask Ollama to add only free-text details for the selected media";
-  renderGifConvertButton();
+  renderPreviewActionBar();
   renderVideoEditPanel();
 }
 
@@ -5492,6 +6003,7 @@ function applyTransform() {
   if (state.previewMediaType === "video" && state.maskEditor.active && state.maskEditor.videoSnapshotUrl) {
     applyTransformToElement(previewImg);
   }
+  applyImageEditCanvasTransform();
   applyMaskCanvasTransform();
   applyMaskLatentPreviewTransform();
   renderCropOverlay();
@@ -5739,7 +6251,7 @@ function hidePreview() {
 
   panel.addEventListener("mousedown", (e) => {
     if (isMaskEditorVisible() && e.button === 2) {
-      if (e.target.closest("#video-edit-panel, #preview-caption-overlay, #mask-editor-panel, #mask-action-bar, #mask-edit-btn, #mask-apply-btn, #mask-cancel-btn, #mask-undo-btn, #mask-redo-btn, #mask-view-mode-btn, #mask-reset-btn")) {
+      if (e.target.closest("#video-edit-panel, #preview-caption-overlay, #mask-editor-panel, #preview-action-bar, #mask-action-bar, #mask-edit-btn, #image-edit-btn, #duplicate-image-btn, #mask-apply-btn, #mask-cancel-btn, #mask-undo-btn, #mask-redo-btn, #mask-view-mode-btn, #mask-latent-preview-btn, #mask-reset-btn")) {
         return;
       }
       if (!isClientInsidePreviewImage(e.clientX, e.clientY)) {
@@ -5756,7 +6268,7 @@ function hidePreview() {
       return;
     }
     if (e.button !== 0) return;
-    if (e.target.closest("#video-edit-panel, #preview-caption-overlay, #mask-editor-panel, #mask-action-bar, #crop-apply-btn, #crop-cancel-btn, #crop-remove-btn, #mask-edit-btn, #mask-apply-btn, #mask-cancel-btn, #mask-undo-btn, #mask-redo-btn, #mask-view-mode-btn, #mask-reset-btn, #rotate-controls")) {
+    if (e.target.closest("#video-edit-panel, #preview-caption-overlay, #mask-editor-panel, #preview-action-bar, #mask-action-bar, #crop-apply-btn, #crop-cancel-btn, #crop-remove-btn, #mask-edit-btn, #image-edit-btn, #duplicate-image-btn, #mask-apply-btn, #mask-cancel-btn, #mask-undo-btn, #mask-redo-btn, #mask-view-mode-btn, #mask-latent-preview-btn, #mask-reset-btn, #rotate-controls")) {
       return;
     }
     isDragging = true;
@@ -5883,6 +6395,8 @@ cropBox.querySelectorAll("[data-handle]").forEach(handleEl => {
   });
 });
 maskEditBtn.addEventListener("click", enterMaskEditMode);
+imageEditBtn.addEventListener("click", enterImageEditMode);
+duplicateImageBtn.addEventListener("click", duplicateCurrentImage);
 videoMaskAddBtn.addEventListener("click", enterVideoMaskAddMode);
 maskApplyBtn.addEventListener("click", () => saveMaskEdit().catch(() => {}));
 maskCancelBtn.addEventListener("click", cancelMaskEdit);
@@ -5897,6 +6411,10 @@ maskBrushSizeInput.addEventListener("input", (e) => {
 });
 maskBrushValueInput.addEventListener("input", (e) => {
   state.maskEditor.brushValue = clamp(Number(e.target.value || 100), 0, 100);
+  updateMaskControlLabels();
+});
+maskBrushColorInput.addEventListener("input", (e) => {
+  state.maskEditor.brushColor = String(e.target.value || "#ff5a5a").trim() || "#ff5a5a";
   updateMaskControlLabels();
 });
 maskBrushCoreInput.addEventListener("input", (e) => {

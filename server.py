@@ -79,6 +79,7 @@ from tag2_images import (
     _render_image_bytes,
     _rotate_image,
     _rotate_image_file,
+    _save_edited_image,
     _save_image_mask,
     _save_video_mask,
     _save_image_file,
@@ -1379,6 +1380,11 @@ class BatchDeleteImagesRequest(BaseModel):
     image_paths: list[str]
 
 
+class DuplicateImageRequest(BaseModel):
+    image_path: str
+    new_name: str
+
+
 class CloneFolderRequest(BaseModel):
     source_folder: str
     new_folder_name: str
@@ -1507,6 +1513,17 @@ def _get_unique_upload_path(folder_path: Path, file_name: str) -> Path:
         if not renamed.exists():
             return renamed
         counter += 1
+
+
+def _normalize_duplicate_image_name(image_path: str, requested_name: str) -> str:
+    normalized_name = _sanitize_upload_filename(requested_name)
+    source_suffix = Path(image_path).suffix
+    requested_suffix = Path(normalized_name).suffix
+    if not requested_suffix:
+        return f"{normalized_name}{source_suffix}"
+    if requested_suffix.lower() != source_suffix.lower():
+        raise HTTPException(status_code=400, detail=f"Duplicate name must keep the {source_suffix} extension")
+    return normalized_name
 
 
 def _prepare_clone_plan(source_folder: str, requested_name: str, image_paths: list[str]) -> dict:
@@ -1785,6 +1802,32 @@ async def save_mask(
         await mask.close()
 
 
+@app.post("/api/image/edit")
+async def save_image_edit(
+    image_path: str = Form(...),
+    image: UploadFile = File(...),
+):
+    """Save an edited image back onto the source file while preserving metadata."""
+    if not image_path or not os.path.isfile(image_path):
+        raise HTTPException(status_code=404, detail="Image file not found")
+    if not _is_image_path(image_path):
+        raise HTTPException(status_code=400, detail="Image editing is only available for image files")
+
+    try:
+        image_bytes = await image.read()
+        if not image_bytes:
+            raise HTTPException(status_code=400, detail="Image upload is empty")
+        loop = asyncio.get_event_loop()
+        info = await loop.run_in_executor(executor, _save_edited_image, image_path, image_bytes)
+        return {"ok": True, **info}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid edited image: {exc}") from exc
+    finally:
+        await image.close()
+
+
 @app.post("/api/crop")
 async def save_crop(data: CropUpdate):
     """Apply or remove a real crop on the image file."""
@@ -1885,6 +1928,45 @@ async def delete_images(data: BatchDeleteImagesRequest):
         "deleted_paths": deleted_paths,
         "deleted_count": len(deleted_paths),
         "errors": errors,
+    }
+
+
+@app.post("/api/image/duplicate")
+async def duplicate_image(data: DuplicateImageRequest):
+    """Duplicate a single image file together with its caption and mask sidecars."""
+    source_path = Path(str(data.image_path or "")).resolve()
+    if not source_path.is_file():
+        raise HTTPException(status_code=404, detail="Image file not found")
+    if not _is_image_path(str(source_path)):
+        raise HTTPException(status_code=400, detail="Image duplication is only available for image files")
+
+    target_name = _normalize_duplicate_image_name(str(source_path), data.new_name)
+    target_path = source_path.parent / target_name
+    if target_path.exists():
+        raise HTTPException(status_code=400, detail="Target image already exists")
+
+    caption_source = _get_caption_path(str(source_path))
+    caption_target = target_path.with_suffix(".txt")
+    mask_source = _get_image_mask_path(str(source_path))
+    mask_target = _get_image_mask_path(str(target_path))
+
+    try:
+        shutil.copy2(source_path, target_path)
+        if caption_source.exists():
+            shutil.copy2(caption_source, caption_target)
+        if mask_source.exists():
+            shutil.copy2(mask_source, mask_target)
+    except Exception as exc:
+        target_path.unlink(missing_ok=True)
+        caption_target.unlink(missing_ok=True)
+        mask_target.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"Could not duplicate image: {exc}") from exc
+
+    return {
+        "ok": True,
+        "image_path": str(target_path),
+        "caption_path": str(caption_target) if caption_target.exists() else "",
+        "mask_path": str(mask_target) if mask_target.exists() else "",
     }
 
 
