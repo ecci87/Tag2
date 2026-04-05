@@ -51,7 +51,7 @@ function setupVerticalResize(handleEl, topEl, bottomEl, containerEl) {
 }
 setupResize($("#left-resize"), $("#left-panel"), "left");
 setupResize($("#right-resize"), $("#right-panel"), "right");
-setupVerticalResize(rightHorizontalResize, sentencesSection, $("#freetext-section"), $("#right-panel"));
+setupVerticalResize(rightHorizontalResize, captionsSection, $("#freetext-section"), $("#right-panel"));
 
 // ===== EVENT LISTENERS =====
 loadBtn.addEventListener("click", loadFolder);

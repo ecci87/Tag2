@@ -31,7 +31,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from PIL import Image
 
 from tag2_captions import (
@@ -88,7 +88,7 @@ from tag2_images import (
 from tag2_ollama import (
     _apply_media_prompt_context,
     _auto_caption_sections,
-    _auto_caption_sentences,
+    _auto_caption_captions,
     _compose_ollama_host,
     _extract_free_text_lines,
     _get_ollama_enable_free_text,
@@ -105,7 +105,7 @@ from tag2_ollama import (
     _ollama_generate,
     _ollama_prompt_for_free_text,
     _ollama_prompt_for_group,
-    _ollama_prompt_for_sentence,
+    _ollama_prompt_for_caption,
     _parse_ollama_selection,
     _parse_ollama_yes_no,
     _split_ollama_host,
@@ -113,26 +113,37 @@ from tag2_ollama import (
 )
 from tag2_sections import (
     _all_headers_from_sections,
-    _all_sentences_from_sections,
-    _apply_sentence_selection,
-    _find_group_for_sentence,
+    _all_captions_from_sections,
+    _apply_caption_selection,
+    _find_group_for_caption,
     _get_crop_aspect_ratios,
     _get_folder_sections,
     _get_group_target,
-    _group_hidden_sentences,
+    _group_hidden_captions,
     _is_general_section_name,
-    _is_hidden_group_sentence,
+    _is_hidden_group_caption,
     _iter_caption_targets,
     _iter_caption_targets_with_indices,
-    _normalize_enabled_sentences,
+    _normalize_enabled_captions,
     _ordered_sections_for_output,
     _remove_group_from_sections,
     _remove_section_from_sections,
-    _remove_sentence_from_sections,
+    _remove_caption_from_sections,
     _rename_section_in_sections,
-    _rename_sentence_in_sections,
+    _rename_caption_in_sections,
     _set_folder_sections,
 )
+
+_all_sentences_from_sections = _all_captions_from_sections
+_apply_sentence_selection = _apply_caption_selection
+_find_group_for_sentence = _find_group_for_caption
+_group_hidden_sentences = _group_hidden_captions
+_is_hidden_group_sentence = _is_hidden_group_caption
+_normalize_enabled_sentences = _normalize_enabled_captions
+_remove_sentence_from_sections = _remove_caption_from_sections
+_rename_sentence_in_sections = _rename_caption_in_sections
+_auto_caption_sentences = _auto_caption_captions
+_ollama_prompt_for_sentence = _ollama_prompt_for_caption
 
 app = FastAPI(title="Image Captioning Tool")
 
@@ -275,8 +286,8 @@ def _load_config() -> dict:
     """Load config from disk. Returns default structure if file missing."""
     default = {
         "last_folder": "",
-        # Sentences shared across all folders when a folder has no own config yet
-        "default_sentences": [],
+        # Captions shared across all folders when a folder has no own config yet.
+        "default_captions": [],
         "thumb_size": 160,
         "crop_aspect_ratios": list(DEFAULT_CROP_ASPECT_RATIOS),
         "image_crops": {},
@@ -299,14 +310,17 @@ def _load_config() -> dict:
         "ollama_group_prompt_template": DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE,
         "ollama_enable_free_text": True,
         "ollama_free_text_prompt_template": DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
-        # Per-folder sentence lists. Key = absolute folder path.
-        # To copy sentences to a new folder, duplicate a block here.
+        # Per-folder caption lists. Key = absolute folder path.
+        # To copy captions to a new folder, duplicate a block here.
         "folders": {}
     }
     if os.path.isfile(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            if "default_captions" not in data and "default_sentences" in data:
+                data["default_captions"] = list(data.get("default_sentences") or [])
+            data.pop("default_sentences", None)
             if "ollama_server" not in data or "ollama_port" not in data:
                 parsed_server, parsed_port = _split_ollama_host(
                     str(data.get("ollama_host") or default["ollama_host"]),
@@ -332,8 +346,35 @@ def _load_config() -> dict:
 
 def _save_config(cfg: dict):
     """Persist config to disk with pretty formatting for easy hand-editing."""
+    cfg = copy.deepcopy(cfg)
+    if "default_captions" not in cfg and "default_sentences" in cfg:
+        cfg["default_captions"] = list(cfg.get("default_sentences") or [])
+    cfg.pop("default_sentences", None)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+
+def _coalesce_caption_query(captions: str | None, sentences: str | None = None) -> str:
+    if captions is not None:
+        return captions
+    if sentences is not None:
+        return sentences
+    return "[]"
+
+
+def _read_enabled_captions(data: dict | None) -> list[str]:
+    payload = dict(data or {})
+    enabled_captions = payload.get("enabled_captions")
+    if isinstance(enabled_captions, list):
+        return list(enabled_captions)
+    enabled_sentences = payload.get("enabled_sentences")
+    if isinstance(enabled_sentences, list):
+        return list(enabled_sentences)
+    return []
+
+
+def _read_caption_text(value: str | None, legacy_value: str | None = None) -> str:
+    return str(value or legacy_value or "").strip()
 
 
 def _slugify_video_training_preset_key(value: str, fallback: str) -> str:
@@ -868,46 +909,46 @@ async def enforce_remote_http_policy(request: Request, call_next):
 
 def _read_live_caption_state(
     image_path: str,
-    all_sentences: list[str],
+    all_captions: list[str],
     headers: list[str],
 ) -> tuple[list[str], str]:
     """Read the latest caption state from disk for merge-safe auto-caption writes."""
     if not os.path.isfile(image_path):
         raise FileNotFoundError(f"Image not found: {image_path}")
-    current = _read_caption_file(image_path, all_sentences, headers)
-    return list(current.get("enabled_sentences", [])), current.get("free_text", "")
+    current = _read_caption_file(image_path, all_captions, headers)
+    return _read_enabled_captions(current), current.get("free_text", "")
 
 
-def _apply_sentence_result_to_live_caption(
+def _apply_caption_result_to_live_caption(
     image_path: str,
-    sentence: str,
+    caption: str,
     should_enable: bool,
-    all_sentences: list[str],
+    all_captions: list[str],
     headers: list[str],
     sections: list[dict],
 ) -> tuple[list[str], str]:
-    """Apply a single AI sentence verdict on top of the latest on-disk caption state."""
-    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
-    enabled = _apply_sentence_selection(enabled, sentence, sections, should_enable)
-    enabled = _normalize_enabled_sentences(enabled, sections)
+    """Apply a single AI caption verdict on top of the latest on-disk caption state."""
+    enabled, free_text = _read_live_caption_state(image_path, all_captions, headers)
+    enabled = _apply_caption_selection(enabled, caption, sections, should_enable)
+    enabled = _normalize_enabled_captions(enabled, sections)
     _write_caption_file(image_path, enabled, free_text, sections)
     return enabled, free_text
 
 
 def _apply_group_result_to_live_caption(
     image_path: str,
-    group_sentences: list[str],
-    selected_sentence: str | None,
-    all_sentences: list[str],
+    group_captions: list[str],
+    selected_caption: str | None,
+    all_captions: list[str],
     headers: list[str],
     sections: list[dict],
 ) -> tuple[list[str], str]:
     """Apply a single AI group selection on top of the latest on-disk caption state."""
-    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
-    enabled = [sentence for sentence in enabled if sentence not in group_sentences]
-    if selected_sentence:
-        enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
-    enabled = _normalize_enabled_sentences(enabled, sections)
+    enabled, free_text = _read_live_caption_state(image_path, all_captions, headers)
+    enabled = [caption for caption in enabled if caption not in group_captions]
+    if selected_caption:
+        enabled = _apply_caption_selection(enabled, selected_caption, sections, True)
+    enabled = _normalize_enabled_captions(enabled, sections)
     _write_caption_file(image_path, enabled, free_text, sections)
     return enabled, free_text
 
@@ -915,13 +956,13 @@ def _apply_group_result_to_live_caption(
 def _apply_free_text_result_to_live_caption(
     image_path: str,
     model_output: str,
-    all_sentences: list[str],
+    all_captions: list[str],
     headers: list[str],
     sections: list[dict],
     preserve_existing: bool = False,
 ) -> tuple[list[str], str, list[str]]:
     """Merge AI free-text output with the latest on-disk caption state."""
-    enabled, free_text = _read_live_caption_state(image_path, all_sentences, headers)
+    enabled, free_text = _read_live_caption_state(image_path, all_captions, headers)
     base_free_text = free_text if preserve_existing else ""
     merged_free_text, added_lines = _merge_free_text(base_free_text, model_output, enabled)
     _write_caption_file(image_path, enabled, merged_free_text, sections)
@@ -1271,8 +1312,12 @@ async def enqueue_gif_convert_job(data: GifConvertJobRequest):
 
 class BatchCaptionUpdate(BaseModel):
     image_paths: list[str]
-    sentence: str
+    caption: str | None = None
+    sentence: str | None = None
     enabled: bool
+
+    def resolved_caption(self) -> str:
+        return _read_caption_text(self.caption, self.sentence)
 
 
 class BatchFreeTextUpdate(BaseModel):
@@ -1282,8 +1327,16 @@ class BatchFreeTextUpdate(BaseModel):
 
 class RenameCaptionPresetUpdate(BaseModel):
     folder: str
-    old_sentence: str
-    new_sentence: str
+    old_caption: str | None = None
+    new_caption: str | None = None
+    old_sentence: str | None = None
+    new_sentence: str | None = None
+
+    def resolved_old_caption(self) -> str:
+        return _read_caption_text(self.old_caption, self.old_sentence)
+
+    def resolved_new_caption(self) -> str:
+        return _read_caption_text(self.new_caption, self.new_sentence)
 
 
 class RenameSectionUpdate(BaseModel):
@@ -1294,7 +1347,11 @@ class RenameSectionUpdate(BaseModel):
 
 class DeleteCaptionPresetUpdate(BaseModel):
     folder: str
-    sentence: str
+    caption: str | None = None
+    sentence: str | None = None
+
+    def resolved_caption(self) -> str:
+        return _read_caption_text(self.caption, self.sentence)
 
 
 class DeleteGroupUpdate(BaseModel):
@@ -1534,37 +1591,37 @@ def _iter_folder_image_entries(folder: str):
             yield entry
 
 
-def _remove_deleted_caption_lines(free_text: str, removed_sentences: set[str]) -> str:
+def _remove_deleted_caption_lines(free_text: str, removed_captions: set[str]) -> str:
     """Drop free-text lines that exactly match deleted captions."""
-    if not removed_sentences:
+    if not removed_captions:
         return str(free_text or "")
     filtered_lines = [
         line
         for line in str(free_text or "").splitlines()
-        if line.strip() not in removed_sentences
+        if line.strip() not in removed_captions
     ]
     return "\n".join(filtered_lines)
 
 
-def _remove_sentences_from_caption_files(folder: str, sections_before: list[dict], sections_after: list[dict], removed_sentences: list[str]):
+def _remove_captions_from_caption_files(folder: str, sections_before: list[dict], sections_after: list[dict], removed_captions: list[str]):
     """Rewrite caption files in a folder after configured captions are deleted."""
-    removed_set = {sentence for sentence in removed_sentences if sentence}
+    removed_set = {caption for caption in removed_captions if caption}
     if not removed_set:
         return
 
-    all_sentences_before = _all_sentences_from_sections(sections_before)
+    all_captions_before = _all_captions_from_sections(sections_before)
     headers_before = _all_headers_from_sections(sections_before)
 
     for entry in _iter_folder_image_entries(folder):
         caption_path = entry.with_suffix(".txt")
         if not caption_path.exists():
             continue
-        data = _read_caption_file(str(entry), all_sentences_before, headers_before)
+        data = _read_caption_file(str(entry), all_captions_before, headers_before)
         enabled = [
-            sentence for sentence in data.get("enabled_sentences", [])
-            if sentence not in removed_set
+            caption for caption in _read_enabled_captions(data)
+            if caption not in removed_set
         ]
-        enabled = _normalize_enabled_sentences(enabled, sections_after)
+        enabled = _normalize_enabled_captions(enabled, sections_after)
         free_text = _remove_deleted_caption_lines(str(data.get("free_text", "") or ""), removed_set)
         _write_caption_file(str(entry), enabled, free_text, sections_after)
 
@@ -1893,12 +1950,16 @@ async def clone_folder_stream(data: CloneFolderRequest):
 
 
 @app.get("/api/caption")
-async def get_caption(path: str = Query(...), sentences: str = Query(default="[]")):
-    """Read caption data for an image. sentences is a JSON array of predefined sentences."""
+async def get_caption(
+    path: str = Query(...),
+    captions: str | None = Query(default=None),
+    sentences: str | None = Query(default=None),
+):
+    """Read caption data for an image. captions is a JSON array of predefined captions."""
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Image file not found")
     try:
-        predefined = json.loads(sentences)
+        predefined = json.loads(_coalesce_caption_query(captions, sentences))
     except json.JSONDecodeError:
         predefined = []
 
@@ -1909,19 +1970,22 @@ async def get_caption(path: str = Query(...), sentences: str = Query(default="[]
     headers = _all_headers_from_sections(sections)
 
     data = _read_caption_file(path, predefined, headers)
-    return data
+    return {"enabled_captions": _read_enabled_captions(data), **data}
 
 
 @app.post("/api/caption/batch-toggle")
-async def batch_toggle_sentence(update: BatchCaptionUpdate):
-    """Toggle a predefined sentence on/off for multiple images."""
+async def batch_toggle_caption(update: BatchCaptionUpdate):
+    """Toggle a predefined caption on or off for multiple images."""
     results = []
+    caption = update.resolved_caption()
+    if not caption:
+        raise HTTPException(status_code=400, detail="Caption text is required")
 
     # Load sections config from the folder of the first image
     cfg = _load_config()
     folder = str(Path(update.image_paths[0]).parent) if update.image_paths else ""
     sections = _get_folder_sections(cfg, folder)
-    all_sentences = _all_sentences_from_sections(sections)
+    all_captions = _all_captions_from_sections(sections)
 
     for img_path in update.image_paths:
         if not os.path.isfile(img_path):
@@ -1930,15 +1994,15 @@ async def batch_toggle_sentence(update: BatchCaptionUpdate):
 
         # Read existing caption data
         headers = _all_headers_from_sections(sections)
-        data = _read_caption_file(img_path, all_sentences, headers)
-        enabled = list(data["enabled_sentences"])
+        data = _read_caption_file(img_path, all_captions, headers)
+        enabled = _read_enabled_captions(data)
         free_text = data["free_text"]
 
         if update.enabled:
-            if update.sentence not in enabled:
-                enabled.append(update.sentence)
+            if caption not in enabled:
+                enabled.append(caption)
         else:
-            enabled = [s for s in enabled if s != update.sentence]
+            enabled = [item for item in enabled if item != caption]
 
         _write_caption_file(img_path, enabled, free_text, sections)
         results.append({"path": img_path, "ok": True})
@@ -1950,25 +2014,25 @@ async def batch_toggle_sentence(update: BatchCaptionUpdate):
 async def rename_caption_preset(update: RenameCaptionPresetUpdate):
     """Rename a configured caption preset and migrate existing caption files."""
     folder = os.path.normpath(update.folder)
-    old_sentence = (update.old_sentence or "").strip()
-    new_sentence = (update.new_sentence or "").strip()
+    old_caption = update.resolved_old_caption()
+    new_caption = update.resolved_new_caption()
     if not folder or not os.path.isdir(folder):
         raise HTTPException(status_code=400, detail="Folder not found")
-    if not old_sentence or not new_sentence:
+    if not old_caption or not new_caption:
         raise HTTPException(status_code=400, detail="Both old and new caption text are required")
-    if old_sentence == new_sentence:
+    if old_caption == new_caption:
         cfg = _load_config()
         return {"ok": True, "sections": _get_folder_sections(cfg, folder)}
 
     cfg = _load_config()
     sections = _get_folder_sections(cfg, folder)
-    all_sentences_before = _all_sentences_from_sections(sections)
-    if old_sentence not in all_sentences_before:
+    all_captions_before = _all_captions_from_sections(sections)
+    if old_caption not in all_captions_before:
         raise HTTPException(status_code=404, detail="Caption not found")
-    if new_sentence in all_sentences_before:
+    if new_caption in all_captions_before:
         raise HTTPException(status_code=400, detail="A caption with that text already exists")
 
-    renamed = _rename_sentence_in_sections(sections, old_sentence, new_sentence)
+    renamed = _rename_caption_in_sections(sections, old_caption, new_caption)
     if not renamed:
         raise HTTPException(status_code=404, detail="Caption not found")
 
@@ -1983,10 +2047,10 @@ async def rename_caption_preset(update: RenameCaptionPresetUpdate):
         caption_path = entry.with_suffix(".txt")
         if not caption_path.exists():
             continue
-        data = _read_caption_file(str(entry), all_sentences_before, headers)
-        enabled = [new_sentence if sentence == old_sentence else sentence for sentence in data.get("enabled_sentences", [])]
-        enabled = _normalize_enabled_sentences(enabled, sections)
-        free_text = str(data.get("free_text", "") or "").replace(old_sentence, new_sentence)
+        data = _read_caption_file(str(entry), all_captions_before, headers)
+        enabled = [new_caption if caption == old_caption else caption for caption in _read_enabled_captions(data)]
+        enabled = _normalize_enabled_captions(enabled, sections)
+        free_text = str(data.get("free_text", "") or "").replace(old_caption, new_caption)
         _write_caption_file(str(entry), enabled, free_text, sections)
 
     return {"ok": True, "sections": sections}
@@ -2012,7 +2076,7 @@ async def rename_section(update: RenameSectionUpdate):
     if new_name and new_name in section_names_before:
         raise HTTPException(status_code=400, detail="A section with that name already exists")
 
-    all_sentences = _all_sentences_from_sections(sections_before)
+    all_captions = _all_captions_from_sections(sections_before)
     headers_before = _all_headers_from_sections(sections_before)
     sections = _get_folder_sections(cfg, folder)
     renamed = _rename_section_in_sections(sections, old_name, new_name)
@@ -2029,9 +2093,9 @@ async def rename_section(update: RenameSectionUpdate):
         caption_path = entry.with_suffix(".txt")
         if not caption_path.exists():
             continue
-        data = _read_caption_file(str(entry), all_sentences, headers_before)
+        data = _read_caption_file(str(entry), all_captions, headers_before)
         free_text = str(data.get("free_text", "") or "").replace(old_name, new_name)
-        _write_caption_file(str(entry), list(data.get("enabled_sentences", [])), free_text, sections)
+        _write_caption_file(str(entry), _read_enabled_captions(data), free_text, sections)
 
     return {"ok": True, "sections": sections}
 
@@ -2040,26 +2104,26 @@ async def rename_section(update: RenameSectionUpdate):
 async def delete_caption_preset(update: DeleteCaptionPresetUpdate):
     """Delete a configured caption and remove it from caption files in the folder."""
     folder = os.path.normpath(update.folder)
-    sentence = str(update.sentence or "").strip()
+    caption = update.resolved_caption()
     if not folder or not os.path.isdir(folder):
         raise HTTPException(status_code=400, detail="Folder not found")
-    if not sentence:
+    if not caption:
         raise HTTPException(status_code=400, detail="Caption text is required")
 
     cfg = _load_config()
     sections_before = _get_folder_sections(cfg, folder)
-    if sentence not in _all_sentences_from_sections(sections_before):
+    if caption not in _all_captions_from_sections(sections_before):
         raise HTTPException(status_code=404, detail="Caption not found")
 
     sections = _get_folder_sections(cfg, folder)
-    removed = _remove_sentence_from_sections(sections, sentence)
+    removed = _remove_caption_from_sections(sections, caption)
     if not removed:
         raise HTTPException(status_code=404, detail="Caption not found")
 
     _set_folder_sections(cfg, folder, sections)
     _save_config(cfg)
-    _remove_sentences_from_caption_files(folder, sections_before, sections, [sentence])
-    return {"ok": True, "sections": sections, "removed_sentences": [sentence]}
+    _remove_captions_from_caption_files(folder, sections_before, sections, [caption])
+    return {"ok": True, "sections": sections, "removed_captions": [caption], "removed_sentences": [caption]}
 
 
 @app.post("/api/group/delete")
@@ -2072,14 +2136,14 @@ async def delete_group(update: DeleteGroupUpdate):
     cfg = _load_config()
     sections_before = _get_folder_sections(cfg, folder)
     sections = _get_folder_sections(cfg, folder)
-    removed_sentences = _remove_group_from_sections(sections, update.section_index, update.group_index)
-    if removed_sentences is None:
+    removed_captions = _remove_group_from_sections(sections, update.section_index, update.group_index)
+    if removed_captions is None:
         raise HTTPException(status_code=404, detail="Group not found")
 
     _set_folder_sections(cfg, folder, sections)
     _save_config(cfg)
-    _remove_sentences_from_caption_files(folder, sections_before, sections, removed_sentences)
-    return {"ok": True, "sections": sections, "removed_sentences": removed_sentences}
+    _remove_captions_from_caption_files(folder, sections_before, sections, removed_captions)
+    return {"ok": True, "sections": sections, "removed_captions": removed_captions, "removed_sentences": removed_captions}
 
 
 @app.post("/api/section/delete")
@@ -2092,32 +2156,36 @@ async def delete_section(update: DeleteSectionUpdate):
     cfg = _load_config()
     sections_before = _get_folder_sections(cfg, folder)
     sections = _get_folder_sections(cfg, folder)
-    updated_sections, removed_sentences = _remove_section_from_sections(sections, update.section_index)
-    if updated_sections is None or removed_sentences is None:
+    updated_sections, removed_captions = _remove_section_from_sections(sections, update.section_index)
+    if updated_sections is None or removed_captions is None:
         raise HTTPException(status_code=404, detail="Section not found")
 
     _set_folder_sections(cfg, folder, updated_sections)
     _save_config(cfg)
-    _remove_sentences_from_caption_files(folder, sections_before, updated_sections, removed_sentences)
-    return {"ok": True, "sections": updated_sections, "removed_sentences": removed_sentences}
+    _remove_captions_from_caption_files(folder, sections_before, updated_sections, removed_captions)
+    return {"ok": True, "sections": updated_sections, "removed_captions": removed_captions, "removed_sentences": removed_captions}
 
 
 @app.post("/api/caption/save-free-text")
 async def save_free_text(data: BatchFreeTextUpdate):
-    """Save free text for a single media file, preserving predefined sentences."""
+    """Save free text for a single media file, preserving predefined captions."""
     if not os.path.isfile(data.image_path):
         raise HTTPException(status_code=404, detail="Media not found")
 
     # We need to know which lines are predefined to preserve them
-    # Client will send the sentences query param
-    # Actually let's accept sentences in the body too
+    # Client will send the captions query param.
+    # Actually let's accept captions in the body too.
     return {"ok": True}
 
 
 class SaveCaptionFull(BaseModel):
     image_path: str
-    enabled_sentences: list[str]
+    enabled_captions: list[str] = Field(default_factory=list)
+    enabled_sentences: list[str] = Field(default_factory=list)
     free_text: str
+
+    def resolved_enabled_captions(self) -> list[str]:
+        return list(self.enabled_captions or self.enabled_sentences)
 
 
 class AutoCaptionRequest(BaseModel):
@@ -2132,25 +2200,30 @@ class AutoCaptionRequest(BaseModel):
     free_text_only: Optional[bool] = None
     target_section_index: Optional[int] = None
     target_group_index: Optional[int] = None
+    target_caption: Optional[str] = None
     target_sentence: Optional[str] = None
     free_text_prompt_template: Optional[str] = None
     timeout_seconds: Optional[int] = None
+
+    def resolved_target_caption(self) -> str | None:
+        caption = _read_caption_text(self.target_caption, self.target_sentence)
+        return caption or None
 
 
 def _resolve_caption_targets(
     sections: list[dict],
     target_section_index: int | None = None,
     target_group_index: int | None = None,
-    target_sentence: str | None = None,
+    target_caption: str | None = None,
 ) -> tuple[list[dict] | None, dict | None]:
     """Resolve full or scoped caption targets for auto captioning."""
-    sentence = str(target_sentence or "").strip()
-    if sentence:
+    caption = str(target_caption or "").strip()
+    if caption:
         for target in _iter_caption_targets_with_indices(sections):
-            if target.get("type") == "sentence" and target.get("sentence") == sentence:
+            if target.get("type") == "caption" and target.get("caption") == caption:
                 return [target], {
-                    "type": "sentence",
-                    "sentence": sentence,
+                    "type": "caption",
+                    "caption": caption,
                     "section_index": target.get("section_index"),
                     "group_index": target.get("group_index"),
                     "section_name": target.get("section_name", ""),
@@ -2197,8 +2270,8 @@ async def save_caption(data: SaveCaptionFull):
     cfg = _load_config()
     folder = str(Path(data.image_path).parent)
     sections = _get_folder_sections(cfg, folder)
-    enabled_sentences = _normalize_enabled_sentences(data.enabled_sentences, sections)
-    _write_caption_file(data.image_path, enabled_sentences, data.free_text, sections)
+    enabled_captions = _normalize_enabled_captions(data.resolved_enabled_captions(), sections)
+    _write_caption_file(data.image_path, enabled_captions, data.free_text, sections)
     return {"ok": True}
 
 
@@ -2237,18 +2310,18 @@ async def auto_caption(data: AutoCaptionRequest):
 
     folder = str(Path(media_path).parent)
     sections = _get_folder_sections(cfg, folder)
-    all_sentences = _all_sentences_from_sections(sections)
-    if not all_sentences and not free_text_only:
+    all_captions = _all_captions_from_sections(sections)
+    if not all_captions and not free_text_only:
         raise HTTPException(status_code=400, detail="No captions configured for this folder")
     targets, target_scope = _resolve_caption_targets(
         sections,
         data.target_section_index,
         data.target_group_index,
-        data.target_sentence,
+        data.resolved_target_caption(),
     )
     if not free_text_only and targets is None:
-        if data.target_sentence:
-            raise HTTPException(status_code=400, detail="Invalid target sentence")
+        if data.resolved_target_caption():
+            raise HTTPException(status_code=400, detail="Invalid target caption")
         if data.target_group_index is not None:
             raise HTTPException(status_code=400, detail="Invalid target group")
         if data.target_section_index is not None:
@@ -2256,9 +2329,9 @@ async def auto_caption(data: AutoCaptionRequest):
         raise HTTPException(status_code=400, detail="Invalid target")
 
     headers = _all_headers_from_sections(sections)
-    enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
+    enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
     results: list[dict] = []
-    is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "sentence"})
+    is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "caption"})
 
     loop = asyncio.get_event_loop()
     if not free_text_only:
@@ -2287,11 +2360,11 @@ async def auto_caption(data: AutoCaptionRequest):
             else:
                 media_payload = await loop.run_in_executor(executor, encode_media_call, media_path)
                 for target in targets or []:
-                    if target["type"] == "sentence":
-                        sentence = target["sentence"]
+                    if target["type"] == "caption":
+                        caption = target["caption"]
                         payload = {
                             "model": model,
-                            "prompt": _apply_media_prompt_context(_ollama_prompt_for_sentence(sentence, prompt_template), media_path),
+                            "prompt": _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), media_path),
                             "images": media_payload,
                             "stream": False,
                             "options": {"temperature": 0},
@@ -2299,11 +2372,11 @@ async def auto_caption(data: AutoCaptionRequest):
                         response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
                         raw_answer = str(response.get("response") or "").strip()
                         is_match = _parse_ollama_yes_no(raw_answer)
-                        enabled, free_text = _apply_sentence_result_to_live_caption(
+                        enabled, free_text = _apply_caption_result_to_live_caption(
                             media_path,
-                            sentence,
+                            caption,
                             is_match,
-                            all_sentences,
+                            all_captions,
                             headers,
                             sections,
                         )
@@ -2312,30 +2385,31 @@ async def auto_caption(data: AutoCaptionRequest):
                             "section_index": target.get("section_index"),
                             "group_index": target.get("group_index"),
                             "section_name": target.get("section_name", ""),
-                            "sentence": sentence,
+                            "caption": caption,
+                            "sentence": caption,
                             "enabled": is_match,
                             "answer": raw_answer,
                         })
                         continue
 
-                    group_sentences = target["sentences"]
+                    group_captions = target["captions"]
                     payload = {
                         "model": model,
-                        "prompt": _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_sentences, group_prompt_template), media_path),
+                        "prompt": _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_captions, group_prompt_template), media_path),
                         "images": media_payload,
                         "stream": False,
                         "options": {"temperature": 0},
                     }
                     response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
                     raw_answer = str(response.get("response") or "").strip()
-                    selection_index = _parse_ollama_selection(raw_answer, group_sentences)
-                    selected_sentence = group_sentences[selection_index - 1] if selection_index else None
-                    selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
+                    selection_index = _parse_ollama_selection(raw_answer, group_captions)
+                    selected_caption = group_captions[selection_index - 1] if selection_index else None
+                    selected_hidden = bool(selected_caption and _is_hidden_group_caption(sections, selected_caption))
                     enabled, free_text = _apply_group_result_to_live_caption(
                         media_path,
-                        group_sentences,
-                        selected_sentence,
-                        all_sentences,
+                        group_captions,
+                        selected_caption,
+                        all_captions,
                         headers,
                         sections,
                     )
@@ -2345,8 +2419,10 @@ async def auto_caption(data: AutoCaptionRequest):
                         "group_index": target.get("group_index"),
                         "section_name": target.get("section_name", ""),
                         "group_name": target.get("group_name", ""),
-                        "sentences": group_sentences,
-                        "selected_sentence": selected_sentence,
+                        "captions": group_captions,
+                        "sentences": group_captions,
+                        "selected_caption": selected_caption,
+                        "selected_sentence": selected_caption,
                         "selected_hidden": selected_hidden,
                         "selection_index": selection_index,
                         "answer": raw_answer,
@@ -2361,7 +2437,7 @@ async def auto_caption(data: AutoCaptionRequest):
     free_text_model_output = ""
     added_free_text_lines: list[str] = []
     if enable_free_text:
-        enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
+        enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
         caption_text = _build_caption_text(enabled, free_text, sections)
         try:
             suggest_free_text_call = partial(
@@ -2382,7 +2458,7 @@ async def auto_caption(data: AutoCaptionRequest):
             enabled, free_text, added_free_text_lines = _apply_free_text_result_to_live_caption(
                 media_path,
                 free_text_model_output,
-                all_sentences,
+                all_captions,
                 headers,
                 sections,
                 preserve_existing=is_scoped,
@@ -2394,7 +2470,7 @@ async def auto_caption(data: AutoCaptionRequest):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Auto caption free-text step failed: {e}") from e
 
-    enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
+    enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
     return {
         "ok": True,
         "model": model,
@@ -2405,6 +2481,7 @@ async def auto_caption(data: AutoCaptionRequest):
         "enable_free_text": enable_free_text,
         "free_text_only": free_text_only,
         "free_text_prompt_template": free_text_prompt_template,
+        "enabled_captions": enabled,
         "enabled_sentences": enabled,
         "free_text": free_text,
         "free_text_model_output": free_text_model_output,
@@ -2476,8 +2553,8 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
 
             folder = str(Path(media_path).parent)
             sections = _get_folder_sections(cfg, folder)
-            all_sentences = _all_sentences_from_sections(sections)
-            if not all_sentences and not free_text_only:
+            all_captions = _all_captions_from_sections(sections)
+            if not all_captions and not free_text_only:
                 total_errors += 1
                 yield _event_bytes({"type": "error", "path": media_path, "message": "No captions configured for this folder"})
                 continue
@@ -2486,13 +2563,13 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 sections,
                 data.target_section_index,
                 data.target_group_index,
-                data.target_sentence,
+                data.resolved_target_caption(),
             )
             if not free_text_only and targets is None:
                 total_errors += 1
                 message = "Invalid target"
-                if data.target_sentence:
-                    message = "Invalid target sentence"
+                if data.resolved_target_caption():
+                    message = "Invalid target caption"
                 elif data.target_group_index is not None:
                     message = "Invalid target group"
                 elif data.target_section_index is not None:
@@ -2501,7 +2578,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 continue
 
             headers = _all_headers_from_sections(sections)
-            enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
+            enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
             results = []
             media_payload = await loop.run_in_executor(executor, encode_media_call, media_path)
 
@@ -2509,10 +2586,12 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
             yield _event_bytes({
                 "type": "image-start",
                 "path": media_path,
-                "total_sentences": len(all_sentences),
+                "total_captions": len(all_captions),
+                "total_sentences": len(all_captions),
                 "total_targets": total_targets,
                 "free_text_only": free_text_only,
                 "target_scope": target_scope,
+                "enabled_captions": enabled,
                 "enabled_sentences": enabled,
                 "free_text": free_text,
             })
@@ -2522,11 +2601,11 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                     for index, target in enumerate(targets, start=1):
                         if await request.is_disconnected():
                             return
-                        if target["type"] == "sentence":
-                            sentence = target["sentence"]
+                        if target["type"] == "caption":
+                            caption = target["caption"]
                             payload = {
                                 "model": model,
-                                "prompt": _apply_media_prompt_context(_ollama_prompt_for_sentence(sentence, prompt_template), media_path),
+                                "prompt": _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), media_path),
                                 "images": media_payload,
                                 "stream": False,
                                 "options": {"temperature": 0},
@@ -2534,47 +2613,49 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
                             raw_answer = str(response.get("response") or "").strip()
                             is_match = _parse_ollama_yes_no(raw_answer)
-                            enabled, free_text = _apply_sentence_result_to_live_caption(
+                            enabled, free_text = _apply_caption_result_to_live_caption(
                                 media_path,
-                                sentence,
+                                caption,
                                 is_match,
-                                all_sentences,
+                                all_captions,
                                 headers,
                                 sections,
                             )
-                            result = {"type": "sentence", "sentence": sentence, "enabled": is_match, "answer": raw_answer}
+                            result = {"type": "caption", "caption": caption, "sentence": caption, "enabled": is_match, "answer": raw_answer}
                             results.append(result)
                             yield _event_bytes({
                                 "type": "caption-check",
                                 "path": media_path,
                                 "index": index,
                                 "total": total_targets,
-                                "sentence": sentence,
+                                "caption": caption,
+                                "sentence": caption,
                                 "enabled": is_match,
+                                "enabled_captions": enabled,
                                 "enabled_sentences": enabled,
                                 "free_text": free_text,
                                 "answer": raw_answer,
                             })
                             continue
 
-                        group_sentences = target["sentences"]
+                        group_captions = target["captions"]
                         payload = {
                             "model": model,
-                            "prompt": _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_sentences, group_prompt_template), media_path),
+                            "prompt": _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_captions, group_prompt_template), media_path),
                             "images": media_payload,
                             "stream": False,
                             "options": {"temperature": 0},
                         }
                         response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
                         raw_answer = str(response.get("response") or "").strip()
-                        selection_index = _parse_ollama_selection(raw_answer, group_sentences)
-                        selected_sentence = group_sentences[selection_index - 1] if selection_index else None
-                        selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
+                        selection_index = _parse_ollama_selection(raw_answer, group_captions)
+                        selected_caption = group_captions[selection_index - 1] if selection_index else None
+                        selected_hidden = bool(selected_caption and _is_hidden_group_caption(sections, selected_caption))
                         enabled, free_text = _apply_group_result_to_live_caption(
                             media_path,
-                            group_sentences,
-                            selected_sentence,
-                            all_sentences,
+                            group_captions,
+                            selected_caption,
+                            all_captions,
                             headers,
                             sections,
                         )
@@ -2583,8 +2664,10 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             "section_index": target.get("section_index"),
                             "group_index": target.get("group_index"),
                             "group_name": target.get("group_name", ""),
-                            "sentences": group_sentences,
-                            "selected_sentence": selected_sentence,
+                            "captions": group_captions,
+                            "sentences": group_captions,
+                            "selected_caption": selected_caption,
+                            "selected_sentence": selected_caption,
                             "selected_hidden": selected_hidden,
                             "selection_index": selection_index,
                             "answer": raw_answer,
@@ -2598,10 +2681,13 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             "section_index": target.get("section_index"),
                             "group_index": target.get("group_index"),
                             "group_name": target.get("group_name", ""),
-                            "sentences": group_sentences,
-                            "selected_sentence": selected_sentence,
+                            "captions": group_captions,
+                            "sentences": group_captions,
+                            "selected_caption": selected_caption,
+                            "selected_sentence": selected_caption,
                             "selected_hidden": selected_hidden,
                             "selection_index": selection_index,
+                            "enabled_captions": enabled,
                             "enabled_sentences": enabled,
                             "free_text": free_text,
                             "answer": raw_answer,
@@ -2612,8 +2698,8 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 if enable_free_text:
                     if await request.is_disconnected():
                         return
-                    is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "sentence"})
-                    enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
+                    is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "caption"})
+                    enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
                     caption_text = _build_caption_text(enabled, free_text, sections)
                     free_payload = {
                         "model": model,
@@ -2627,7 +2713,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                     enabled, free_text, added_free_text_lines = _apply_free_text_result_to_live_caption(
                         media_path,
                         free_text_model_output,
-                        all_sentences,
+                        all_captions,
                         headers,
                         sections,
                         preserve_existing=is_scoped,
@@ -2636,17 +2722,19 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                         "type": "free-text",
                         "path": media_path,
                         "answer": free_text_model_output,
+                        "enabled_captions": enabled,
                         "enabled_sentences": enabled,
                         "free_text": free_text,
                         "added_lines": added_free_text_lines,
                     })
 
-                enabled, free_text = _read_live_caption_state(media_path, all_sentences, headers)
+                enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
                 total_processed += 1
                 yield _event_bytes({
                     "type": "image-complete",
                     "path": media_path,
                     "free_text_only": free_text_only,
+                    "enabled_captions": enabled,
                     "enabled_sentences": enabled,
                     "free_text": free_text,
                     "results": results,
@@ -2672,21 +2760,25 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
 
 
 @app.get("/api/captions/bulk")
-async def get_captions_bulk(paths: str = Query(...), sentences: str = Query(default="[]")):
+async def get_captions_bulk(
+    paths: str = Query(...),
+    captions: str | None = Query(default=None),
+    sentences: str | None = Query(default=None),
+):
     """Get caption status for multiple images at once.
     paths: JSON array of image paths
-    sentences: JSON array of predefined sentences
+    captions: JSON array of predefined captions
     """
     try:
         image_paths = json.loads(paths)
-        predefined = json.loads(sentences)
+        predefined = json.loads(_coalesce_caption_query(captions, sentences))
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     return _get_bulk_caption_results(image_paths, predefined)
 
 
-def _get_bulk_caption_results(image_paths: list[str], predefined: list[str]) -> dict:
+def _get_bulk_caption_results(image_paths: list[str], predefined_captions: list[str]) -> dict:
     """Load caption data for multiple images."""
 
     # Load section headers (assume all images in same folder)
@@ -2701,22 +2793,27 @@ def _get_bulk_caption_results(image_paths: list[str], predefined: list[str]) -> 
     results = {}
     for img_path in image_paths:
         if os.path.isfile(img_path):
-            results[img_path] = _read_caption_file(img_path, predefined, headers)
+            data = _read_caption_file(img_path, predefined_captions, headers)
+            results[img_path] = {"enabled_captions": _read_enabled_captions(data), **data}
         else:
-            results[img_path] = {"enabled_sentences": [], "free_text": ""}
+            results[img_path] = {"enabled_captions": [], "enabled_sentences": [], "free_text": ""}
 
     return results
 
 
 class BulkCaptionsRequest(BaseModel):
     paths: list[str]
-    sentences: list[str] = []
+    captions: list[str] = Field(default_factory=list)
+    sentences: list[str] = Field(default_factory=list)
+
+    def resolved_captions(self) -> list[str]:
+        return list(self.captions or self.sentences)
 
 
 @app.post("/api/captions/bulk")
 async def post_captions_bulk(payload: BulkCaptionsRequest):
     """Get caption status for multiple images at once from a JSON body."""
-    return _get_bulk_caption_results(payload.paths or [], payload.sentences or [])
+    return _get_bulk_caption_results(payload.paths or [], payload.resolved_captions())
 
 
 # ===== SETTINGS API =====

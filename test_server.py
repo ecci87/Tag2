@@ -183,10 +183,10 @@ class TestAllSentencesFromSections:
             {"name": "", "sentences": ["a", "b"], "groups": []},
             {"name": "## X", "sentences": ["c"], "groups": [{"name": "Color", "sentences": ["red", "blue"]}]},
         ]
-        assert server._all_sentences_from_sections(sections) == ["a", "b", "c", "red", "blue"]
+        assert server._all_captions_from_sections(sections) == ["a", "b", "c", "red", "blue"]
 
     def test_empty(self):
-        assert server._all_sentences_from_sections([]) == []
+        assert server._all_captions_from_sections([]) == []
 
 
 class TestRenameSentenceInSections:
@@ -194,9 +194,9 @@ class TestRenameSentenceInSections:
         sections = [
             {"name": "", "sentences": ["old"], "groups": [{"name": "G", "sentences": ["x", "old-2"], "hidden_sentences": ["old-2"]}]},
         ]
-        assert server._rename_sentence_in_sections(sections, "old", "new") is True
+        assert server._rename_caption_in_sections(sections, "old", "new") is True
         assert sections[0]["sentences"] == ["new"]
-        assert server._rename_sentence_in_sections(sections, "old-2", "new-2") is True
+        assert server._rename_caption_in_sections(sections, "old-2", "new-2") is True
         assert sections[0]["groups"][0]["sentences"] == ["x", "new-2"]
         assert sections[0]["groups"][0]["hidden_sentences"] == ["new-2"]
 
@@ -412,7 +412,7 @@ class TestAutoCaptionMergeDuringRun:
         server._write_caption_file(img, enabled, free, sections)
         result = server._read_caption_file(
             img,
-            server._all_sentences_from_sections(sections),
+            server._all_captions_from_sections(sections),
             section_headers=["## Sec"],
         )
         assert sorted(result["enabled_sentences"]) == sorted(enabled)
@@ -1537,7 +1537,7 @@ class TestOllamaHelpers:
         assert server._parse_ollama_yes_no("uncertain") is False
 
     def test_prompt_template_substitution(self):
-        prompt = server._ollama_prompt_for_sentence("Moon", "Caption check: {caption} / {sentence}")
+        prompt = server._ollama_prompt_for_caption("Moon", "Caption check: {caption} / {sentence}")
         assert prompt == "Caption check: Moon / Moon"
 
     def test_free_text_prompt_template_substitution(self):
@@ -1574,7 +1574,7 @@ class TestOllamaHelpers:
 
         monkeypatch.setattr(server, "_encode_media_for_ollama", lambda path, **kwargs: ["image-bytes"])
         monkeypatch.setattr(server, "_ollama_generate", fake_generate)
-        enabled, results = server._auto_caption_sentences(
+        enabled, results = server._auto_caption_captions(
             "http://127.0.0.1:11434",
             "llava",
             single_image,
@@ -1947,7 +1947,7 @@ class TestAutoCaptionAPI:
             assert host == "http://localhost:11435"
             assert model == "llava"
             assert image_path == single_image
-            assert server._all_sentences_from_sections(sections) == ["Moon", "Night", "Red Car", "Blue Car"]
+            assert server._all_captions_from_sections(sections) == ["Moon", "Night", "Red Car", "Blue Car"]
             assert kwargs["encode_image_func"].func is server._encode_media_for_ollama
             assert kwargs["generate_func"] is server._ollama_generate
             assert kwargs["prompt_template"] == "Caption: {caption}"

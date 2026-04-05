@@ -161,7 +161,7 @@ function createGroupOrderItem(groupId) {
 
 function getSectionOrderItemKey(item) {
   if (!item || typeof item !== "object") return "";
-  if (item.type === "sentence") return `sentence:${item.sentence || ""}`;
+  if (item.type === "sentence" || item.type === "caption") return `sentence:${item.sentence || item.caption || ""}`;
   if (item.type === "group") return `group:${item.group_id || ""}`;
   return "";
 }
@@ -175,8 +175,8 @@ function getNormalizedSectionItemOrder(section, sentences, groups) {
   for (const rawItem of (Array.isArray(section?.item_order) ? section.item_order : [])) {
     if (!rawItem || typeof rawItem !== "object") continue;
     const type = String(rawItem.type || "").trim().toLowerCase();
-    if (type === "sentence") {
-      const sentence = String(rawItem.sentence || "").trim();
+    if (type === "sentence" || type === "caption") {
+      const sentence = String(rawItem.sentence || rawItem.caption || "").trim();
       const item = createSentenceOrderItem(sentence);
       const key = getSectionOrderItemKey(item);
       if (!sentence || !validSentences.has(sentence) || seenKeys.has(key)) continue;
@@ -239,7 +239,8 @@ function getOrderedSectionEntries(section) {
 function normalizeGroupData(group) {
   const sentences = [];
   const seen = new Set();
-  for (const raw of Array.isArray(group?.sentences) ? group.sentences : []) {
+  const sourceSentences = Array.isArray(group?.captions) ? group.captions : (Array.isArray(group?.sentences) ? group.sentences : []);
+  for (const raw of sourceSentences) {
     const text = String(raw || "").trim();
     if (!text || seen.has(text)) continue;
     seen.add(text);
@@ -247,7 +248,10 @@ function normalizeGroupData(group) {
   }
   const hiddenSentences = [];
   const hiddenSeen = new Set();
-  for (const raw of Array.isArray(group?.hidden_sentences) ? group.hidden_sentences : []) {
+  const sourceHiddenSentences = Array.isArray(group?.hidden_captions)
+    ? group.hidden_captions
+    : (Array.isArray(group?.hidden_sentences) ? group.hidden_sentences : []);
+  for (const raw of sourceHiddenSentences) {
     const text = String(raw || "").trim();
     if (!text || hiddenSeen.has(text) || !sentences.includes(text)) continue;
     hiddenSeen.add(text);
@@ -265,7 +269,8 @@ function normalizeGroupData(group) {
 function normalizeSectionData(section) {
   const sentences = [];
   const seen = new Set();
-  for (const raw of Array.isArray(section?.sentences) ? section.sentences : []) {
+  const sourceSentences = Array.isArray(section?.captions) ? section.captions : (Array.isArray(section?.sentences) ? section.sentences : []);
+  for (const raw of sourceSentences) {
     const text = String(raw || "").trim();
     if (!text || seen.has(text)) continue;
     seen.add(text);
@@ -289,15 +294,15 @@ function normalizeSectionsData(sections) {
 function serializeSectionsForSave() {
   return normalizeSectionsData(state.sections).map(section => ({
     name: section.name,
-    sentences: [...section.sentences],
+    captions: [...section.sentences],
     groups: section.groups.map(group => ({
       id: group.id,
       name: group.name,
-      sentences: [...group.sentences],
-      hidden_sentences: [...(group.hidden_sentences || [])],
+      captions: [...group.sentences],
+      hidden_captions: [...(group.hidden_sentences || [])],
     })),
-    item_order: (section.item_order || []).map(item => item.type === "sentence"
-      ? createSentenceOrderItem(item.sentence)
+    item_order: (section.item_order || []).map(item => (item.type === "sentence" || item.type === "caption")
+      ? { type: "caption", caption: item.sentence || item.caption }
       : createGroupOrderItem(item.group_id)),
   }));
 }
@@ -372,7 +377,20 @@ function getExportedEnabledSentences(enabledSentences) {
 
 function hasEffectiveCaptionContent(caption) {
   if (!caption) return false;
-  return getExportedEnabledSentences(caption.enabled_sentences).length > 0 || !!(caption.free_text && caption.free_text.trim());
+  const enabledSentences = Array.isArray(caption.enabled_sentences)
+    ? caption.enabled_sentences
+    : (Array.isArray(caption.enabled_captions) ? caption.enabled_captions : []);
+  return getExportedEnabledSentences(enabledSentences).length > 0 || !!(caption.free_text && caption.free_text.trim());
+}
+
+function normalizeCaptionCacheEntry(caption) {
+  const enabledSentences = Array.isArray(caption?.enabled_captions)
+    ? caption.enabled_captions
+    : (Array.isArray(caption?.enabled_sentences) ? caption.enabled_sentences : []);
+  return {
+    enabled_sentences: orderEnabledSentences(enabledSentences),
+    free_text: String(caption?.free_text || ""),
+  };
 }
 
 function applySentenceSelectionToList(enabledSentences, sentence, shouldEnable) {
@@ -612,7 +630,7 @@ async function fetchCaptionsBulk(paths, sentences = getAllConfiguredSentences())
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       paths,
-      sentences,
+      captions: sentences,
     }),
   });
   const data = await resp.json().catch(() => ({}));
@@ -634,7 +652,7 @@ async function ensureCaptionCacheLoadedForFiltering() {
   state.filterLoadingPromise = (async () => {
     const data = await fetchCaptionsBulk(state.images.map(img => img.path));
     for (const [path, caption] of Object.entries(data || {})) {
-      state.captionCache[path] = caption;
+      state.captionCache[path] = normalizeCaptionCacheEntry(caption);
     }
     state.filterCaptionCacheKey = filterKey;
   })().finally(() => {
@@ -5960,16 +5978,16 @@ async function loadCaptionData(path) {
   const allSentences = getAllConfiguredSentences();
   const sentencesJson = JSON.stringify(allSentences);
   try {
-    const resp = await fetch(`/api/caption?path=${encodeURIComponent(path)}&sentences=${encodeURIComponent(sentencesJson)}`);
+    const resp = await fetch(`/api/caption?path=${encodeURIComponent(path)}&captions=${encodeURIComponent(sentencesJson)}`);
     if (resp.ok) {
       const data = await resp.json();
-      state.captionCache[path] = data;
+      state.captionCache[path] = normalizeCaptionCacheEntry(data);
       if (state.activeSentenceFilters.size > 0) {
         state.filterCaptionCacheKey = getActiveSentenceFilterKey();
       }
       // Update UI if still selected
       if (state.selectedPaths.size === 1 && state.selectedPaths.has(path)) {
-        freeText.value = data.free_text || "";
+        freeText.value = state.captionCache[path].free_text || "";
         scheduleUiRender({ sentences: true });
       }
       if (state.previewPath === path) {
@@ -5989,7 +6007,7 @@ async function loadMultiCaptionState() {
   try {
     const data = await fetchCaptionsBulk(paths);
     for (const [path, caption] of Object.entries(data)) {
-      state.captionCache[path] = caption;
+      state.captionCache[path] = normalizeCaptionCacheEntry(caption);
     }
     if (state.activeSentenceFilters.size > 0) {
       state.filterCaptionCacheKey = getActiveSentenceFilterKey();
@@ -6205,7 +6223,7 @@ async function removeSentence(sentence) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         folder: state.folder,
-        sentence,
+        caption: sentence,
       }),
     });
     const data = await resp.json().catch(() => ({}));
@@ -6213,7 +6231,7 @@ async function removeSentence(sentence) {
       throw new Error(data.detail || "Failed to delete caption");
     }
     state.sections = normalizeSectionsData(data.sections || state.sections);
-    applyRemovedSentencesToLocalState(data.removed_sentences || [sentence]);
+    applyRemovedSentencesToLocalState(data.removed_captions || data.removed_sentences || [sentence]);
     await refreshCaptionsAfterSchemaChange();
     statusBar.textContent = "Caption deleted";
   } catch (err) {
@@ -6260,8 +6278,8 @@ async function renameSentence(oldSentence, newSentence) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         folder: state.folder,
-        old_sentence: oldSentence,
-        new_sentence: nextSentence,
+        old_caption: oldSentence,
+        new_caption: nextSentence,
       }),
     });
     const data = await resp.json().catch(() => ({}));
@@ -7219,7 +7237,7 @@ function getAutoCaptionCompleteLog(scope, event) {
     case "section":
       return `[${fileLabel}] Section refresh complete`;
     default:
-      return `[${fileLabel}] Completed with ${(event.enabled_sentences || []).length} matched captions`;
+      return `[${fileLabel}] Completed with ${((event.enabled_captions || event.enabled_sentences) || []).length} matched captions`;
   }
 }
 
@@ -7274,7 +7292,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         free_text_only: freeTextOnly,
         target_section_index: targetSectionIndex,
         target_group_index: targetGroupIndex,
-        target_sentence: targetSentence,
+        target_caption: targetSentence,
         free_text_prompt_template: state.ollamaFreeTextPromptTemplate,
         timeout_seconds: state.ollamaTimeoutSeconds,
       }),
@@ -7314,23 +7332,24 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentStepTotal: Math.max(1, baseSteps),
         });
         const cache = ensureCaptionCache(event.path);
-        cache.enabled_sentences = orderEnabledSentences(event.enabled_sentences || cache.enabled_sentences || []);
+        cache.enabled_sentences = orderEnabledSentences(event.enabled_captions || event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";
         markCaptionIndicator(event.path, hasEffectiveCaptionContent(cache));
         refreshGridForActiveFilters();
         scheduleUiRender({ sentences: true });
         appendModelLog(getAutoCaptionImageStartLog(scope, event, targetSentence), "log-dim");
       } else if (event.type === "caption-check") {
+        const currentCaption = event.caption || event.sentence || "";
         updateAutoCaptionProgress({
           currentPath: event.path,
-          currentMessage: event.sentence,
+          currentMessage: currentCaption,
           currentStepIndex: event.index || state.aiProgress.currentStepIndex,
           currentStepTotal: Math.max(state.aiProgress.currentStepTotal || 0, (event.total || 0) + (state.aiProgress.enableFreeText ? 1 : 0)),
         });
         const verdict = event.enabled ? "YES" : "NO";
-        appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.sentence} -> ${verdict} | ${event.answer || verdict}`, event.enabled ? "log-ok" : "log-dim");
+        appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${currentCaption} -> ${verdict} | ${event.answer || verdict}`, event.enabled ? "log-ok" : "log-dim");
         const cache = ensureCaptionCache(event.path);
-        cache.enabled_sentences = orderEnabledSentences(event.enabled_sentences || cache.enabled_sentences || []);
+        cache.enabled_sentences = orderEnabledSentences(event.enabled_captions || event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";
         refreshGridForActiveFilters();
         if (state.selectedPaths.has(event.path)) {
@@ -7339,19 +7358,19 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         const hasContent = hasEffectiveCaptionContent(cache);
         markCaptionIndicator(event.path, !!hasContent);
       } else if (event.type === "group-selection") {
+        const selectedCaption = event.selected_caption || event.selected_sentence || "(no valid selection)";
         updateAutoCaptionProgress({
           currentPath: event.path,
           currentMessage: event.group_name || "Group selection",
           currentStepIndex: event.index || state.aiProgress.currentStepIndex,
           currentStepTotal: Math.max(state.aiProgress.currentStepTotal || 0, (event.total || 0) + (state.aiProgress.enableFreeText ? 1 : 0)),
         });
-        const selectedSentence = event.selected_sentence || "(no valid selection)";
         appendModelLog(
-          `[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.group_name || "Group"} -> ${selectedSentence}${event.selected_hidden ? " (ignored in txt)" : ""} | ${event.answer || ""}`,
-          event.selected_sentence ? "log-ok" : "log-warn"
+          `[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.group_name || "Group"} -> ${selectedCaption}${event.selected_hidden ? " (ignored in txt)" : ""} | ${event.answer || ""}`,
+          (event.selected_caption || event.selected_sentence) ? "log-ok" : "log-warn"
         );
         const cache = ensureCaptionCache(event.path);
-        cache.enabled_sentences = orderEnabledSentences(event.enabled_sentences || cache.enabled_sentences || []);
+        cache.enabled_sentences = orderEnabledSentences(event.enabled_captions || event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";
         refreshGridForActiveFilters();
         if (state.selectedPaths.has(event.path)) {
@@ -7367,7 +7386,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentStepTotal: state.aiProgress.currentStepTotal || 1,
         });
         const cache = ensureCaptionCache(event.path);
-        cache.enabled_sentences = orderEnabledSentences(event.enabled_sentences || cache.enabled_sentences || []);
+        cache.enabled_sentences = orderEnabledSentences(event.enabled_captions || event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";
         if ((event.added_lines || []).length > 0) {
           appendModelLog(`[${getFileLabel(event.path)}] Added free text: ${(event.added_lines || []).join(" | ")}`, "log-ok");
@@ -7387,12 +7406,9 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentMessage: "Completed",
           currentStepIndex: state.aiProgress.currentStepTotal || 1,
         });
-        state.captionCache[event.path] = {
-          enabled_sentences: event.enabled_sentences || [],
-          free_text: event.free_text || "",
-        };
+        state.captionCache[event.path] = normalizeCaptionCacheEntry(event);
         refreshGridForActiveFilters();
-        const hasContent = hasEffectiveCaptionContent(event);
+        const hasContent = hasEffectiveCaptionContent(state.captionCache[event.path]);
         markCaptionIndicator(event.path, !!hasContent);
         appendModelLog(getAutoCaptionCompleteLog(scope, event), "log-ok");
         if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
@@ -7507,7 +7523,7 @@ async function toggleSentence(sentence, wasChecked, wasPartial) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         image_paths: selectedPaths,
-        sentence: sentence,
+        caption: sentence,
         enabled: shouldEnable,
       }),
     });
@@ -7564,7 +7580,7 @@ async function saveFreeText(path) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         image_path: path,
-        enabled_sentences: cap.enabled_sentences || [],
+        enabled_captions: cap.enabled_sentences || [],
         free_text: cap.free_text || "",
       }),
     });

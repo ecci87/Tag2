@@ -11,8 +11,8 @@ from urllib.parse import urlparse
 from tag2_images import _is_video_path
 
 from tag2_sections import (
-    _apply_sentence_selection,
-    _is_hidden_group_sentence,
+    _apply_caption_selection,
+    _is_hidden_group_caption,
     _iter_caption_targets,
 )
 
@@ -107,14 +107,14 @@ def _get_ollama_free_text_prompt_template(cfg: dict, default_template: str) -> s
     return str(cfg.get("ollama_free_text_prompt_template") or default_template)
 
 
-def _ollama_prompt_for_sentence(sentence: str, template: str) -> str:
+def _ollama_prompt_for_caption(caption: str, template: str) -> str:
     """Build a strict yes/no prompt for one candidate caption."""
-    return template.replace("{caption}", sentence).replace("{sentence}", sentence)
+    return template.replace("{caption}", caption).replace("{sentence}", caption)
 
 
-def _ollama_prompt_for_group(group_name: str, sentences: list[str], template: str) -> str:
+def _ollama_prompt_for_group(group_name: str, captions: list[str], template: str) -> str:
     """Build a numbered-choice prompt for a mutually-exclusive caption group."""
-    options = "\n".join(f"{index}. {sentence}" for index, sentence in enumerate(sentences, start=1))
+    options = "\n".join(f"{index}. {caption}" for index, caption in enumerate(captions, start=1))
     resolved_group_name = (group_name or "Caption group").strip() or "Caption group"
     return (
         template
@@ -123,7 +123,7 @@ def _ollama_prompt_for_group(group_name: str, sentences: list[str], template: st
         .replace("{options}", options)
         .replace("{captions}", options)
         .replace("{choices}", options)
-        .replace("{count}", str(len(sentences)))
+        .replace("{count}", str(len(captions)))
     )
 
 
@@ -199,7 +199,7 @@ def _normalize_caption_line(text: str) -> str:
     return stripped.casefold()
 
 
-def _parse_ollama_selection(response_text: str, sentences: list[str]) -> int | None:
+def _parse_ollama_selection(response_text: str, captions: list[str]) -> int | None:
     """Parse a 1-based choice from an Ollama response."""
     text = (response_text or "").strip()
     if not text:
@@ -207,17 +207,17 @@ def _parse_ollama_selection(response_text: str, sentences: list[str]) -> int | N
 
     for match in re.findall(r"\d+", text):
         value = int(match)
-        if 1 <= value <= len(sentences):
+        if 1 <= value <= len(captions):
             return value
 
     normalized = _normalize_caption_line(text)
-    for index, sentence in enumerate(sentences, start=1):
-        sentence_normalized = _normalize_caption_line(sentence)
-        if normalized == sentence_normalized:
+    for index, caption in enumerate(captions, start=1):
+        caption_normalized = _normalize_caption_line(caption)
+        if normalized == caption_normalized:
             return index
-    for index, sentence in enumerate(sentences, start=1):
-        sentence_normalized = _normalize_caption_line(sentence)
-        if sentence_normalized and sentence_normalized in normalized:
+    for index, caption in enumerate(captions, start=1):
+        caption_normalized = _normalize_caption_line(caption)
+        if caption_normalized and caption_normalized in normalized:
             return index
     return None
 
@@ -242,13 +242,13 @@ def _extract_free_text_lines(response_text: str) -> list[str]:
 def _merge_free_text(
     existing_free_text: str,
     suggested_text: str,
-    enabled_sentences: list[str],
+    enabled_captions: list[str],
 ) -> tuple[str, list[str]]:
     """Merge new free-text suggestions while avoiding duplicates."""
     existing_text = existing_free_text or ""
     existing_lines = [line.rstrip() for line in existing_text.splitlines() if line.strip()]
     known = {_normalize_caption_line(line) for line in existing_lines}
-    known.update(_normalize_caption_line(sentence) for sentence in enabled_sentences)
+    known.update(_normalize_caption_line(caption) for caption in enabled_captions)
 
     added_lines: list[str] = []
     for line in _extract_free_text_lines(suggested_text):
@@ -263,26 +263,26 @@ def _merge_free_text(
     return "\n".join(merged_lines), added_lines
 
 
-def _auto_caption_sentences(
+def _auto_caption_captions(
     host: str,
     model: str,
     image_path: str,
-    sentences: list[str],
+    captions: list[str],
     *,
     encode_image_func,
     generate_func,
     prompt_template: str,
     timeout: int,
 ) -> tuple[list[str], list[dict]]:
-    """Ask Ollama about each caption candidate and return enabled sentences."""
+    """Ask Ollama about each caption candidate and return enabled captions."""
     image_payload = _normalize_ollama_images(encode_image_func(image_path))
     enabled: list[str] = []
     results: list[dict] = []
 
-    for sentence in sentences:
+    for caption in captions:
         payload = {
             "model": model,
-            "prompt": _apply_media_prompt_context(_ollama_prompt_for_sentence(sentence, prompt_template), image_path),
+            "prompt": _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), image_path),
             "images": image_payload,
             "stream": False,
             "options": {"temperature": 0},
@@ -291,12 +291,13 @@ def _auto_caption_sentences(
         raw_answer = str(response.get("response") or "").strip()
         is_match = _parse_ollama_yes_no(raw_answer)
         results.append({
-            "sentence": sentence,
+            "caption": caption,
+            "sentence": caption,
             "enabled": is_match,
             "answer": raw_answer,
         })
         if is_match:
-            enabled.append(sentence)
+            enabled.append(caption)
 
     return enabled, results
 
@@ -319,11 +320,11 @@ def _auto_caption_sections(
     results: list[dict] = []
 
     for target in _iter_caption_targets(sections):
-        if target["type"] == "sentence":
-            sentence = target["sentence"]
+        if target["type"] == "caption":
+            caption = target["caption"]
             payload = {
                 "model": model,
-                "prompt": _apply_media_prompt_context(_ollama_prompt_for_sentence(sentence, prompt_template), image_path),
+                "prompt": _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), image_path),
                 "images": image_payload,
                 "stream": False,
                 "options": {"temperature": 0},
@@ -331,22 +332,23 @@ def _auto_caption_sections(
             response = generate_func(host, payload, timeout=timeout)
             raw_answer = str(response.get("response") or "").strip()
             is_match = _parse_ollama_yes_no(raw_answer)
-            enabled = _apply_sentence_selection(enabled, sentence, sections, is_match)
+            enabled = _apply_caption_selection(enabled, caption, sections, is_match)
             results.append({
                 "type": "sentence",
-                "sentence": sentence,
+                "caption": caption,
+                "sentence": caption,
                 "enabled": is_match,
                 "answer": raw_answer,
             })
             continue
 
-        group_sentences = target["sentences"]
+        group_captions = target["captions"]
         payload = {
             "model": model,
             "prompt": _apply_media_prompt_context(
                 _ollama_prompt_for_group(
                     target.get("group_name", ""),
-                    group_sentences,
+                    group_captions,
                     group_prompt_template,
                 ),
                 image_path,
@@ -357,17 +359,19 @@ def _auto_caption_sections(
         }
         response = generate_func(host, payload, timeout=timeout)
         raw_answer = str(response.get("response") or "").strip()
-        selection_index = _parse_ollama_selection(raw_answer, group_sentences)
-        selected_sentence = group_sentences[selection_index - 1] if selection_index else None
-        selected_hidden = bool(selected_sentence and _is_hidden_group_sentence(sections, selected_sentence))
-        enabled = [sentence for sentence in enabled if sentence not in group_sentences]
-        if selected_sentence:
-            enabled = _apply_sentence_selection(enabled, selected_sentence, sections, True)
+        selection_index = _parse_ollama_selection(raw_answer, group_captions)
+        selected_caption = group_captions[selection_index - 1] if selection_index else None
+        selected_hidden = bool(selected_caption and _is_hidden_group_caption(sections, selected_caption))
+        enabled = [caption for caption in enabled if caption not in group_captions]
+        if selected_caption:
+            enabled = _apply_caption_selection(enabled, selected_caption, sections, True)
         results.append({
             "type": "group",
             "group_name": target.get("group_name", ""),
-            "sentences": group_sentences,
-            "selected_sentence": selected_sentence,
+            "captions": group_captions,
+            "sentences": list(group_captions),
+            "selected_caption": selected_caption,
+            "selected_sentence": selected_caption,
             "selected_hidden": selected_hidden,
             "selection_index": selection_index,
             "answer": raw_answer,

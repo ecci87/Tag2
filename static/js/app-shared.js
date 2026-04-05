@@ -8,8 +8,8 @@ const state = {
   selectedPaths: new Set(),
   lastClickedIndex: -1,
   lastClickedPath: null,
-  sections: [],          // [{name: "", sentences: [...], groups: [{name: "Car", sentences: [...]}]}, ...]
-  // Per-image caption cache: path -> {enabled_sentences: [...], free_text: ""}
+  sections: [],          // [{name: "", captions: [...], groups: [{name: "Car", captions: [...]}]}, ...]
+  // Per-image caption cache: path -> {enabled_captions: [...], free_text: ""}
   captionCache: {},
   activeSentenceFilters: new Map(),
   activeMetaFilters: {
@@ -273,7 +273,7 @@ const previewCaptionOverlay = $("#preview-caption-overlay");
 const previewCaptionToggle = $("#preview-caption-toggle");
 const previewCaptionList = $("#preview-caption-list");
 const sectionContainer = $("#section-container");
-const sentencesSection = $("#sentences-section");
+const captionsSection = $("#captions-section");
 const rightHorizontalResize = $("#right-horizontal-resize");
 const autoCaptionBtn = $("#auto-caption-btn");
 const modelLogOpenBtn = $("#model-log-open-btn");
