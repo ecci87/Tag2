@@ -1135,7 +1135,46 @@ async function captureCurrentPreviewVideoFrameSnapshot(path = state.previewPath)
 }
 
 function clearMaskCursor() {
+  state.maskEditor.cursorClientX = null;
+  state.maskEditor.cursorClientY = null;
+  if (maskCursorValue) {
+    maskCursorValue.textContent = "";
+    maskCursorValue.style.fontSize = "";
+  }
   maskCursor.classList.remove("visible");
+}
+
+function getMaskValuePercentAtMaskPoint(maskX, maskY) {
+  if (!isMaskEditorMaskMode() || !previewMaskCanvas.width || !previewMaskCanvas.height) {
+    return null;
+  }
+  const ctx = previewMaskCanvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) {
+    return null;
+  }
+  const sampleX = clamp(Math.floor(maskX), 0, Math.max(0, previewMaskCanvas.width - 1));
+  const sampleY = clamp(Math.floor(maskY), 0, Math.max(0, previewMaskCanvas.height - 1));
+  const pixel = ctx.getImageData(sampleX, sampleY, 1, 1).data;
+  if (!pixel || !pixel.length) {
+    return null;
+  }
+  return clamp((pixel[0] / 255) * 100, 0, 100);
+}
+
+function refreshMaskCursorValue() {
+  if (!maskCursorValue || !maskCursor.classList.contains("visible") || !isMaskEditorMaskMode()) {
+    return;
+  }
+  const clientX = Number(state.maskEditor.cursorClientX);
+  const clientY = Number(state.maskEditor.cursorClientY);
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+    maskCursorValue.textContent = "";
+    return;
+  }
+  const imagePoint = screenToImage(clientX, clientY);
+  const maskPoint = previewPointToMaskPoint(imagePoint);
+  const valuePercent = getMaskValuePercentAtMaskPoint(maskPoint.x, maskPoint.y);
+  maskCursorValue.textContent = Number.isFinite(valuePercent) ? `${Math.round(valuePercent)}%` : "";
 }
 
 function isMaskSignalProbeMode() {
@@ -1341,7 +1380,7 @@ function renderMaskSignalProbeUi() {
       ? "Right-drag an area to measure signal"
       : "No probe area";
   } else {
-    maskSignalProbeLabel.textContent = `Signal ${signalPercent.toFixed(1)}% of total · Area ${areaPercent.toFixed(1)}%`;
+    maskSignalProbeLabel.textContent = `Signal ${signalPercent.toFixed(1)}% Area ${areaPercent.toFixed(1)}%`;
   }
   maskSignalProbeLabel.title = hasRect
     ? "Signal inside the selected rectangle against the current total latent signal. Aim for roughly 30% or more."
@@ -1468,6 +1507,64 @@ function getMaskBrushInfluence(distanceFraction) {
   return clamp((raw - end) / Math.max(0.0001, start - end), 0, 1);
 }
 
+function normalizeMaskLatentBaseWidthPresets(rawPresets) {
+  const normalized = [...new Set((Array.isArray(rawPresets) ? rawPresets : [])
+    .map((value) => Math.round(Number(value || 0)))
+    .filter((value) => Number.isFinite(value) && value >= 64 && value <= 2048))]
+    .sort((left, right) => left - right);
+  return normalized.length ? normalized : [512, 768, 1024, 1280];
+}
+
+function getMaskLatentBaseWidthPresets() {
+  state.maskLatentBaseWidthPresets = normalizeMaskLatentBaseWidthPresets(state.maskLatentBaseWidthPresets);
+  return state.maskLatentBaseWidthPresets;
+}
+
+function getNearestMaskLatentBaseWidthPreset(value, presets = getMaskLatentBaseWidthPresets()) {
+  const fallback = presets[0] || 512;
+  const numericValue = Math.round(Number(value || 0)) || fallback;
+  return presets.reduce((best, preset) => {
+    const bestDistance = Math.abs(best - numericValue);
+    const presetDistance = Math.abs(preset - numericValue);
+    return presetDistance < bestDistance ? preset : best;
+  }, fallback);
+}
+
+function getMaskLatentBaseWidthPresetIndex(value, presets = getMaskLatentBaseWidthPresets()) {
+  const resolvedValue = getNearestMaskLatentBaseWidthPreset(value, presets);
+  const index = presets.indexOf(resolvedValue);
+  return index >= 0 ? index : 0;
+}
+
+function parseMaskLatentBaseWidthPresetsInput(rawValue) {
+  const rawEntries = String(rawValue || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!rawEntries.length) {
+    throw new Error("Mask latent base width presets must contain at least one number.");
+  }
+  const numericValues = rawEntries
+    .map((value) => Math.round(Number(value)))
+    .filter((value) => Number.isFinite(value));
+  if (!numericValues.length) {
+    throw new Error("Mask latent base width presets must contain valid numbers.");
+  }
+  return normalizeMaskLatentBaseWidthPresets(numericValues);
+}
+
+function syncMaskLatentBaseWidthFromPresets() {
+  const nextValue = getNearestMaskLatentBaseWidthPreset(state.maskEditor.latentBaseWidth || 512);
+  const previousValue = Number(state.maskEditor.latentBaseWidth || 0);
+  state.maskEditor.latentBaseWidth = nextValue;
+  if (state.maskEditor.active && isMaskEditorMaskMode()) {
+    updateMaskControlLabels();
+    if (previousValue !== nextValue) {
+      scheduleMaskLatentPreviewRender({ imageDirty: true });
+    }
+  }
+}
+
 function updateMaskControlLabels() {
   const imageMode = isMaskEditorImageMode();
   const brushSizePercent = clamp(Number(state.maskEditor.brushSizePercent || 6), 0.2, 100);
@@ -1476,6 +1573,7 @@ function updateMaskControlLabels() {
   const brushSteepness = clamp(Number(state.maskEditor.brushSteepness || 8), 1, 32);
   const brushDiameterMaskPx = getMaskBrushDiameterMaskPx();
   const latentMetrics = getMaskLatentPreviewMetrics();
+  const latentBaseWidthPresets = getMaskLatentBaseWidthPresets();
   const brushColor = String(state.maskEditor.brushColor || "#ff5a5a").toLowerCase();
   maskEditorTitle.textContent = imageMode ? "Image" : "Mask";
   maskBrushSizeInput.value = String(brushSizePercent);
@@ -1483,7 +1581,10 @@ function updateMaskControlLabels() {
   maskBrushColorInput.value = brushColor;
   maskBrushCoreInput.value = String(Math.round(brushCore));
   maskBrushSteepnessInput.value = String(brushSteepness);
-  maskLatentBaseWidthInput.value = String(latentMetrics.baseWidth);
+  maskLatentBaseWidthInput.min = "0";
+  maskLatentBaseWidthInput.max = String(Math.max(0, latentBaseWidthPresets.length - 1));
+  maskLatentBaseWidthInput.step = "1";
+  maskLatentBaseWidthInput.value = String(getMaskLatentBaseWidthPresetIndex(latentMetrics.baseWidth, latentBaseWidthPresets));
   maskLatentDividerInput.value = String(latentMetrics.divider);
   maskBrushValueTitle.textContent = imageMode ? "Strength" : "Value";
   maskBrushSizeLabel.textContent = `${brushSizePercent.toFixed(1)}% · ${Math.round(brushDiameterMaskPx)} px`;
@@ -1516,7 +1617,7 @@ function updateMaskControlLabels() {
 function getMaskLatentPreviewMetrics() {
   const sourceWidth = Math.max(1, Number(state.maskEditor.imageWidth || imgNatW || 1));
   const sourceHeight = Math.max(1, Number(state.maskEditor.imageHeight || imgNatH || 1));
-  const baseWidth = Math.round(clamp(Number(state.maskEditor.latentBaseWidth || 512), 64, 2048));
+  const baseWidth = getNearestMaskLatentBaseWidthPreset(state.maskEditor.latentBaseWidth || 512);
   const baseHeight = Math.max(1, Math.round(baseWidth * (sourceHeight / Math.max(1, sourceWidth))));
   const divider = Math.round(clamp(Number(state.maskEditor.latentDivider || 16), 1, 64));
   const latentWidth = Math.max(1, Math.round(baseWidth / divider));
@@ -1763,6 +1864,7 @@ function finalizeHistoryPlayback() {
     scheduleMaskLatentPreviewRender();
   }
   renderMaskEditorUi();
+  refreshMaskCursorValue();
 }
 
 function undoMaskEdit() {
@@ -2002,11 +2104,17 @@ function updateMaskCursor(clientX, clientY) {
   }
   const panelRect = previewStage.getBoundingClientRect();
   const diameter = Math.max(4, getMaskBrushDiameterPreviewPx() * zoomLevel);
+  state.maskEditor.cursorClientX = clientX;
+  state.maskEditor.cursorClientY = clientY;
   maskCursor.style.width = `${diameter}px`;
   maskCursor.style.height = `${diameter}px`;
   maskCursor.style.left = `${clientX - panelRect.left}px`;
   maskCursor.style.top = `${clientY - panelRect.top}px`;
+  if (maskCursorValue) {
+    maskCursorValue.style.fontSize = `${clamp(diameter * 0.22, 9, 14)}px`;
+  }
   maskCursor.classList.add("visible");
+  refreshMaskCursorValue();
 }
 
 function getMaskBrushRadius() {
@@ -2109,6 +2217,7 @@ function renderMaskStrokePreview() {
   if (isMaskEditorMaskMode()) {
     scheduleMaskLatentPreviewRender();
   }
+  refreshMaskCursorValue();
 }
 
 function scheduleMaskStrokePreviewRender() {
@@ -4095,6 +4204,8 @@ function applySettings(settings) {
   thumbSlider.value = String(state.thumbSize);
   document.documentElement.style.setProperty("--thumb-size", state.thumbSize + "px");
   setCropAspectRatios(settings.crop_aspect_ratios || state.cropAspectRatioLabels);
+  state.maskLatentBaseWidthPresets = normalizeMaskLatentBaseWidthPresets(settings.mask_latent_base_width_presets || state.maskLatentBaseWidthPresets);
+  syncMaskLatentBaseWidthFromPresets();
   state.httpsCertFile = String(settings.https_certfile || "").trim();
   state.httpsKeyFile = String(settings.https_keyfile || "").trim();
   state.httpsPort = Number(settings.https_port || 8900) || 8900;
@@ -4187,6 +4298,7 @@ function fillSettingsForm() {
   settingsTimeoutInput.value = String(state.ollamaTimeoutSeconds);
   populateOllamaModelSelect(state.ollamaAvailableModels || [], state.ollamaModel);
   settingsCropAspectRatiosInput.value = state.cropAspectRatioLabels.join(", ");
+  settingsMaskLatentBaseWidthPresetsInput.value = getMaskLatentBaseWidthPresets().join(", ");
   settingsHttpsCertInput.value = state.httpsCertFile;
   settingsHttpsKeyInput.value = state.httpsKeyFile;
   settingsHttpsPortInput.value = String(state.httpsPort);
@@ -5344,6 +5456,7 @@ async function saveOllamaSettingsFromForm() {
   const timeoutSeconds = Number(settingsTimeoutInput.value || "20") || 20;
   const model = String(settingsModelInput.value || "").trim() || "llava";
   const cropAspectRatios = settingsCropAspectRatiosInput.value.split(",").map(s => s.trim()).filter(Boolean);
+  let maskLatentBaseWidthPresets;
   const httpsCertFile = settingsHttpsCertInput.value.trim();
   const httpsKeyFile = settingsHttpsKeyInput.value.trim();
   const httpsPort = Number(settingsHttpsPortInput.value || "8900") || 8900;
@@ -5356,6 +5469,13 @@ async function saveOllamaSettingsFromForm() {
   const groupPromptTemplate = settingsGroupPromptInput.value || state.ollamaGroupPromptTemplate;
   const enableFreeText = settingsAutoFreeTextEnabled.checked;
   const freeTextPromptTemplate = settingsFreeTextPromptInput.value || state.ollamaFreeTextPromptTemplate;
+  try {
+    maskLatentBaseWidthPresets = parseMaskLatentBaseWidthPresetsInput(settingsMaskLatentBaseWidthPresetsInput.value);
+  } catch (err) {
+    setActiveSettingsTab("editing");
+    statusBar.textContent = `Settings error: ${err.message}`;
+    return;
+  }
   let videoTrainingPresets;
   try {
     videoTrainingPresets = parseVideoTrainingPresetsText(settingsVideoPresetsInput.value);
@@ -5384,6 +5504,7 @@ async function saveOllamaSettingsFromForm() {
     ollama_timeout_seconds: timeoutSeconds,
     ollama_model: model,
     crop_aspect_ratios: cropAspectRatios,
+    mask_latent_base_width_presets: maskLatentBaseWidthPresets,
     video_training_presets: videoTrainingPresets,
     ollama_prompt_template: promptTemplate,
     ollama_group_prompt_template: groupPromptTemplate,
@@ -6767,7 +6888,9 @@ maskBrushSteepnessInput.addEventListener("input", (e) => {
   updateMaskControlLabels();
 });
 maskLatentBaseWidthInput.addEventListener("input", (e) => {
-  state.maskEditor.latentBaseWidth = Math.round(clamp(Number(e.target.value || 512), 64, 2048));
+  const presets = getMaskLatentBaseWidthPresets();
+  const index = clamp(Math.round(Number(e.target.value || 0)), 0, Math.max(0, presets.length - 1));
+  state.maskEditor.latentBaseWidth = presets[index] || presets[0] || 512;
   updateMaskControlLabels();
   scheduleMaskLatentPreviewRender({ imageDirty: true });
 });

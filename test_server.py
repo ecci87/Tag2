@@ -1335,6 +1335,7 @@ class TestSettingsAPI:
         assert "last_folder" in data
         assert data["thumb_size"] == 160
         assert data["crop_aspect_ratios"] == ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"]
+        assert data["mask_latent_base_width_presets"] == [512, 768, 1024, 1280]
         assert isinstance(data["video_training_presets"], list)
         assert len(data["video_training_presets"]) >= 1
         assert data["https_certfile"] == ""
@@ -1364,6 +1365,12 @@ class TestSettingsAPI:
         client.post("/api/settings", json={"thumb_size": 224})
         resp = client.get("/api/settings")
         assert resp.json()["thumb_size"] == 224
+
+    def test_save_and_load_mask_latent_base_width_presets(self, client):
+        client.post("/api/settings", json={"mask_latent_base_width_presets": [1024, 512, 1024, 1536]})
+        resp = client.get("/api/settings")
+        assert resp.status_code == 200
+        assert resp.json()["mask_latent_base_width_presets"] == [512, 1024, 1536]
 
     def test_save_and_load_https_settings(self, client):
         client.post("/api/settings", json={
@@ -1726,6 +1733,32 @@ class TestCropAPI:
         with Image.open(single_image) as img:
             assert img.size == (100, 100)
         assert not os.path.exists(server._get_crop_backup_path(single_image))
+
+    def test_crop_existing_mask_crops_mask_and_clear_restores_it(self, client, single_image):
+        mask_path = server._get_image_mask_path(single_image)
+        mask_image = Image.new("L", (100, 100))
+        for x in range(100):
+            for y in range(100):
+                mask_image.putpixel((x, y), x)
+        mask_image.save(mask_path, format="PNG")
+
+        crop = {"x": 10, "y": 5, "w": 40, "h": 30}
+        resp = client.post("/api/crop", json={"image_path": single_image, "crop": crop})
+        assert resp.status_code == 200
+
+        with Image.open(mask_path) as cropped_mask:
+            assert cropped_mask.size == (40, 30)
+            assert cropped_mask.getpixel((0, 0)) == 10
+            assert cropped_mask.getpixel((39, 29)) == 49
+
+        clear_resp = client.post("/api/crop", json={"image_path": single_image, "crop": None})
+        assert clear_resp.status_code == 200
+
+        with Image.open(mask_path) as restored_mask:
+            assert restored_mask.size == (100, 100)
+            assert restored_mask.getpixel((10, 5)) == 10
+            assert restored_mask.getpixel((49, 34)) == 49
+            assert restored_mask.getpixel((75, 50)) == 75
 
     def test_thumbnail_respects_crop(self, client, single_image):
         with Image.open(single_image) as img:

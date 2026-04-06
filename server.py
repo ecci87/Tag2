@@ -184,6 +184,7 @@ DEFAULT_OLLAMA_PORT = 11434
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 20
 DEFAULT_OLLAMA_MODEL = "llava"
 DEFAULT_CROP_ASPECT_RATIOS = ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"]
+DEFAULT_MASK_LATENT_BASE_WIDTH_PRESETS = [512, 768, 1024, 1280]
 DEFAULT_HTTPS_CERTFILE = ""
 DEFAULT_HTTPS_KEYFILE = ""
 DEFAULT_HTTPS_PORT = 8900
@@ -291,6 +292,7 @@ def _load_config() -> dict:
         "default_captions": [],
         "thumb_size": 160,
         "crop_aspect_ratios": list(DEFAULT_CROP_ASPECT_RATIOS),
+        "mask_latent_base_width_presets": list(DEFAULT_MASK_LATENT_BASE_WIDTH_PRESETS),
         "image_crops": {},
         "https_certfile": DEFAULT_HTTPS_CERTFILE,
         "https_keyfile": DEFAULT_HTTPS_KEYFILE,
@@ -339,10 +341,31 @@ def _load_config() -> dict:
             # Merge with defaults so new keys are always present
             for k, v in default.items():
                 data.setdefault(k, v)
+            data["mask_latent_base_width_presets"] = _normalize_mask_latent_base_width_presets(
+                data.get("mask_latent_base_width_presets")
+            )
             return data
         except Exception:
             pass
     return default
+
+
+def _normalize_mask_latent_base_width_presets(raw_presets) -> list[int]:
+    """Normalize mask latent base-width presets into a sorted unique list."""
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for raw_value in raw_presets if isinstance(raw_presets, list) else []:
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        value = max(64, min(2048, value))
+        if value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    normalized.sort()
+    return normalized or list(DEFAULT_MASK_LATENT_BASE_WIDTH_PRESETS)
 
 
 def _save_config(cfg: dict):
@@ -2908,6 +2931,7 @@ class SettingsUpdate(BaseModel):
     video_training_profile_key: Optional[str] = None
     thumb_size: Optional[int] = None
     crop_aspect_ratios: Optional[list[str]] = None
+    mask_latent_base_width_presets: Optional[list[int]] = None
     https_certfile: Optional[str] = None
     https_keyfile: Optional[str] = None
     https_port: Optional[int] = None
@@ -2936,6 +2960,7 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
         "last_folder": cfg.get("last_folder", ""),
         "thumb_size": int(cfg.get("thumb_size", 160) or 160),
         "crop_aspect_ratios": _get_crop_aspect_ratios(cfg, DEFAULT_CROP_ASPECT_RATIOS),
+        "mask_latent_base_width_presets": _normalize_mask_latent_base_width_presets(cfg.get("mask_latent_base_width_presets")),
         "video_training_presets": video_training_presets,
         "https_certfile": str(cfg.get("https_certfile") or ""),
         "https_keyfile": str(cfg.get("https_keyfile") or ""),
@@ -2997,6 +3022,8 @@ async def update_settings(data: SettingsUpdate):
         cfg["thumb_size"] = max(60, min(400, int(data.thumb_size)))
     if data.crop_aspect_ratios is not None:
         cfg["crop_aspect_ratios"] = [str(r).strip() for r in data.crop_aspect_ratios if str(r).strip()] or list(DEFAULT_CROP_ASPECT_RATIOS)
+    if data.mask_latent_base_width_presets is not None:
+        cfg["mask_latent_base_width_presets"] = _normalize_mask_latent_base_width_presets(data.mask_latent_base_width_presets)
     if data.https_certfile is not None:
         cfg["https_certfile"] = str(data.https_certfile or "").strip()
     if data.https_keyfile is not None:

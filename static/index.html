@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Image Captioning Tool</title>
 <link rel="stylesheet" href="/static/css/app-shell.css?v=20260404g">
-<link rel="stylesheet" href="/static/css/app-preview.css?v=20260405b">
+<link rel="stylesheet" href="/static/css/app-preview.css?v=20260405c">
 <link rel="stylesheet" href="/static/css/app-captions.css?v=20260315d">
 <link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260404b">
 </head>
@@ -133,7 +133,7 @@
           <div id="mask-latent-preview-controls">
             <label class="mask-editor-field" for="mask-latent-base-width">
               <span>Base</span>
-              <input id="mask-latent-base-width" type="range" min="64" max="2048" step="8" value="512">
+              <input id="mask-latent-base-width" type="range" min="0" max="3" step="1" value="0">
               <span id="mask-latent-base-width-label">512 px</span>
             </label>
             <label class="mask-editor-field" for="mask-latent-divider">
@@ -159,7 +159,9 @@
         <div id="mask-signal-probe-rect" aria-hidden="true">
           <div id="mask-signal-probe-rect-label"></div>
         </div>
-        <div id="mask-cursor" aria-hidden="true"></div>
+        <div id="mask-cursor" aria-hidden="true">
+          <span id="mask-cursor-value"></span>
+        </div>
         <div id="crop-overlay">
           <div id="crop-guide-v" class="crop-guide"></div>
           <div id="crop-guide-h" class="crop-guide"></div>
@@ -403,6 +405,11 @@
             <input type="text" class="compact-code" id="settings-crop-aspect-ratios" placeholder="4:3, 16:9, 3:4, 1:1, 9:16, 2:3, 3:2" spellcheck="false">
             <div class="settings-help">Comma-separated list. The crop rectangle snaps to the closest allowed ratio. Images not matching these ratios will be marked with "AR" in the preview.</div>
           </div>
+          <div class="settings-field">
+            <label for="settings-mask-latent-base-width-presets">Mask Latent Base Width Presets</label>
+            <input type="text" class="compact-code" id="settings-mask-latent-base-width-presets" placeholder="512, 768, 1024, 1280" spellcheck="false">
+            <div class="settings-help">Comma-separated preset widths in pixels. The latent preview base-width slider snaps to these values.</div>
+          </div>
         </section>
       </div>
     </form>
@@ -413,8 +420,8 @@
   </div>
 </div>
 
-<script defer src="/static/js/app-shared.js?v=20260405b"></script>
-<script defer src="/static/js/app-features.js?v=20260405c"></script>
+<script defer src="/static/js/app-shared.js?v=20260405d"></script>
+<script defer src="/static/js/app-features.js?v=20260405e"></script>
 <script defer src="/static/js/app-init.js?v=20260404d"></script>
 </body>
 </html>

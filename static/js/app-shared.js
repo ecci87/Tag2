@@ -37,6 +37,7 @@ const state = {
   autoCaptionAbortController: null,
   cropAspectRatioLabels: ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"],
   cropAspectRatios: [],
+  maskLatentBaseWidthPresets: [512, 768, 1024, 1280],
   cropDraft: null,
   cropGuide: null,
   cropDirty: false,
@@ -89,6 +90,8 @@ const state = {
     signalProbeRect: null,
     signalProbePercent: 0,
     signalProbeAreaPercent: 0,
+    cursorClientX: null,
+    cursorClientY: null,
     painting: false,
     lastPoint: null,
     imageBaseCanvas: null,
@@ -255,6 +258,7 @@ const maskMiniPreview = $("#mask-mini-preview");
 const maskSignalProbeRect = $("#mask-signal-probe-rect");
 const maskSignalProbeRectLabel = $("#mask-signal-probe-rect-label");
 const maskCursor = $("#mask-cursor");
+const maskCursorValue = $("#mask-cursor-value");
 const cropOverlay = $("#crop-overlay");
 const cropGuideV = $("#crop-guide-v");
 const cropGuideH = $("#crop-guide-h");
@@ -341,6 +345,7 @@ const settingsTimeoutInput = $("#settings-ollama-timeout");
 const settingsModelInput = $("#settings-ollama-model");
 const settingsRefreshModelsBtn = $("#settings-refresh-models-btn");
 const settingsCropAspectRatiosInput = $("#settings-crop-aspect-ratios");
+const settingsMaskLatentBaseWidthPresetsInput = $("#settings-mask-latent-base-width-presets");
 const settingsHttpsCertInput = $("#settings-https-certfile");
 const settingsHttpsKeyInput = $("#settings-https-keyfile");
 const settingsHttpsPortInput = $("#settings-https-port");

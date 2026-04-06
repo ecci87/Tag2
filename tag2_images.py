@@ -376,6 +376,7 @@ def _save_edited_image(image_path: str, image_bytes: bytes) -> dict:
     backup_path = _get_crop_backup_path(image_path)
     if os.path.isfile(backup_path):
         os.remove(backup_path)
+        _remove_crop_mask_backup(image_path)
         committed_crop = True
 
     _clear_thumbnail_cache_for_path(image_path)
@@ -394,14 +395,73 @@ def _get_crop_backup_dir() -> str:
     return RUNTIME_CROP_BACKUP_DIR
 
 
-def _get_crop_backup_path(image_path: str) -> str:
-    """Build a unique backup file path for a cropped image."""
+def _get_crop_backup_name_prefix(image_path: str) -> str:
+    """Build the common backup path prefix for an image and its crop-linked sidecars."""
     normalized = _normalize_image_key(image_path)
     digest = hashlib.sha256(normalized.encode("utf-8", errors="surrogatepass")).hexdigest()[:16]
     image = Path(image_path)
     stem = image.stem or "image"
-    suffix = image.suffix or ".img"
-    return os.path.join(_get_crop_backup_dir(), f"{stem}.{digest}{suffix}")
+    return os.path.join(_get_crop_backup_dir(), f"{stem}.{digest}")
+
+
+def _get_crop_backup_path(image_path: str) -> str:
+    """Build a unique backup file path for a cropped image."""
+    suffix = Path(image_path).suffix or ".img"
+    return f"{_get_crop_backup_name_prefix(image_path)}{suffix}"
+
+
+def _get_crop_mask_backup_path(image_path: str) -> str:
+    """Build a unique backup file path for an image mask sidecar during cropping."""
+    return f"{_get_crop_backup_name_prefix(image_path)}{IMAGE_MASK_SIDECAR_SUFFIX}"
+
+
+def _load_normalized_mask_copy(mask_path: Path, image_width: int, image_height: int) -> Image.Image:
+    """Load a detached grayscale mask image normalized to the target image size."""
+    with Image.open(mask_path) as source_mask:
+        normalized_mask = _normalize_mask_image_to_size(source_mask, image_width, image_height)
+        normalized_mask.load()
+    return normalized_mask
+
+
+def _apply_crop_to_image_mask(image_path: str, crop: dict, image_width: int, image_height: int) -> bool:
+    """Crop an image mask sidecar with the same rectangle as the source image."""
+    mask_path = _get_image_mask_path(image_path)
+    if not mask_path.is_file():
+        return False
+
+    mask_backup_path = Path(_get_crop_mask_backup_path(image_path))
+    normalized_mask = _load_normalized_mask_copy(mask_path, image_width, image_height)
+    try:
+        if not mask_backup_path.is_file():
+            normalized_mask.save(mask_backup_path, format="PNG")
+        cropped_mask = normalized_mask.crop((
+            crop["x"],
+            crop["y"],
+            crop["x"] + crop["w"],
+            crop["y"] + crop["h"],
+        ))
+        try:
+            cropped_mask.save(mask_path, format="PNG")
+        finally:
+            cropped_mask.close()
+    finally:
+        normalized_mask.close()
+    return True
+
+
+def _restore_image_mask_from_crop_backup(image_path: str) -> bool:
+    """Restore an image mask sidecar from its crop backup when available."""
+    mask_backup_path = Path(_get_crop_mask_backup_path(image_path))
+    if not mask_backup_path.is_file():
+        return False
+    shutil.copy2(mask_backup_path, _get_image_mask_path(image_path))
+    mask_backup_path.unlink(missing_ok=True)
+    return True
+
+
+def _remove_crop_mask_backup(image_path: str) -> None:
+    """Delete a stored crop backup for an image mask sidecar if it exists."""
+    Path(_get_crop_mask_backup_path(image_path)).unlink(missing_ok=True)
 
 
 def _clear_thumbnail_cache_for_path(image_path: str):
@@ -606,6 +666,7 @@ def _apply_real_crop(image_path: str, crop: dict) -> dict:
     image, original_format, exif_bytes, icc_profile = _load_oriented_image(image_path)
     try:
         normalized = _normalize_crop_rect(crop, image.size)
+        _apply_crop_to_image_mask(image_path, normalized, image.size[0], image.size[1])
         cropped = image.crop((
             normalized["x"],
             normalized["y"],
@@ -627,6 +688,7 @@ def _remove_real_crop(image_path: str) -> bool:
         return False
     shutil.copy2(backup_path, image_path)
     os.remove(backup_path)
+    _restore_image_mask_from_crop_backup(image_path)
     _clear_thumbnail_cache_for_path(image_path)
     return True
 
@@ -641,6 +703,21 @@ def _rotate_image_file(filepath: str, clockwise: bool):
         image.close()
 
 
+def _rotate_mask_file(filepath: str, clockwise: bool):
+    """Rotate a grayscale mask file by 90 degrees."""
+    with Image.open(filepath) as mask_image:
+        normalized_mask = ImageOps.exif_transpose(mask_image).convert("L")
+        normalized_mask.load()
+    try:
+        rotated_mask = normalized_mask.transpose(Image.Transpose.ROTATE_270 if clockwise else Image.Transpose.ROTATE_90)
+        try:
+            rotated_mask.save(filepath, format="PNG")
+        finally:
+            rotated_mask.close()
+    finally:
+        normalized_mask.close()
+
+
 def _rotate_image(image_path: str, direction: str) -> dict:
     """Rotate the actual image file and any active crop backup by 90 degrees."""
     normalized_direction = str(direction or "").strip().lower()
@@ -650,9 +727,17 @@ def _rotate_image(image_path: str, direction: str) -> dict:
     clockwise = normalized_direction == "right"
     _rotate_image_file(image_path, clockwise)
 
+    mask_path = _get_image_mask_path(image_path)
+    if mask_path.is_file():
+        _rotate_mask_file(str(mask_path), clockwise)
+
     backup_path = _get_crop_backup_path(image_path)
     if os.path.isfile(backup_path):
         _rotate_image_file(backup_path, clockwise)
+
+    mask_backup_path = _get_crop_mask_backup_path(image_path)
+    if os.path.isfile(mask_backup_path):
+        _rotate_mask_file(mask_backup_path, clockwise)
 
     _clear_thumbnail_cache_for_path(image_path)
     return _get_image_crop(image_path)
