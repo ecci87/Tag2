@@ -40,6 +40,12 @@ from tag2_captions import (
     _read_caption_file,
     _write_caption_file,
 )
+from tag2_metadata import (
+    _apply_metadata_changes,
+    _get_metadata_path,
+    _read_metadata_file,
+    _write_metadata_file,
+)
 from tag2_images import (
     IMAGE_EXTENSIONS,
     MASK_SIDECAR_SUFFIX,
@@ -632,6 +638,23 @@ def _build_media_entry(entry: Path) -> dict:
         "mask_count": mask_count,
         "media_type": media_type,
     }
+
+
+def _dump_model(model: BaseModel, **kwargs):
+    """Compatibility wrapper for Pydantic v1/v2 model serialization."""
+    if hasattr(model, "model_dump"):
+        return model.model_dump(**kwargs)
+    return model.dict(**kwargs)
+
+
+def _normalize_existing_media_path(path: str) -> str:
+    """Normalize and validate a media file path from API input."""
+    normalized_path = os.path.abspath(os.path.normpath(str(path or "").strip()))
+    if not os.path.isfile(normalized_path):
+        raise HTTPException(status_code=404, detail="Media not found")
+    if Path(normalized_path).suffix.lower() not in MEDIA_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported media file")
+    return normalized_path
 
 
 def _serialize_video_job(job: dict) -> dict:
@@ -1349,6 +1372,27 @@ class BatchFreeTextUpdate(BaseModel):
     free_text: str
 
 
+class MediaMetadataFields(BaseModel):
+    seed: int | None = None
+    min_t: int | None = None
+    max_t: int | None = None
+    sampling_frequency: float | None = None
+
+
+class SaveMediaMetadataRequest(BaseModel):
+    path: str
+    metadata: MediaMetadataFields = Field(default_factory=MediaMetadataFields)
+
+
+class ApplyMediaMetadataRequest(BaseModel):
+    paths: list[str]
+    changes: MediaMetadataFields = Field(default_factory=MediaMetadataFields)
+
+
+class BulkMediaMetadataRequest(BaseModel):
+    paths: list[str]
+
+
 class RenameCaptionPresetUpdate(BaseModel):
     folder: str
     old_caption: str | None = None
@@ -1584,6 +1628,9 @@ def _prepare_clone_plan(source_folder: str, requested_name: str, image_paths: li
             caption_path = _get_caption_path(str(image_path))
             if caption_path.exists():
                 copy_items.append((caption_path, target_path / caption_path.name))
+            metadata_path = _get_metadata_path(str(image_path))
+            if metadata_path.exists():
+                copy_items.append((metadata_path, target_path / metadata_path.name))
             if _is_image_path(str(image_path)):
                 mask_path = _get_image_mask_path(str(image_path))
                 if mask_path.exists():
@@ -1919,6 +1966,7 @@ async def delete_images(data: BatchDeleteImagesRequest):
             continue
 
         caption_path = _get_caption_path(normalized_path)
+        metadata_path = _get_metadata_path(normalized_path)
         mask_path = _get_image_mask_path(normalized_path) if _is_image_path(normalized_path) else None
         video_mask_paths = _list_video_mask_paths(normalized_path) if _is_video_path(normalized_path) else []
         backup_path = _get_crop_backup_path(normalized_path) if _is_image_path(normalized_path) else ""
@@ -1927,6 +1975,8 @@ async def delete_images(data: BatchDeleteImagesRequest):
             path_obj.unlink()
             if caption_path.exists():
                 caption_path.unlink()
+            if metadata_path.exists():
+                metadata_path.unlink()
             if mask_path and mask_path.exists():
                 mask_path.unlink()
             for video_mask_path in video_mask_paths:
@@ -1970,6 +2020,8 @@ async def duplicate_image(data: DuplicateImageRequest):
 
     caption_source = _get_caption_path(str(source_path))
     caption_target = target_path.with_suffix(".txt")
+    metadata_source = _get_metadata_path(str(source_path))
+    metadata_target = _get_metadata_path(str(target_path))
     mask_source = _get_image_mask_path(str(source_path))
     mask_target = _get_image_mask_path(str(target_path))
 
@@ -1977,11 +2029,14 @@ async def duplicate_image(data: DuplicateImageRequest):
         shutil.copy2(source_path, target_path)
         if caption_source.exists():
             shutil.copy2(caption_source, caption_target)
+        if metadata_source.exists():
+            shutil.copy2(metadata_source, metadata_target)
         if mask_source.exists():
             shutil.copy2(mask_source, mask_target)
     except Exception as exc:
         target_path.unlink(missing_ok=True)
         caption_target.unlink(missing_ok=True)
+        metadata_target.unlink(missing_ok=True)
         mask_target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Could not duplicate image: {exc}") from exc
 
@@ -2076,6 +2131,76 @@ async def get_caption(
 
     data = _read_caption_file(path, predefined, headers)
     return {"enabled_captions": _read_enabled_captions(data), **data}
+
+
+@app.get("/api/media/meta")
+async def get_media_metadata(path: str = Query(...)):
+    """Read metadata for a supported media file."""
+    normalized_path = _normalize_existing_media_path(path)
+    return _read_metadata_file(normalized_path)
+
+
+@app.post("/api/media/meta/bulk")
+async def post_media_metadata_bulk(payload: BulkMediaMetadataRequest):
+    """Read metadata for multiple supported media files."""
+    results = {}
+    for raw_path in payload.paths or []:
+        normalized_path = os.path.abspath(os.path.normpath(str(raw_path or "").strip()))
+        if os.path.isfile(normalized_path) and Path(normalized_path).suffix.lower() in MEDIA_EXTENSIONS:
+            results[normalized_path] = _read_metadata_file(normalized_path)
+        else:
+            results[normalized_path] = {}
+    return results
+
+
+@app.post("/api/media/meta/save")
+async def save_media_metadata(payload: SaveMediaMetadataRequest):
+    """Replace metadata for one media file."""
+    normalized_path = _normalize_existing_media_path(payload.path)
+    try:
+        saved = _write_metadata_file(normalized_path, _dump_model(payload.metadata, exclude_none=False))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "metadata": saved}
+
+
+@app.post("/api/media/meta/apply")
+async def apply_media_metadata(payload: ApplyMediaMetadataRequest):
+    """Apply sparse metadata changes to multiple media files."""
+    if not payload.paths:
+        raise HTTPException(status_code=400, detail="No media paths provided")
+
+    raw_changes = _dump_model(payload.changes, exclude_unset=True)
+    if not raw_changes:
+        raise HTTPException(status_code=400, detail="No metadata changes provided")
+
+    try:
+        _apply_metadata_changes({}, raw_changes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    results = []
+    errors = 0
+    for raw_path in payload.paths:
+        normalized_path = os.path.abspath(os.path.normpath(str(raw_path or "").strip()))
+        if not os.path.isfile(normalized_path):
+            errors += 1
+            results.append({"path": normalized_path, "error": "Media not found"})
+            continue
+        if Path(normalized_path).suffix.lower() not in MEDIA_EXTENSIONS:
+            errors += 1
+            results.append({"path": normalized_path, "error": "Unsupported media file"})
+            continue
+
+        try:
+            merged_metadata = _apply_metadata_changes(_read_metadata_file(normalized_path), raw_changes)
+            saved_metadata = _write_metadata_file(normalized_path, merged_metadata)
+            results.append({"path": normalized_path, "ok": True, "metadata": saved_metadata})
+        except ValueError as exc:
+            errors += 1
+            results.append({"path": normalized_path, "error": str(exc)})
+
+    return {"ok": errors == 0, "results": results}
 
 
 @app.post("/api/caption/batch-toggle")

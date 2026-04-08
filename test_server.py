@@ -735,6 +735,8 @@ class TestDeleteImages:
         image_path = str(img_dir / "photo1.jpg")
         caption_path = img_dir / "photo1.txt"
         caption_path.write_text("caption", encoding="utf-8")
+        metadata_path = server._get_metadata_path(image_path)
+        server._write_metadata_file(image_path, {"seed": 7, "sampling_frequency": 0.5})
         mask_path = server._get_image_mask_path(image_path)
         server._write_default_image_mask(image_path)
         backup_path = Path(server._get_crop_backup_path(image_path))
@@ -753,6 +755,7 @@ class TestDeleteImages:
         assert data["errors"] == []
         assert not Path(image_path).exists()
         assert not caption_path.exists()
+        assert not metadata_path.exists()
         assert not mask_path.exists()
         assert not backup_path.exists()
         assert server._normalize_image_key(image_path) not in server._load_config()["image_crops"]
@@ -762,6 +765,8 @@ class TestDeleteImages:
         video_path.write_bytes(b"fake-video-bytes")
         caption_path = img_dir / "clip.txt"
         caption_path.write_text("caption", encoding="utf-8")
+        metadata_path = server._get_metadata_path(str(video_path))
+        server._write_metadata_file(str(video_path), {"min_t": 120, "max_t": 640})
         mask_a = _get_video_mask_path(str(video_path), 0)
         mask_b = _get_video_mask_path(str(video_path), 12)
         Image.new("L", (16, 16), color=96).save(mask_a)
@@ -775,6 +780,7 @@ class TestDeleteImages:
         assert data["deleted_count"] == 1
         assert not video_path.exists()
         assert not caption_path.exists()
+        assert not metadata_path.exists()
         assert not mask_a.exists()
         assert not mask_b.exists()
 
@@ -895,6 +901,7 @@ class TestCloneFolder:
         selected_a = str(img_dir / "photo1.jpg")
         selected_b = str(img_dir / "photo2.png")
         (img_dir / "photo1.txt").write_text("caption one", encoding="utf-8")
+        server._write_metadata_file(selected_a, {"seed": 123, "sampling_frequency": 0.5})
         server._write_default_image_mask(selected_a)
         (img_dir / "photo3.txt").write_text("caption three", encoding="utf-8")
         client.post("/api/settings", json={
@@ -920,6 +927,7 @@ class TestCloneFolder:
         assert (target_folder / "photo1.jpg").exists()
         assert (target_folder / "photo2.png").exists()
         assert (target_folder / "photo1.txt").exists()
+        assert (target_folder / server._get_metadata_path(selected_a).name).exists()
         assert (target_folder / "photo1.jpg.mask.png").exists()
         assert not (target_folder / "photo3.jpg").exists()
         assert not (target_folder / "photo3.txt").exists()
@@ -933,6 +941,7 @@ class TestCloneFolder:
         extra_video_path = img_dir / "clip-b.mp4"
         video_path.write_bytes(b"fake-video-bytes")
         extra_video_path.write_bytes(b"fake-video-bytes")
+        server._write_metadata_file(str(video_path), {"min_t": 200, "max_t": 800})
         mask_a = _get_video_mask_path(str(video_path), 0)
         mask_b = _get_video_mask_path(str(video_path), 18)
         Image.new("L", (16, 16), color=96).save(mask_a)
@@ -954,6 +963,7 @@ class TestCloneFolder:
         target_folder = Path(done["target_folder"])
         assert (target_folder / "clip.mp4").exists()
         assert (target_folder / "clip-b.mp4").exists()
+        assert (target_folder / server._get_metadata_path(str(video_path)).name).exists()
         assert (target_folder / mask_a.name).exists()
         assert (target_folder / mask_b.name).exists()
 
@@ -962,6 +972,7 @@ class TestDuplicateImage:
     def test_duplicate_image_copies_caption_and_mask(self, client, img_dir):
         image_path = str(img_dir / "photo1.jpg")
         (img_dir / "photo1.txt").write_text("caption one", encoding="utf-8")
+        server._write_metadata_file(image_path, {"seed": 88, "min_t": 200})
         server._write_default_image_mask(image_path)
 
         resp = client.post("/api/image/duplicate", json={
@@ -975,6 +986,7 @@ class TestDuplicateImage:
         assert duplicated_path.name == "photo1-copy.jpg"
         assert duplicated_path.exists()
         assert (img_dir / "photo1-copy.txt").exists()
+        assert (img_dir / "photo1-copy.jpg.meta.json").exists()
         assert (img_dir / "photo1-copy.jpg.mask.png").exists()
 
 
@@ -1219,6 +1231,90 @@ class TestCaptionAPI:
             caption = Path(image_path).with_suffix(".txt").read_text(encoding="utf-8")
             assert "Moon" not in caption
             assert "Keep Me" in caption
+
+
+class TestMetadataAPI:
+    def test_write_and_read_metadata_sidecar(self, single_image):
+        server._write_metadata_file(single_image, {
+            "seed": 77,
+            "min_t": 200,
+            "max_t": 800,
+            "sampling_frequency": 0.5,
+        })
+
+        metadata_path = server._get_metadata_path(single_image)
+        assert metadata_path.name == "photo1.jpg.meta.json"
+        assert server._read_metadata_file(single_image) == {
+            "seed": 77,
+            "min_t": 200,
+            "max_t": 800,
+            "sampling_frequency": 0.5,
+        }
+
+    def test_save_and_get_metadata(self, client, single_image):
+        resp = client.post("/api/media/meta/save", json={
+            "path": single_image,
+            "metadata": {
+                "seed": 42,
+                "min_t": 120,
+                "max_t": 720,
+                "sampling_frequency": 1.25,
+            },
+        })
+        assert resp.status_code == 200
+        assert resp.json()["metadata"] == {
+            "seed": 42,
+            "min_t": 120,
+            "max_t": 720,
+            "sampling_frequency": 1.25,
+        }
+
+        resp = client.get("/api/media/meta", params={"path": single_image})
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "seed": 42,
+            "min_t": 120,
+            "max_t": 720,
+            "sampling_frequency": 1.25,
+        }
+
+    def test_apply_metadata_preserves_existing_fields(self, client, img_dir):
+        path_a = str(img_dir / "photo1.jpg")
+        path_b = str(img_dir / "photo2.png")
+        server._write_metadata_file(path_b, {"seed": 12, "max_t": 900})
+
+        resp = client.post("/api/media/meta/apply", json={
+            "paths": [path_a, path_b],
+            "changes": {
+                "min_t": 200,
+                "sampling_frequency": 0.5,
+            },
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert all(result.get("ok") for result in data["results"])
+        assert server._read_metadata_file(path_a) == {
+            "min_t": 200,
+            "sampling_frequency": 0.5,
+        }
+        assert server._read_metadata_file(path_b) == {
+            "seed": 12,
+            "min_t": 200,
+            "max_t": 900,
+            "sampling_frequency": 0.5,
+        }
+
+    def test_apply_metadata_rejects_invalid_range(self, client, single_image):
+        resp = client.post("/api/media/meta/apply", json={
+            "paths": [single_image],
+            "changes": {
+                "min_t": 900,
+                "max_t": 200,
+            },
+        })
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "min_t must be less than or equal to max_t"
 
 
 class TestBatchToggle:

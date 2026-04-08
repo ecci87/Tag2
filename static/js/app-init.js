@@ -51,7 +51,7 @@ function setupVerticalResize(handleEl, topEl, bottomEl, containerEl) {
 }
 setupResize($("#left-resize"), $("#left-panel"), "left");
 setupResize($("#right-resize"), $("#right-panel"), "right");
-setupVerticalResize(rightHorizontalResize, captionsSection, $("#freetext-section"), $("#right-panel"));
+setupVerticalResize(rightHorizontalResize, captionsSection, freeTextSection, captionsEditorPanel);
 
 // ===== EVENT LISTENERS =====
 loadBtn.addEventListener("click", loadFolder);
@@ -68,6 +68,7 @@ filterMaskBtn.addEventListener("click", toggleMaskPresenceFilter);
 filterTxtBtn.addEventListener("click", toggleCaptionPresenceFilter);
 autoCaptionBtn.addEventListener("click", autoCaptionSelected);
 addFreeTextNowBtn.addEventListener("click", addFreeTextNow);
+metadataSaveBtn.addEventListener("click", saveMetadataForSelection);
 videoClipBtn.addEventListener("click", queueCurrentVideoClip);
 gifConvertBtn.addEventListener("click", queueCurrentGifConversion);
 videoDownloadBtn.addEventListener("click", downloadCurrentVideo);
@@ -108,6 +109,25 @@ settingsTabButtons.forEach((button) => {
     if (e.key === "End") nextIndex = settingsTabButtons.length - 1;
     const nextButton = settingsTabButtons[nextIndex];
     setActiveSettingsTab(nextButton.dataset.settingsTab || "auto-captioning");
+    nextButton.focus();
+  });
+});
+rightPanelTabButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    setActiveRightPanelTab(button.dataset.rightPanelTab || "captions");
+  });
+  button.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "Home" && e.key !== "End") return;
+    e.preventDefault();
+    const currentIndex = rightPanelTabButtons.indexOf(button);
+    if (currentIndex < 0) return;
+    let nextIndex = currentIndex;
+    if (e.key === "ArrowRight") nextIndex = (currentIndex + 1) % rightPanelTabButtons.length;
+    if (e.key === "ArrowLeft") nextIndex = (currentIndex - 1 + rightPanelTabButtons.length) % rightPanelTabButtons.length;
+    if (e.key === "Home") nextIndex = 0;
+    if (e.key === "End") nextIndex = rightPanelTabButtons.length - 1;
+    const nextButton = rightPanelTabButtons[nextIndex];
+    setActiveRightPanelTab(nextButton.dataset.rightPanelTab || "captions");
     nextButton.focus();
   });
 });
@@ -184,10 +204,29 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "a" && !isEditableElement(document.activeElement)) {
     e.preventDefault();
     state.selectedPaths.clear();
-    getVisibleImageEntries().forEach(({ img }) => state.selectedPaths.add(img.path));
+    const visibleEntries = getVisibleImageEntries();
+    visibleEntries.forEach(({ img }) => state.selectedPaths.add(img.path));
     updateGridSelection();
+    if (state.selectedPaths.size === 1) {
+      const path = visibleEntries[0]?.img?.path;
+      if (path) {
+        showPreview(path);
+        loadCaptionData(path);
+        loadMetadataData(path);
+        loadCropData(path);
+      }
+      freeText.disabled = false;
+      freeText.value = "";
+    } else {
+      freeText.disabled = true;
+      freeText.value = state.selectedPaths.size > 1 ? "(Multiple media files selected)" : "";
+      if (state.selectedPaths.size > 1) {
+        loadMultiCaptionState();
+        loadMultiMetadataState();
+      }
+    }
+    renderMetadataEditor();
     updateMultiInfo();
-    loadMultiCaptionState();
   }
 
   // Arrow keys for navigation
@@ -239,6 +278,8 @@ startVideoJobPolling();
 // Initial render of sentences
 setCropAspectRatios(state.cropAspectRatioLabels);
 renderSentences();
+setActiveRightPanelTab(state.ui.activeRightPanelTab);
+renderMetadataEditor();
 renderMaskEditorUi();
 updateActionButtons();
 renderFilterActions();

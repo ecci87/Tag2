@@ -448,6 +448,45 @@ function normalizeCaptionCacheEntry(caption) {
   };
 }
 
+function createEmptyMetadataCacheEntry() {
+  return {
+    seed: null,
+    min_t: null,
+    max_t: null,
+    sampling_frequency: null,
+  };
+}
+
+function normalizeIntegerMetadataValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return null;
+  return parsed;
+}
+
+function normalizeFloatMetadataValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed;
+}
+
+function normalizeMetadataCacheEntry(metadata) {
+  const normalized = createEmptyMetadataCacheEntry();
+  const seed = normalizeIntegerMetadataValue(metadata?.seed);
+  const minT = normalizeIntegerMetadataValue(metadata?.min_t);
+  const maxT = normalizeIntegerMetadataValue(metadata?.max_t);
+  const samplingFrequency = normalizeFloatMetadataValue(metadata?.sampling_frequency);
+
+  if (seed !== null) normalized.seed = seed;
+  if (minT !== null) normalized.min_t = minT;
+  if (maxT !== null) normalized.max_t = maxT;
+  if (samplingFrequency !== null && samplingFrequency >= 0) {
+    normalized.sampling_frequency = samplingFrequency;
+  }
+  return normalized;
+}
+
 function applySentenceSelectionToList(enabledSentences, sentence, shouldEnable) {
   let next = Array.isArray(enabledSentences) ? enabledSentences.filter(item => item !== sentence) : [];
   const groupSentences = findGroupSentencesForSentence(sentence);
@@ -465,6 +504,175 @@ function ensureCaptionCache(path) {
     state.captionCache[path] = { enabled_sentences: [], free_text: "" };
   }
   return state.captionCache[path];
+}
+
+function ensureMetadataCache(path) {
+  if (!state.metadataCache[path]) {
+    state.metadataCache[path] = createEmptyMetadataCacheEntry();
+  }
+  return state.metadataCache[path];
+}
+
+function getMetadataFieldDefinitions() {
+  return [
+    {
+      key: "seed",
+      input: metadataSeedInput,
+      parse: () => parseIntegerMetadataInput(metadataSeedInput, "Seed"),
+    },
+    {
+      key: "sampling_frequency",
+      input: metadataSamplingFrequencyInput,
+      parse: () => parseFloatMetadataInput(metadataSamplingFrequencyInput, "Sampling Frequency"),
+    },
+    {
+      key: "min_t",
+      input: metadataMinTInput,
+      parse: () => parseIntegerMetadataInput(metadataMinTInput, "Min t"),
+    },
+    {
+      key: "max_t",
+      input: metadataMaxTInput,
+      parse: () => parseIntegerMetadataInput(metadataMaxTInput, "Max t"),
+    },
+  ];
+}
+
+function formatMetadataFieldValue(fieldName, value) {
+  if (value === null || value === undefined || value === "") return "";
+  return fieldName === "sampling_frequency" ? `${value}` : `${Math.trunc(value)}`;
+}
+
+function parseIntegerMetadataInput(inputEl, label) {
+  const text = String(inputEl?.value || "").trim();
+  if (!text) return null;
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw new Error(`${label} must be a whole number`);
+  }
+  return parsed;
+}
+
+function parseFloatMetadataInput(inputEl, label) {
+  const text = String(inputEl?.value || "").trim();
+  if (!text) return null;
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be a number`);
+  }
+  if (parsed < 0) {
+    throw new Error(`${label} must be greater than or equal to 0`);
+  }
+  return parsed;
+}
+
+function validateMetadataRange(metadata) {
+  const minT = metadata?.min_t;
+  const maxT = metadata?.max_t;
+  if (minT !== null && minT !== undefined && maxT !== null && maxT !== undefined && minT > maxT) {
+    throw new Error("Min t must be less than or equal to Max t");
+  }
+}
+
+function setMetadataFieldState(field, value, placeholder = "Not set") {
+  field.input.value = formatMetadataFieldValue(field.key, value);
+  field.input.placeholder = placeholder;
+}
+
+function setMetadataInputsDisabled(disabled) {
+  for (const field of getMetadataFieldDefinitions()) {
+    field.input.disabled = disabled;
+  }
+}
+
+function renderMetadataEditor(options = {}) {
+  const { preserveInputs = false } = options;
+  const selectedPaths = [...state.selectedPaths];
+  const isSingle = selectedPaths.length === 1;
+  const isMulti = selectedPaths.length > 1;
+  const disabled = selectedPaths.length === 0 || state.metadataSaving;
+
+  setMetadataInputsDisabled(disabled);
+  metadataSaveBtn.disabled = disabled;
+  metadataSaveBtn.textContent = state.metadataSaving
+    ? (isMulti ? "Applying..." : "Saving...")
+    : (isMulti ? `Apply to ${selectedPaths.length} Files` : "Save Metadata");
+
+  if (!selectedPaths.length) {
+    metadataEditorSummary.textContent = "No media selected";
+    metadataEditorNote.textContent = "Select one or more media files to edit metadata sidecars.";
+    for (const field of getMetadataFieldDefinitions()) {
+      setMetadataFieldState(field, null, "Not set");
+    }
+    return;
+  }
+
+  if (isSingle) {
+    const path = selectedPaths[0];
+    metadataEditorSummary.textContent = getFileLabel(path);
+    metadataEditorNote.textContent = "Blank fields remove those keys from this file's .meta.json sidecar.";
+    if (preserveInputs) {
+      return;
+    }
+    const metadata = ensureMetadataCache(path);
+    for (const field of getMetadataFieldDefinitions()) {
+      setMetadataFieldState(field, metadata[field.key], "Not set");
+    }
+    return;
+  }
+
+  metadataEditorSummary.textContent = `${selectedPaths.length} media files selected`;
+  metadataEditorNote.textContent = "Filled fields are applied to all selected files. Blank fields leave existing values unchanged.";
+  if (preserveInputs) {
+    return;
+  }
+  for (const field of getMetadataFieldDefinitions()) {
+    const values = selectedPaths.map(path => ensureMetadataCache(path)[field.key]);
+    const uniqueValues = [...new Set(values.map(value => (value === null ? "__empty__" : String(value))))];
+    if (uniqueValues.length === 1) {
+      setMetadataFieldState(field, values[0], values[0] === null ? "Not set" : "");
+    } else {
+      field.input.value = "";
+      field.input.placeholder = "Mixed values";
+    }
+  }
+}
+
+function buildSingleMetadataPayload() {
+  const metadata = {};
+  for (const field of getMetadataFieldDefinitions()) {
+    metadata[field.key] = field.parse();
+  }
+  validateMetadataRange(metadata);
+  return metadata;
+}
+
+function buildBatchMetadataChanges() {
+  const changes = {};
+  for (const field of getMetadataFieldDefinitions()) {
+    if (!String(field.input.value || "").trim()) continue;
+    changes[field.key] = field.parse();
+  }
+  validateMetadataRange(changes);
+  return changes;
+}
+
+function setActiveRightPanelTab(tabName) {
+  const nextTab = tabName === "metadata" ? "metadata" : "captions";
+  state.ui.activeRightPanelTab = nextTab;
+  rightPanelTabButtons.forEach((button) => {
+    const isActive = button.dataset.rightPanelTab === nextTab;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+    button.tabIndex = isActive ? 0 : -1;
+  });
+  rightPanelModePanels.forEach((panel) => {
+    const isActive = panel.id === `${nextTab}-editor-panel`;
+    panel.classList.toggle("active", isActive);
+    panel.hidden = !isActive;
+  });
+  renderMetadataEditor({ preserveInputs: true });
+  updateMultiInfo();
 }
 
 function getPreviewEnabledSentences(path = state.previewPath) {
@@ -691,6 +899,20 @@ async function fetchCaptionsBulk(paths, sentences = getAllConfiguredSentences())
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     throw new Error(data.detail || "Failed to load captions");
+  }
+  return data;
+}
+
+async function fetchMetadataBulk(paths) {
+  if (!Array.isArray(paths) || paths.length === 0) return {};
+  const resp = await fetch("/api/media/meta/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.detail || "Failed to load metadata");
   }
   return data;
 }
@@ -1553,6 +1775,103 @@ function parseMaskLatentBaseWidthPresetsInput(rawValue) {
   return normalizeMaskLatentBaseWidthPresets(numericValues);
 }
 
+const MASK_LATENT_NOISE_PREVIEW_SEED = 1337;
+const MASK_LATENT_NOISE_MAX_TIMESTEP = 999;
+const MASK_LATENT_NOISE_BETA_START = 0.00085;
+const MASK_LATENT_NOISE_BETA_END = 0.012;
+const MASK_LATENT_NOISE_ALPHA_CUMPROD = (() => {
+  const alphaCumprod = new Float32Array(MASK_LATENT_NOISE_MAX_TIMESTEP + 1);
+  alphaCumprod[0] = 1;
+  const betaStartSqrt = Math.sqrt(MASK_LATENT_NOISE_BETA_START);
+  const betaEndSqrt = Math.sqrt(MASK_LATENT_NOISE_BETA_END);
+  let cumulative = 1;
+  for (let timestep = 1; timestep <= MASK_LATENT_NOISE_MAX_TIMESTEP; timestep += 1) {
+    const fraction = timestep / MASK_LATENT_NOISE_MAX_TIMESTEP;
+    const betaSqrt = betaStartSqrt + (betaEndSqrt - betaStartSqrt) * fraction;
+    const beta = betaSqrt * betaSqrt;
+    cumulative *= 1 - beta;
+    alphaCumprod[timestep] = cumulative;
+  }
+  return alphaCumprod;
+})();
+
+function createMaskLatentNoiseRandom(seed = MASK_LATENT_NOISE_PREVIEW_SEED) {
+  let value = seed >>> 0;
+  return () => {
+    value += 0x6D2B79F5;
+    let mixed = value;
+    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function getMaskLatentNoiseWeights(timestep) {
+  const resolvedTimestep = Math.round(clamp(Number(timestep || 0), 0, MASK_LATENT_NOISE_MAX_TIMESTEP));
+  const alphaCumprod = MASK_LATENT_NOISE_ALPHA_CUMPROD[resolvedTimestep] ?? 1;
+  return {
+    signalScale: Math.sqrt(alphaCumprod),
+    noiseScale: Math.sqrt(Math.max(0, 1 - alphaCumprod)),
+  };
+}
+
+function ensureMaskLatentNoiseBuffer(width, height) {
+  if (!width || !height) {
+    return null;
+  }
+  if (
+    state.maskEditor.latentNoiseValues
+    && state.maskEditor.latentNoiseWidth === width
+    && state.maskEditor.latentNoiseHeight === height
+  ) {
+    return state.maskEditor.latentNoiseValues;
+  }
+  const noiseValues = new Float32Array(width * height * 3);
+  const random = createMaskLatentNoiseRandom();
+  for (let index = 0; index < noiseValues.length; index += 2) {
+    const u1 = Math.max(random(), 1e-7);
+    const u2 = random();
+    const radius = Math.sqrt(-2 * Math.log(u1));
+    const angle = 2 * Math.PI * u2;
+    noiseValues[index] = radius * Math.cos(angle);
+    if (index + 1 < noiseValues.length) {
+      noiseValues[index + 1] = radius * Math.sin(angle);
+    }
+  }
+  state.maskEditor.latentNoiseValues = noiseValues;
+  state.maskEditor.latentNoiseWidth = width;
+  state.maskEditor.latentNoiseHeight = height;
+  return noiseValues;
+}
+
+function applyMaskLatentNoisePreview(ctx, width, height) {
+  const timestep = Math.round(clamp(Number(state.maskEditor.latentNoiseTimestep || 0), 0, MASK_LATENT_NOISE_MAX_TIMESTEP));
+  if (!ctx || !width || !height || timestep <= 0) {
+    return;
+  }
+  const noiseValues = ensureMaskLatentNoiseBuffer(width, height);
+  if (!noiseValues) {
+    return;
+  }
+  const { signalScale, noiseScale } = getMaskLatentNoiseWeights(timestep);
+  if (noiseScale <= 0) {
+    return;
+  }
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const { data } = imageData;
+  const pixelCount = width * height;
+  for (let pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += 1) {
+    const dataIndex = pixelIndex * 4;
+    const noiseIndex = pixelIndex * 3;
+    for (let channel = 0; channel < 3; channel += 1) {
+      const normalized = (data[dataIndex + channel] / 127.5) - 1;
+      const mixed = signalScale * normalized + noiseScale * noiseValues[noiseIndex + channel];
+      data[dataIndex + channel] = Math.round(clamp((mixed + 1) * 127.5, 0, 255));
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
 function syncMaskLatentBaseWidthFromPresets() {
   const nextValue = getNearestMaskLatentBaseWidthPreset(state.maskEditor.latentBaseWidth || 512);
   const previousValue = Number(state.maskEditor.latentBaseWidth || 0);
@@ -1571,6 +1890,7 @@ function updateMaskControlLabels() {
   const brushValue = Math.max(0, Math.min(100, Number(state.maskEditor.brushValue || 0)));
   const brushCore = clamp(Number(state.maskEditor.brushCore || 30), 0, 95);
   const brushSteepness = clamp(Number(state.maskEditor.brushSteepness || 8), 1, 32);
+  const latentNoiseTimestep = Math.round(clamp(Number(state.maskEditor.latentNoiseTimestep || 0), 0, MASK_LATENT_NOISE_MAX_TIMESTEP));
   const brushDiameterMaskPx = getMaskBrushDiameterMaskPx();
   const latentMetrics = getMaskLatentPreviewMetrics();
   const latentBaseWidthPresets = getMaskLatentBaseWidthPresets();
@@ -1586,12 +1906,17 @@ function updateMaskControlLabels() {
   maskLatentBaseWidthInput.step = "1";
   maskLatentBaseWidthInput.value = String(getMaskLatentBaseWidthPresetIndex(latentMetrics.baseWidth, latentBaseWidthPresets));
   maskLatentDividerInput.value = String(latentMetrics.divider);
+  maskLatentNoiseInput.min = "0";
+  maskLatentNoiseInput.max = String(MASK_LATENT_NOISE_MAX_TIMESTEP);
+  maskLatentNoiseInput.step = "1";
+  maskLatentNoiseInput.value = String(latentNoiseTimestep);
   maskBrushValueTitle.textContent = imageMode ? "Strength" : "Value";
   maskBrushSizeLabel.textContent = `${brushSizePercent.toFixed(1)}% · ${Math.round(brushDiameterMaskPx)} px`;
   maskBrushValueLabel.textContent = `${Math.round(brushValue)}%`;
   maskBrushColorLabel.textContent = brushColor;
   maskBrushCoreLabel.textContent = `${Math.round(brushCore)}%`;
   maskBrushSteepnessLabel.textContent = brushSteepness.toFixed(1);
+  maskLatentNoiseLabel.textContent = `t=${latentNoiseTimestep}`;
   if (imageMode) {
     maskResetBtn.textContent = "Reset Image";
     maskResetBtn.title = "Restore the image edit overlay to the original image";
@@ -1709,11 +2034,12 @@ function renderMaskLatentPreview() {
   } = ensureMaskLatentPreviewBuffers();
 
   if (state.maskEditor.latentImageDirty && previewImg.complete && previewImg.naturalWidth && previewImg.naturalHeight) {
-    const latentImageCtx = previewLatentImageCanvas.getContext("2d");
+    const latentImageCtx = previewLatentImageCanvas.getContext("2d", { willReadFrequently: true });
     latentImageCtx.setTransform(1, 0, 0, 1, 0, 0);
     latentImageCtx.clearRect(0, 0, previewLatentImageCanvas.width, previewLatentImageCanvas.height);
     latentImageCtx.imageSmoothingEnabled = true;
     latentImageCtx.drawImage(previewImg, 0, 0, baseWidth, baseHeight);
+    applyMaskLatentNoisePreview(latentImageCtx, baseWidth, baseHeight);
     state.maskEditor.latentImageDirty = false;
   }
 
@@ -1997,6 +2323,7 @@ function renderMaskEditorUi() {
   maskBrushSteepnessInput.disabled = !interactive;
   maskLatentBaseWidthInput.disabled = !interactive || !showLatentPreview || !maskMode;
   maskLatentDividerInput.disabled = !interactive || !showLatentPreview || !maskMode;
+  maskLatentNoiseInput.disabled = !interactive || !showLatentPreview || !maskMode;
   maskApplyBtn.textContent = imageMode ? "Save Image" : "Save Mask";
   maskCancelBtn.textContent = imageMode ? "Cancel Edit" : "Cancel Mask";
   videoMaskAddBtn.classList.toggle("visible", videoAvailable);
@@ -2112,6 +2439,7 @@ function updateMaskCursor(clientX, clientY) {
   maskCursor.style.top = `${clientY - panelRect.top}px`;
   if (maskCursorValue) {
     maskCursorValue.style.fontSize = `${clamp(diameter * 0.22, 9, 14)}px`;
+    maskCursorValue.style.transform = `translate(-50%, calc(-100% - ${Math.max(10, Math.round(diameter * 0.2))}px))`;
   }
   maskCursor.classList.add("visible");
   refreshMaskCursorValue();
@@ -2688,6 +3016,9 @@ function closeMaskEditor(options = {}) {
   state.maskEditor.latentImageDirty = true;
   state.maskEditor.latentSignalPercent = 50;
   state.maskEditor.latentReductionPercent = 50;
+  state.maskEditor.latentNoiseValues = null;
+  state.maskEditor.latentNoiseWidth = 0;
+  state.maskEditor.latentNoiseHeight = 0;
   state.maskEditor.latentBaseMaskCanvas = null;
   state.maskEditor.latentGridCanvas = null;
   state.maskEditor.latentSignalValues = null;
@@ -5371,8 +5702,8 @@ async function deleteSelectedImages() {
   const selectedPaths = [...state.selectedPaths];
   const count = selectedPaths.length;
   const confirmMessage = count === 1
-    ? `Delete "${getFileLabel(selectedPaths[0])}"? This also deletes its .txt caption file.`
-    : `Delete ${count} selected media files? This also deletes their .txt caption files.`;
+    ? `Delete "${getFileLabel(selectedPaths[0])}"? This also deletes its .txt caption and .meta.json metadata files.`
+    : `Delete ${count} selected media files? This also deletes their .txt caption and .meta.json metadata files.`;
   if (!confirm(confirmMessage)) return;
 
   const preserveScrollTop = fileGridContainer.scrollTop;
@@ -5395,6 +5726,7 @@ async function deleteSelectedImages() {
     for (const path of data.deleted_paths || []) {
       invalidateImageCaches(path);
       delete state.captionCache[path];
+      delete state.metadataCache[path];
       delete state.imageCrops[path];
       delete state.imageVersions[path];
     }
@@ -5820,6 +6152,7 @@ async function loadFolder(options = {}) {
   state.lastClickedPath = null;
   state.previewPath = null;
   state.captionCache = {};
+  state.metadataCache = {};
   state.activeSentenceFilters.clear();
   state.activeMetaFilters.aspectState = "any";
   state.activeMetaFilters.maskState = "any";
@@ -5830,6 +6163,7 @@ async function loadFolder(options = {}) {
   state.imageVersions = {};
   state.imageMaskVersions = {};
   state.thumbnailDimensions = {};
+  state.metadataSaving = false;
   statusBar.textContent = "Loading...";
 
   try {
@@ -5859,6 +6193,7 @@ async function loadFolder(options = {}) {
     renderGrid({ preserveScrollTop });
     hidePreview();
     renderSentences();
+    renderMetadataEditor();
     freeText.value = "";
     updateActionButtons();
     freeText.disabled = true;
@@ -6052,17 +6387,24 @@ async function selectUploadedImages(paths) {
 
   if (availablePaths.length === 1) {
     await showPreview(lastPath);
-    await loadCaptionData(lastPath);
-    await loadCropData(lastPath);
+    await Promise.all([
+      loadCaptionData(lastPath),
+      loadCropData(lastPath),
+      loadMetadataData(lastPath),
+    ]);
     freeText.disabled = false;
   } else {
     await showPreview(lastPath);
     freeText.disabled = true;
-    freeText.value = "(Multiple images selected)";
-    await loadMultiCaptionState();
+    freeText.value = "(Multiple media files selected)";
+    await Promise.all([
+      loadMultiCaptionState(),
+      loadMultiMetadataState(),
+    ]);
     clearCropDraft();
   }
 
+  renderMetadataEditor();
   updateMultiInfo();
   renderSentences();
   updateActionButtons();
@@ -6368,14 +6710,16 @@ function handleThumbClick(index, event) {
     const path = [...state.selectedPaths][0];
     showPreview(path);
     loadCaptionData(path);
+    loadMetadataData(path);
     loadCropData(path);
     freeText.disabled = false;
   } else if (state.selectedPaths.size > 1) {
     // Show preview of clicked image
     showPreview(img.path);
     freeText.disabled = true;
-    freeText.value = "(Multiple images selected)";
+    freeText.value = "(Multiple media files selected)";
     loadMultiCaptionState();
+    loadMultiMetadataState();
     clearCropDraft();
   } else {
     hidePreview();
@@ -6383,6 +6727,7 @@ function handleThumbClick(index, event) {
     freeText.value = "";
   }
 
+  renderMetadataEditor();
   updateMultiInfo();
   renderSentences();
   updateActionButtons();
@@ -6899,6 +7244,11 @@ maskLatentDividerInput.addEventListener("input", (e) => {
   updateMaskControlLabels();
   scheduleMaskLatentPreviewRender();
 });
+maskLatentNoiseInput.addEventListener("input", (e) => {
+  state.maskEditor.latentNoiseTimestep = Math.round(clamp(Number(e.target.value || 0), 0, MASK_LATENT_NOISE_MAX_TIMESTEP));
+  updateMaskControlLabels();
+  scheduleMaskLatentPreviewRender({ imageDirty: true });
+});
 cropApplyBtn.addEventListener("click", applyCropDraft);
 cropCancelBtn.addEventListener("click", cancelCropEdit);
 cropRemoveBtn.addEventListener("click", removeCrop);
@@ -6982,6 +7332,21 @@ async function loadCaptionData(path) {
   }
 }
 
+async function loadMetadataData(path) {
+  try {
+    const resp = await fetch(`/api/media/meta?path=${encodeURIComponent(path)}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      state.metadataCache[path] = normalizeMetadataCacheEntry(data);
+      if (state.selectedPaths.size === 1 && state.selectedPaths.has(path)) {
+        renderMetadataEditor();
+      }
+    }
+  } catch (err) {
+    console.error("Failed to load metadata:", err);
+  }
+}
+
 async function loadMultiCaptionState() {
   const paths = [...state.selectedPaths];
 
@@ -7001,10 +7366,28 @@ async function loadMultiCaptionState() {
   }
 }
 
+async function loadMultiMetadataState() {
+  const paths = [...state.selectedPaths];
+
+  try {
+    const data = await fetchMetadataBulk(paths);
+    for (const [path, metadata] of Object.entries(data)) {
+      state.metadataCache[path] = normalizeMetadataCacheEntry(metadata);
+    }
+    renderMetadataEditor();
+  } catch (err) {
+    console.error("Failed to load bulk metadata:", err);
+  }
+}
+
 function updateMultiInfo() {
   if (state.selectedPaths.size > 1) {
     multiInfo.style.display = "block";
-    multiInfo.textContent = `${state.selectedPaths.size} images selected — toggling captions applies to all`;
+    if (state.ui.activeRightPanelTab === "metadata") {
+      multiInfo.textContent = `${state.selectedPaths.size} media files selected — Apply updates the filled metadata fields on all selected files`;
+    } else {
+      multiInfo.textContent = `${state.selectedPaths.size} media files selected — toggling captions applies to all`;
+    }
   } else {
     multiInfo.style.display = "none";
   }
@@ -8528,6 +8911,93 @@ async function toggleSentence(sentence, wasChecked, wasPartial) {
     }
   } catch (err) {
     statusBar.textContent = `Error: ${err.message}`;
+  }
+}
+
+async function saveMetadataForSelection() {
+  const selectedPaths = [...state.selectedPaths];
+  if (!selectedPaths.length || state.metadataSaving) return;
+
+  let singlePath = null;
+  let singleMetadata = null;
+  let batchChanges = null;
+
+  try {
+    if (selectedPaths.length === 1) {
+      singlePath = selectedPaths[0];
+      singleMetadata = buildSingleMetadataPayload();
+    } else {
+      batchChanges = buildBatchMetadataChanges();
+      if (Object.keys(batchChanges).length === 0) {
+        throw new Error("Enter at least one metadata value to apply");
+      }
+    }
+  } catch (err) {
+    const message = err?.message || "Failed to save metadata";
+    statusBar.textContent = `Metadata error: ${message}`;
+    showErrorToast(`Metadata error: ${message}`);
+    return;
+  }
+
+  state.metadataSaving = true;
+  renderMetadataEditor({ preserveInputs: true });
+  statusBar.textContent = selectedPaths.length === 1
+    ? "Saving metadata..."
+    : `Applying metadata to ${selectedPaths.length} media files...`;
+
+  try {
+    if (selectedPaths.length === 1) {
+      const resp = await fetch("/api/media/meta/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: singlePath, metadata: singleMetadata }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.detail || "Failed to save metadata");
+      }
+      state.metadataCache[singlePath] = normalizeMetadataCacheEntry(data.metadata);
+      statusBar.textContent = "Metadata saved";
+    } else {
+      const resp = await fetch("/api/media/meta/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths: selectedPaths, changes: batchChanges }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.detail || "Failed to apply metadata");
+      }
+
+      let updatedCount = 0;
+      const errors = [];
+      for (const result of (data.results || [])) {
+        if (result?.ok) {
+          state.metadataCache[result.path] = normalizeMetadataCacheEntry(result.metadata);
+          updatedCount += 1;
+        } else if (result?.path || result?.error) {
+          errors.push(result);
+        }
+      }
+
+      if (errors.length > 0) {
+        const summary = errors.length === 1
+          ? `${updatedCount} updated, 1 failed: ${errors[0].error || "Unknown error"}`
+          : `${updatedCount} updated, ${errors.length} failed`;
+        statusBar.textContent = summary;
+        showErrorToast(summary);
+      } else {
+        statusBar.textContent = `Applied metadata to ${updatedCount} media file${updatedCount === 1 ? "" : "s"}`;
+      }
+    }
+  } catch (err) {
+    const message = err?.message || "Failed to save metadata";
+    statusBar.textContent = `Metadata error: ${message}`;
+    showErrorToast(`Metadata error: ${message}`);
+  } finally {
+    state.metadataSaving = false;
+    renderMetadataEditor();
+    updateMultiInfo();
   }
 }
 

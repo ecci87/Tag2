@@ -11,6 +11,7 @@ const state = {
   sections: [],          // [{name: "", captions: [...], groups: [{name: "Car", captions: [...]}]}, ...]
   // Per-image caption cache: path -> {enabled_captions: [...], free_text: ""}
   captionCache: {},
+  metadataCache: {},     // path -> {seed, min_t, max_t, sampling_frequency}
   activeSentenceFilters: new Map(),
   activeMetaFilters: {
     aspectState: "any",
@@ -32,6 +33,7 @@ const state = {
   videoTimelineCache: {}, // path -> [{timeSeconds, url}, ...]
   videoTimelineUi: {},   // path -> {zoom, offsetFraction}
   saving: false,
+  metadataSaving: false,
   autoCaptioning: false,
   autoCaptionMode: null,
   autoCaptionAbortController: null,
@@ -58,10 +60,14 @@ const state = {
     latentPreviewEnabled: false,
     latentBaseWidth: 512,
     latentDivider: 16,
+    latentNoiseTimestep: 0,
     latentSignalPercent: 50,
     latentReductionPercent: 50,
     latentPreviewQueued: false,
     latentImageDirty: false,
+    latentNoiseValues: null,
+    latentNoiseWidth: 0,
+    latentNoiseHeight: 0,
     latentBaseMaskCanvas: null,
     latentGridCanvas: null,
     latentSignalValues: null,
@@ -177,6 +183,7 @@ const state = {
   },
   ui: {
     activeInlineEditor: null,
+    activeRightPanelTab: "captions",
     renderFrameId: 0,
     pendingSentenceRender: false,
     pendingPreviewRender: false,
@@ -250,6 +257,8 @@ const maskLatentBaseWidthInput = $("#mask-latent-base-width");
 const maskLatentBaseWidthLabel = $("#mask-latent-base-width-label");
 const maskLatentDividerInput = $("#mask-latent-divider");
 const maskLatentDividerLabel = $("#mask-latent-divider-label");
+const maskLatentNoiseInput = $("#mask-latent-noise");
+const maskLatentNoiseLabel = $("#mask-latent-noise-label");
 const maskLatentBaseSizeLabel = $("#mask-latent-base-size-label");
 const maskLatentGridSizeLabel = $("#mask-latent-grid-size-label");
 const maskLatentSignalLabel = $("#mask-latent-signal-label");
@@ -308,6 +317,9 @@ const previewCaptionOverlay = $("#preview-caption-overlay");
 const previewCaptionToggle = $("#preview-caption-toggle");
 const previewCaptionList = $("#preview-caption-list");
 const sectionContainer = $("#section-container");
+const rightPanelTabButtons = [...document.querySelectorAll(".right-panel-tab-btn")];
+const rightPanelModePanels = [...document.querySelectorAll(".right-panel-mode-panel")];
+const captionsEditorPanel = $("#captions-editor-panel");
 const captionsSection = $("#captions-section");
 const rightHorizontalResize = $("#right-horizontal-resize");
 const autoCaptionBtn = $("#auto-caption-btn");
@@ -315,7 +327,16 @@ const modelLogOpenBtn = $("#model-log-open-btn");
 const autoFreeTextCheckbox = $("#auto-free-text-checkbox");
 const addFreeTextNowBtn = $("#add-free-text-now-btn");
 const hideAddButtonsCheckbox = $("#hide-add-buttons-checkbox");
+const freeTextSection = $("#freetext-section");
 const freeText = $("#free-text");
+const metadataEditorPanel = $("#metadata-editor-panel");
+const metadataEditorSummary = $("#metadata-editor-summary");
+const metadataEditorNote = $("#metadata-editor-note");
+const metadataSeedInput = $("#metadata-seed-input");
+const metadataSamplingFrequencyInput = $("#metadata-sampling-frequency-input");
+const metadataMinTInput = $("#metadata-min-t-input");
+const metadataMaxTInput = $("#metadata-max-t-input");
+const metadataSaveBtn = $("#metadata-save-btn");
 const multiInfo = $("#multi-info");
 const aiProgressPanel = $("#ai-progress-panel");
 const aiProgressSummary = $("#ai-progress-summary");

@@ -6,7 +6,7 @@
 <title>Image Captioning Tool</title>
 <link rel="stylesheet" href="/static/css/app-shell.css?v=20260404g">
 <link rel="stylesheet" href="/static/css/app-preview.css?v=20260405c">
-<link rel="stylesheet" href="/static/css/app-captions.css?v=20260315d">
+<link rel="stylesheet" href="/static/css/app-captions.css?v=20260407a">
 <link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260404b">
 </head>
 <body>
@@ -141,6 +141,11 @@
               <input id="mask-latent-divider" type="range" min="1" max="64" step="1" value="16">
               <span id="mask-latent-divider-label">/16</span>
             </label>
+            <label class="mask-editor-field" for="mask-latent-noise">
+              <span>Noise</span>
+              <input id="mask-latent-noise" type="range" min="0" max="999" step="1" value="0">
+              <span id="mask-latent-noise-label">t=0</span>
+            </label>
             <div id="mask-latent-preview-meta">
               <span id="mask-latent-base-size-label">Base 512×512</span>
               <span id="mask-latent-grid-size-label">Latent 32×32</span>
@@ -245,22 +250,57 @@
           <span>Hide Add Buttons</span>
         </label>
       </div>
-      <div id="captions-section">
-        <div id="section-container"></div>
+      <div id="right-panel-tabs" role="tablist" aria-label="Right panel mode">
+        <button id="captions-tab-btn" class="right-panel-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="captions-editor-panel" data-right-panel-tab="captions">Captions</button>
+        <button id="metadata-tab-btn" class="right-panel-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="metadata-editor-panel" data-right-panel-tab="metadata">Metadata</button>
       </div>
-      <div id="right-horizontal-resize" title="Resize captions and free text"></div>
-      <div id="freetext-section">
-        <div class="panel-header">
-          <span></span>
-          <div class="panel-actions">
-            <label class="toggle-label" title="Ask Ollama for additional free-text details after checking structured captions">
-              <input type="checkbox" id="auto-free-text-checkbox" checked>
-              <span>Auto Caption</span>
-            </label>
-            <button id="add-free-text-now-btn" class="generate-btn generate-btn-compact generate-btn-icon" type="button" title="Ask Ollama to add only free-text details for the selected media" aria-label="Ask Ollama to add only free-text details for the selected media"><span class="btn-icon" aria-hidden="true"></span></button>
+      <div id="right-panel-content">
+        <div id="captions-editor-panel" class="right-panel-mode-panel active" role="tabpanel" aria-labelledby="captions-tab-btn">
+          <div id="captions-section">
+            <div id="section-container"></div>
+          </div>
+          <div id="right-horizontal-resize" title="Resize captions and free text"></div>
+          <div id="freetext-section">
+            <div class="panel-header">
+              <span></span>
+              <div class="panel-actions">
+                <label class="toggle-label" title="Ask Ollama for additional free-text details after checking structured captions">
+                  <input type="checkbox" id="auto-free-text-checkbox" checked>
+                  <span>Auto Caption</span>
+                </label>
+                <button id="add-free-text-now-btn" class="generate-btn generate-btn-compact generate-btn-icon" type="button" title="Ask Ollama to add only free-text details for the selected media" aria-label="Ask Ollama to add only free-text details for the selected media"><span class="btn-icon" aria-hidden="true"></span></button>
+              </div>
+            </div>
+            <textarea id="free-text" placeholder="Additional caption text..." disabled></textarea>
           </div>
         </div>
-        <textarea id="free-text" placeholder="Additional caption text..." disabled></textarea>
+        <div id="metadata-editor-panel" class="right-panel-mode-panel" role="tabpanel" aria-labelledby="metadata-tab-btn" hidden>
+          <div class="metadata-editor-header">
+            <span id="metadata-editor-summary">No media selected</span>
+          </div>
+          <div id="metadata-editor-note" class="metadata-editor-note">Select one or more media files to edit metadata sidecars.</div>
+          <div class="metadata-editor-grid">
+            <label class="metadata-field">
+              <span>Seed</span>
+              <input id="metadata-seed-input" type="number" step="1" placeholder="Not set" inputmode="numeric" disabled>
+            </label>
+            <label class="metadata-field">
+              <span>Sampling Frequency</span>
+              <input id="metadata-sampling-frequency-input" type="number" step="0.01" min="0" placeholder="1.0" inputmode="decimal" disabled>
+            </label>
+            <label class="metadata-field">
+              <span>Min t</span>
+              <input id="metadata-min-t-input" type="number" step="1" placeholder="Not set" inputmode="numeric" disabled>
+            </label>
+            <label class="metadata-field">
+              <span>Max t</span>
+              <input id="metadata-max-t-input" type="number" step="1" placeholder="Not set" inputmode="numeric" disabled>
+            </label>
+          </div>
+          <div class="metadata-editor-actions">
+            <button id="metadata-save-btn" type="button" disabled>Save Metadata</button>
+          </div>
+        </div>
       </div>
       <div id="multi-info"></div>
     </div>
@@ -420,8 +460,8 @@
   </div>
 </div>
 
-<script defer src="/static/js/app-shared.js?v=20260405d"></script>
-<script defer src="/static/js/app-features.js?v=20260405e"></script>
-<script defer src="/static/js/app-init.js?v=20260404d"></script>
+<script defer src="/static/js/app-shared.js?v=20260407a"></script>
+<script defer src="/static/js/app-features.js?v=20260407a"></script>
+<script defer src="/static/js/app-init.js?v=20260407a"></script>
 </body>
 </html>
