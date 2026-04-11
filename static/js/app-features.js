@@ -3359,6 +3359,18 @@ function setImageMaskPresence(path, hasMask, version = null, maskCount = null) {
   } else {
     delete state.imageMaskVersions[path];
   }
+
+  if (state.activeMetaFilters.maskState !== "any") {
+    const preferredPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
+    const previousScrollTop = fileGridContainer.scrollTop;
+    renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
+    return;
+  }
+
+  const cell = fileGrid.querySelector(`.thumb-cell[data-path="${CSS.escape(path)}"]`);
+  if (cell) {
+    cell.classList.toggle("has-mask", !!hasMask);
+  }
 }
 
 function buildImageApiUrl(endpoint, path, extraParams = {}) {
@@ -3370,9 +3382,10 @@ function buildImageApiUrl(endpoint, path, extraParams = {}) {
 }
 
 function queueThumbLoad(path, size, priority = false) {
-  const key = `${path}:${size}:${getImageVersion(path)}`;
+  const version = getImageVersion(path);
+  const key = `${path}:${size}:${version}`;
   if (thumbBlobCache.has(key) || thumbQueuedKeys.has(key)) return false;
-  const item = { path, size, key };
+  const item = { path, size, key, version };
   thumbQueuedKeys.add(key);
   if (priority) {
     thumbLoadQueue.unshift(item);
@@ -3385,7 +3398,7 @@ function queueThumbLoad(path, size, priority = false) {
 
 async function processThumbQueue() {
   while (thumbLoadingCount < MAX_CONCURRENT_THUMB_LOADS && thumbLoadQueue.length > 0) {
-    const { path, size, key } = thumbLoadQueue.shift();
+    const { path, size, key, version } = thumbLoadQueue.shift();
     if (thumbBlobCache.has(key)) {
       thumbQueuedKeys.delete(key);
       continue;
@@ -3396,9 +3409,17 @@ async function processThumbQueue() {
       .then(blob => {
         if (blob) {
           const url = URL.createObjectURL(blob);
+          if (version !== getImageVersion(path)) {
+            URL.revokeObjectURL(url);
+            return;
+          }
           thumbBlobCache.set(key, url);
           // Update any visible img with this path
           const imgs = fileGrid.querySelectorAll(`img[data-path="${CSS.escape(path)}"]`);
+          const expectedKey = `${path}:${size}:${getImageVersion(path)}`;
+          if (expectedKey !== key) {
+            return;
+          }
           imgs.forEach(img => { img.src = url; });
         }
       })
@@ -3414,70 +3435,87 @@ async function processThumbQueue() {
 
 // Preview image preload cache (screen-quality, not full-res)
 const previewCache = new Map(); // path -> blob URL
-let previewLoadingSet = new Set(); // paths currently being fetched
+const previewLoadingVersions = new Map(); // path -> image version currently being fetched
+
+function capturePreviewViewState() {
+  return {
+    naturalWidth: imgNatW,
+    naturalHeight: imgNatH,
+    zoomLevel,
+    panX,
+    panY,
+    wasUserZoomed: userHasZoomed,
+  };
+}
+
+function restorePreviewViewState(previousState = null) {
+  imgNatW = previewImg.naturalWidth;
+  imgNatH = previewImg.naturalHeight;
+  syncMaskEditorPreviewScaleFromCurrentImage();
+  if (
+    previousState?.wasUserZoomed
+    && previousState.naturalWidth > 0
+    && previousState.naturalHeight > 0
+    && previousState.zoomLevel > 0
+    && imgNatW > 0
+    && imgNatH > 0
+  ) {
+    const scaleRatio = previousState.naturalWidth / imgNatW;
+    zoomLevel = previousState.zoomLevel * scaleRatio;
+    const panel = previewStage;
+    const cx = panel.clientWidth / 2;
+    const cy = panel.clientHeight / 2;
+    const oldImgX = (cx - previousState.panX) / previousState.zoomLevel;
+    const oldImgY = (cy - previousState.panY) / previousState.zoomLevel;
+    const newImgX = oldImgX / scaleRatio;
+    const newImgY = oldImgY / scaleRatio;
+    panX = cx - newImgX * zoomLevel;
+    panY = cy - newImgY * zoomLevel;
+    userHasZoomed = true;
+    applyTransform();
+  } else {
+    resetZoomPan();
+  }
+  state.maskEditor.latentImageDirty = true;
+  renderMaskEditorUi();
+}
 
 function preloadPreview(path) {
-  if (previewCache.has(path) || previewLoadingSet.has(path)) return;
-  previewLoadingSet.add(path);
+  const version = getImageVersion(path);
+  if (previewCache.has(path) || previewLoadingVersions.get(path) === version) return;
+  previewLoadingVersions.set(path, version);
   fetch(buildImageApiUrl("preview", path))
     .then(r => r.ok ? r.blob() : null)
     .then(blob => {
-      if (blob) {
-        const url = URL.createObjectURL(blob);
-        previewCache.set(path, url);
-        // If currently selected, swap in the higher-quality preview
-        if (state.previewPath === path) {
-          if (state.previewMediaType === "video") {
-            previewVideo.poster = url;
-            return;
-          }
-          const oldNatW = imgNatW;
-          const oldNatH = imgNatH;
-          const oldZoom = zoomLevel;
-          const oldPanX = panX;
-          const oldPanY = panY;
-          const wasUserZoomed = userHasZoomed;
-          previewImg.onload = () => {
-            imgNatW = previewImg.naturalWidth;
-            imgNatH = previewImg.naturalHeight;
-            syncMaskEditorPreviewScaleFromCurrentImage();
-            if (wasUserZoomed && oldNatW > 0 && oldNatH > 0) {
-              // Preserve user's zoom/pan relative to old dimensions
-              const scaleRatio = oldNatW / imgNatW;
-              zoomLevel = oldZoom * scaleRatio;
-              // Adjust pan: the image center that was on screen should stay there
-              const panel = previewStage;
-              const pw = panel.clientWidth;
-              const ph = panel.clientHeight;
-              // The point at the center of the panel in old image coords:
-              const cx = pw / 2;
-              const cy = ph / 2;
-              // Map: panelPoint = pan + imgPoint * zoom
-              // oldImgPoint = (cx - oldPanX) / oldZoom
-              // newPan = cx - oldImgPoint * (oldZoom * scaleRatio) / scaleRatio  -- simplifies to same
-              // Actually: old image coord = (panelPt - oldPan) / oldZoom
-              // new image coord = oldImgCoord * (newNatW / oldNatW) = oldImgCoord / scaleRatio
-              // new pan = panelPt - newImgCoord * newZoom
-              const oldImgX = (cx - oldPanX) / oldZoom;
-              const oldImgY = (cy - oldPanY) / oldZoom;
-              const newImgX = oldImgX / scaleRatio;
-              const newImgY = oldImgY / scaleRatio;
-              panX = cx - newImgX * zoomLevel;
-              panY = cy - newImgY * zoomLevel;
-              userHasZoomed = true;
-              applyTransform();
-            } else {
-              resetZoomPan();
-            }
-            state.maskEditor.latentImageDirty = true;
-            renderMaskEditorUi();
-          };
-          previewImg.src = url;
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      if (version !== getImageVersion(path)) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      if (previewCache.has(path)) {
+        URL.revokeObjectURL(previewCache.get(path));
+      }
+      previewCache.set(path, url);
+      if (state.previewPath === path) {
+        if (state.previewMediaType === "video") {
+          previewVideo.poster = url;
+          return;
         }
+        const previousViewState = capturePreviewViewState();
+        previewImg.onload = () => {
+          restorePreviewViewState(previousViewState);
+          renderPreviewCaptionOverlay();
+        };
+        previewImg.src = url;
       }
     })
     .catch(() => {})
-    .finally(() => previewLoadingSet.delete(path));
+    .finally(() => {
+      if (previewLoadingVersions.get(path) === version) {
+        previewLoadingVersions.delete(path);
+      }
+    });
 }
 
 function updateFileCountDisplay() {
@@ -5696,11 +5734,52 @@ async function releasePreviewMediaForDeletion(paths) {
   hidePreview();
 }
 
+function getNextSelectionPathAfterDelete(paths) {
+  const deletedPaths = new Set((paths || []).filter(Boolean));
+  if (!deletedPaths.size) return null;
+
+  const visibleEntries = getVisibleImageEntries();
+  const fallbackPath = visibleEntries.find(({ img }) => !deletedPaths.has(img.path))?.img.path || null;
+  if (!visibleEntries.length) {
+    return fallbackPath;
+  }
+
+  const anchorPath = state.lastClickedPath || state.previewPath || [...state.selectedPaths][0] || null;
+  let anchorIndex = anchorPath
+    ? visibleEntries.findIndex(({ img }) => img.path === anchorPath)
+    : -1;
+
+  if (anchorIndex < 0) {
+    anchorIndex = visibleEntries.findIndex(({ img }) => deletedPaths.has(img.path));
+  }
+
+  if (anchorIndex < 0) {
+    return fallbackPath;
+  }
+
+  for (let index = anchorIndex + 1; index < visibleEntries.length; index++) {
+    const candidatePath = visibleEntries[index].img.path;
+    if (!deletedPaths.has(candidatePath)) {
+      return candidatePath;
+    }
+  }
+
+  for (let index = anchorIndex - 1; index >= 0; index--) {
+    const candidatePath = visibleEntries[index].img.path;
+    if (!deletedPaths.has(candidatePath)) {
+      return candidatePath;
+    }
+  }
+
+  return fallbackPath;
+}
+
 async function deleteSelectedImages() {
   if (state.selectedPaths.size === 0) return;
 
   const selectedPaths = [...state.selectedPaths];
   const count = selectedPaths.length;
+  const nextSelectionPath = getNextSelectionPathAfterDelete(selectedPaths);
   const confirmMessage = count === 1
     ? `Delete "${getFileLabel(selectedPaths[0])}"? This also deletes its .txt caption and .meta.json metadata files.`
     : `Delete ${count} selected media files? This also deletes their .txt caption and .meta.json metadata files.`;
@@ -5732,6 +5811,13 @@ async function deleteSelectedImages() {
     }
 
     await loadFolder({ preserveScrollTop });
+    const deletedPaths = new Set((data.deleted_paths || []).filter(Boolean));
+    const survivingSelectedPaths = selectedPaths.filter(path => !deletedPaths.has(path));
+    if (survivingSelectedPaths.length > 0) {
+      await selectUploadedImages(survivingSelectedPaths);
+    } else if (deletedPaths.size > 0 && nextSelectionPath) {
+      await selectUploadedImages([nextSelectionPath]);
+    }
 
     if (Array.isArray(data.errors) && data.errors.length > 0) {
       const summary = data.errors.length === 1
@@ -6668,6 +6754,15 @@ function updateGridSelection() {
   });
 }
 
+function refreshVisibleThumbnail(path) {
+  const thumbLoadSize = getThumbLoadSize();
+  const nextSrc = buildImageApiUrl("thumbnail", path, { size: thumbLoadSize });
+  const imgs = fileGrid.querySelectorAll(`img[data-path="${CSS.escape(path)}"]`);
+  imgs.forEach((imgEl) => {
+    imgEl.src = nextSrc;
+  });
+}
+
 // ===== SELECTION HANDLING =====
 function handleThumbClick(index, event) {
   const img = state.images[index];
@@ -6675,6 +6770,11 @@ function handleThumbClick(index, event) {
   const visibleEntries = getVisibleImageEntries();
   const currentVisibleIndex = visibleEntries.findIndex(entry => entry.img.path === img.path);
   const lastVisibleIndex = visibleEntries.findIndex(entry => entry.img.path === state.lastClickedPath);
+  const isPlainReselect = !event.ctrlKey
+    && !event.metaKey
+    && !event.shiftKey
+    && state.selectedPaths.size === 1
+    && state.selectedPaths.has(img.path);
 
   if (event.ctrlKey || event.metaKey) {
     // Toggle individual selection
@@ -6708,7 +6808,12 @@ function handleThumbClick(index, event) {
   // Show preview of last clicked (or first selected)
   if (state.selectedPaths.size === 1) {
     const path = [...state.selectedPaths][0];
-    showPreview(path);
+    if (isPlainReselect) {
+      bumpImageVersion(path);
+      invalidateImageCaches(path);
+      refreshVisibleThumbnail(path);
+    }
+    showPreview(path, { preserveView: isPlainReselect });
     loadCaptionData(path);
     loadMetadataData(path);
     loadCropData(path);
@@ -6798,7 +6903,8 @@ function applyTransform() {
   renderPreviewCaptionOverlay();
 }
 
-async function showPreview(path) {
+async function showPreview(path, options = {}) {
+  const { preserveView = false } = options;
   const previousPath = state.previewPath;
   if (previousPath && previousPath !== path && state.maskEditor.active) {
     try {
@@ -6893,14 +6999,10 @@ async function showPreview(path) {
       if (previewImg.src === src && imgNatW) {
         return;
       }
+      const previousViewState = preserveView ? capturePreviewViewState() : null;
       previewImg.style.display = "none";
       previewImg.onload = () => {
-        imgNatW = previewImg.naturalWidth;
-        imgNatH = previewImg.naturalHeight;
-        syncMaskEditorPreviewScaleFromCurrentImage();
-        resetZoomPan();
-        state.maskEditor.latentImageDirty = true;
-        renderMaskEditorUi();
+        restorePreviewViewState(previousViewState);
         renderPreviewCaptionOverlay();
       };
       previewImg.src = src;
