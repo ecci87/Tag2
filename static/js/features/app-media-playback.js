@@ -72,7 +72,7 @@ function syncPreviewVideoPlaybackState() {
   videoVolumeSlider.disabled = !isActiveVideo || previewVideo.readyState < 1;
   videoPlayToggleBtn.textContent = previewVideo.paused ? "Play" : "Pause";
   const isMuted = previewVideo.muted || previewVideo.volume <= 0;
-  videoMuteBtn.textContent = isMuted ? "ðŸ”‡" : "ðŸ”Š";
+  videoMuteBtn.textContent = isMuted ? "\uD83D\uDD07" : "\uD83D\uDD0A";
   videoMuteBtn.setAttribute("aria-label", isMuted ? "Unmute preview audio" : "Mute preview audio");
   videoMuteBtn.title = isMuted ? "Unmute preview audio" : "Mute preview audio";
   videoMuteBtn.setAttribute("aria-pressed", previewVideo.muted ? "true" : "false");
@@ -913,7 +913,7 @@ function renderVideoJobStatus() {
     parts.push(`${queuedCount} queued`);
   }
   parts.push(`${completed}/${total} done`);
-  videoJobText.textContent = parts.join(" â€¢ ");
+  videoJobText.textContent = parts.join(" \u2022 ");
   videoJobProgressFill.style.width = `${percent}%`;
   videoJobProgressFill.classList.toggle("active", running);
   renderGifConvertButton();

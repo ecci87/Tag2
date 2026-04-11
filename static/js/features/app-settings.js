@@ -218,8 +218,8 @@ function renderVideoTrainingSummary() {
     guidance.push(profile.description);
   }
 
-  videoTrainingProfileLabel.textContent = `${profile.label} â€¢ ${profile.num_frames}f @ ${profile.fps} fps`;
-  videoTrainingGuidanceLabel.textContent = guidance.join(" â€¢ ");
+  videoTrainingProfileLabel.textContent = `${profile.label} \u2022 ${profile.num_frames}f @ ${profile.fps} fps`;
+  videoTrainingGuidanceLabel.textContent = guidance.join(" \u2022 ");
 }
 
 function handleVideoTrainingPresetsInput() {

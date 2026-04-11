@@ -470,7 +470,7 @@ function renderUploadQueueStatus() {
   if (state.uploadQueueFailedJobs > 0) {
     parts.push(`${state.uploadQueueFailedJobs} failed`);
   }
-  uploadQueueText.textContent = parts.join(" â€¢ ");
+  uploadQueueText.textContent = parts.join(" \u2022 ");
 }
 
 async function selectUploadedImages(paths) {
@@ -586,7 +586,7 @@ async function processUploadQueue() {
       if (state.uploadQueue.length > 0) {
         summary.push(`${state.uploadQueue.length} queued`);
       }
-      state.uploadQueueLastSummary = summary.join(" â€¢ ");
+      state.uploadQueueLastSummary = summary.join(" \u2022 ");
 
       if (uploadedCount === 0 && totalSkippedCount > 0) {
         showErrorToast(`No media files were uploaded to ${getFileLabel(job.folder)}. ${totalSkippedCount} file${totalSkippedCount === 1 ? " was" : "s were"} skipped.`);
@@ -1135,7 +1135,7 @@ function hidePreview() {
     if (canEditCrop() || isMaskEditorVisible()) e.preventDefault();
   });
 
-  // Mouse wheel zoom â€” zooms toward cursor position
+  // Mouse wheel zoom - zooms toward cursor position
   panel.addEventListener("wheel", (e) => {
     if (!imgNatW) return;
     e.preventDefault();

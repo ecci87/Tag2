@@ -76,9 +76,9 @@ function updateMultiInfo() {
   if (state.selectedPaths.size > 1) {
     multiInfo.style.display = "block";
     if (state.ui.activeRightPanelTab === "metadata") {
-      multiInfo.textContent = `${state.selectedPaths.size} media files selected â€” Apply updates the filled metadata fields on all selected files`;
+      multiInfo.textContent = `${state.selectedPaths.size} media files selected - Apply updates the filled metadata fields on all selected files`;
     } else {
-      multiInfo.textContent = `${state.selectedPaths.size} media files selected â€” toggling captions applies to all`;
+      multiInfo.textContent = `${state.selectedPaths.size} media files selected - toggling captions applies to all`;
     }
   } else {
     multiInfo.style.display = "none";
@@ -823,7 +823,7 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
   const groupCollapseBtn = document.createElement("button");
   groupCollapseBtn.type = "button";
   groupCollapseBtn.className = "collapse-btn";
-  groupCollapseBtn.textContent = isGroupCollapsed(group) ? "â–¸" : "â–¾";
+  groupCollapseBtn.textContent = isGroupCollapsed(group) ? "\u25B8" : "\u25BE";
   groupCollapseBtn.title = isGroupCollapsed(group) ? "Expand group" : "Collapse group";
   groupCollapseBtn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -1085,7 +1085,7 @@ function renderSentences(options = {}) {
     const collapseBtn = document.createElement("button");
     collapseBtn.type = "button";
     collapseBtn.className = "collapse-btn";
-    collapseBtn.textContent = isSectionCollapsed(section) ? "â–¸" : "â–¾";
+    collapseBtn.textContent = isSectionCollapsed(section) ? "\u25B8" : "\u25BE";
     collapseBtn.title = isSectionCollapsed(section) ? "Expand section" : "Collapse section";
     collapseBtn.addEventListener("click", (e) => {
       e.stopPropagation();

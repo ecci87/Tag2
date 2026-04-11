@@ -227,10 +227,10 @@ function updateFileCountDisplay() {
   const filterCount = getActiveFilterCount();
   const hasCaptionFilters = getActiveSentenceFilterEntries().length > 0;
   if (filterCount > 0 && (!hasCaptionFilters || canApplyActiveSentenceFilters())) {
-    fileCount.textContent = `${visible}/${total} media files â€¢ ${captioned} captioned â€¢ ${filterCount} filter${filterCount === 1 ? "" : "s"}`;
+    fileCount.textContent = `${visible}/${total} media files \u2022 ${captioned} captioned \u2022 ${filterCount} filter${filterCount === 1 ? "" : "s"}`;
     return;
   }
-  fileCount.textContent = `${total} media files â€¢ ${captioned} captioned`;
+  fileCount.textContent = `${total} media files \u2022 ${captioned} captioned`;
 }
 
 function imageConformsToAspectRatios(image, tolerance = 5) {
@@ -537,7 +537,7 @@ function renderCropOverlay() {
   cropBox.style.top = (panY + crop.y * zoomLevel) + "px";
   cropBox.style.width = (crop.w * zoomLevel) + "px";
   cropBox.style.height = (crop.h * zoomLevel) + "px";
-  cropLabel.textContent = `${crop.ratio || "custom"} â€¢ ${crop.w}Ã—${crop.h}`;
+  cropLabel.textContent = `${crop.ratio || "custom"} \u2022 ${crop.w}\u00D7${crop.h}`;
   updateCropButtons();
 }
 
@@ -936,10 +936,10 @@ function renderAutoCaptionProgress() {
   const overallPercent = Math.max(0, Math.min(100, ((completedImages + currentFraction) / totalImages) * 100));
   const currentPercent = Math.max(0, Math.min(100, currentStepTotal > 0 ? (currentStepIndex / currentStepTotal) * 100 : 0));
 
-  aiProgressSummary.textContent = `${progress.scopeLabel || "AI"} â€¢ ${progress.processedImages}/${progress.totalImages} done${progress.errors ? ` â€¢ ${progress.errors} error${progress.errors === 1 ? "" : "s"}` : ""}`;
+  aiProgressSummary.textContent = `${progress.scopeLabel || "AI"} \u2022 ${progress.processedImages}/${progress.totalImages} done${progress.errors ? ` \u2022 ${progress.errors} error${progress.errors === 1 ? "" : "s"}` : ""}`;
   aiProgressMetric.textContent = `${Math.round(overallPercent)}%`;
   aiProgressCurrentLabel.textContent = progress.currentPath
-    ? `${getFileLabel(progress.currentPath)}${progress.currentMessage ? ` â€¢ ${progress.currentMessage}` : ""}`
+    ? `${getFileLabel(progress.currentPath)}${progress.currentMessage ? ` \u2022 ${progress.currentMessage}` : ""}`
     : (progress.currentMessage || "Preparing...");
   aiProgressCurrentMetric.textContent = currentStepTotal > 0 ? `${currentStepIndex}/${currentStepTotal}` : "";
   aiProgressOverallFill.style.width = `${overallPercent}%`;

@@ -712,7 +712,7 @@ function updateMaskControlLabels() {
   maskLatentNoiseInput.step = "1";
   maskLatentNoiseInput.value = String(latentNoiseTimestep);
   maskBrushValueTitle.textContent = imageMode ? "Strength" : "Value";
-  maskBrushSizeLabel.textContent = `${brushSizePercent.toFixed(1)}% Â· ${Math.round(brushDiameterMaskPx)} px`;
+  maskBrushSizeLabel.textContent = `${brushSizePercent.toFixed(1)}% \u00B7 ${Math.round(brushDiameterMaskPx)} px`;
   maskBrushValueLabel.textContent = `${Math.round(brushValue)}%`;
   maskBrushColorLabel.textContent = brushColor;
   maskBrushCoreLabel.textContent = `${Math.round(brushCore)}%`;
@@ -723,7 +723,7 @@ function updateMaskControlLabels() {
     maskResetBtn.title = "Restore the image edit overlay to the original image";
     maskEditorStatus.textContent = state.maskEditor.loading
       ? "Loading..."
-      : (state.maskEditor.saving ? "Saving..." : `${Math.round(brushValue)}% Â· ${brushColor}`);
+      : (state.maskEditor.saving ? "Saving..." : `${Math.round(brushValue)}% \u00B7 ${brushColor}`);
     return;
   }
 
@@ -731,8 +731,8 @@ function updateMaskControlLabels() {
   maskResetBtn.title = `Fill the full mask with ${Math.round(brushValue)}%`;
   maskLatentBaseWidthLabel.textContent = `${latentMetrics.baseWidth}px`;
   maskLatentDividerLabel.textContent = `/${latentMetrics.divider}`;
-  maskLatentBaseSizeLabel.textContent = `Base ${latentMetrics.baseWidth}Ã—${latentMetrics.baseHeight}`;
-  maskLatentGridSizeLabel.textContent = `Latent ${latentMetrics.latentWidth}Ã—${latentMetrics.latentHeight}`;
+  maskLatentBaseSizeLabel.textContent = `Base ${latentMetrics.baseWidth}\u00D7${latentMetrics.baseHeight}`;
+  maskLatentGridSizeLabel.textContent = `Latent ${latentMetrics.latentWidth}\u00D7${latentMetrics.latentHeight}`;
   maskLatentSignalLabel.textContent = `Signal ${state.maskEditor.latentSignalPercent.toFixed(1)}%`;
   maskLatentReductionLabel.textContent = `Reduction ${state.maskEditor.latentReductionPercent.toFixed(1)}%`;
   maskEditorStatus.textContent = state.maskEditor.loading
@@ -2081,7 +2081,7 @@ function createPreviewCaptionButton(sentence) {
 function renderPreviewCaptionOverlay() {
   previewCaptionOverlay.classList.remove("visible");
   previewCaptionOverlay.classList.toggle("collapsed", !!state.previewCaptionOverlayCollapsed);
-  previewCaptionToggle.textContent = state.previewCaptionOverlayCollapsed ? "+" : "âˆ’";
+  previewCaptionToggle.textContent = state.previewCaptionOverlayCollapsed ? "+" : "-";
   previewCaptionToggle.setAttribute("aria-expanded", state.previewCaptionOverlayCollapsed ? "false" : "true");
   previewCaptionToggle.setAttribute("aria-label", state.previewCaptionOverlayCollapsed ? "Expand enabled captions" : "Collapse enabled captions");
   previewCaptionToggle.title = state.previewCaptionOverlayCollapsed ? "Expand enabled captions" : "Collapse enabled captions";

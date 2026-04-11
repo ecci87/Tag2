@@ -98,9 +98,9 @@ function renderPreviewInfo() {
 
   const parts = [];
   if (state.previewMediaType === "video") {
-    parts.push(`${media.name} â€¢ video`);
+    parts.push(`${media.name} \u2022 video`);
   } else {
-    parts.push(hasAppliedCrop() ? `${media.name} â€¢ cropped` : media.name);
+    parts.push(hasAppliedCrop() ? `${media.name} \u2022 cropped` : media.name);
   }
 
   const latestPromptPreviewPath = getLatestPromptPreviewFile(state.previewPath);
@@ -108,7 +108,7 @@ function renderPreviewInfo() {
     parts.push(state.promptPreview.displayPath === latestPromptPreviewPath ? "prompt preview" : "original");
   }
 
-  previewInfo.textContent = parts.join(" â€¢ ");
+  previewInfo.textContent = parts.join(" \u2022 ");
   previewInfo.style.display = "block";
 }
 
