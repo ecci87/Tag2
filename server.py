@@ -482,15 +482,31 @@ def _queue_comfyui_prompt(host: str, prompt: dict) -> dict:
     return _post_comfyui_json(host, "/prompt", {"prompt": prompt})
 
 
+def _matches_comfyui_preview_filename(entry_stem: str, filename_prefix: str) -> bool:
+    """Return whether a ComfyUI output filename belongs to the selected source stem."""
+    normalized_stem = str(entry_stem or "").casefold()
+    normalized_prefix = str(filename_prefix or "").casefold()
+    if not normalized_prefix:
+        return False
+    if normalized_stem == normalized_prefix:
+        return True
+    if not normalized_stem.startswith(normalized_prefix):
+        return False
+    next_char = normalized_stem[len(normalized_prefix):len(normalized_prefix) + 1]
+    return bool(next_char) and not next_char.isalnum()
+
+
 def _scan_comfyui_preview_files(output_folder: str, source_path: str) -> list[str]:
-    """Return generated preview images that share the selected source filename prefix."""
+    """Return generated preview images that share the selected source filename stem."""
     normalized_folder = os.path.abspath(os.path.normpath(str(output_folder or "").strip()))
     if not normalized_folder:
         raise RuntimeError("ComfyUI output folder is not configured")
     if not os.path.isdir(normalized_folder):
         raise RuntimeError(f"ComfyUI output folder not found: {normalized_folder}")
 
-    prefix = Path(str(source_path or "")).stem.lower()
+    prefix = Path(str(source_path or "")).stem
+    if not prefix:
+        return []
 
     def sort_key(path_obj: Path):
         tokens = re.split(r"(\d+)", path_obj.stem.lower())
@@ -503,7 +519,7 @@ def _scan_comfyui_preview_files(output_folder: str, source_path: str) -> list[st
             continue
         if entry.suffix.lower() not in IMAGE_EXTENSIONS:
             continue
-        if not entry.stem.lower().startswith(prefix):
+        if not _matches_comfyui_preview_filename(entry.stem, prefix):
             continue
         matches.append(str(entry))
     matches.sort(key=lambda item: sort_key(Path(item)))

@@ -1665,6 +1665,17 @@ class TestComfyUiPromptPreview:
 
         assert [Path(path).name for path in files] == ["photo1_00001_.png", "photo1_00002_.png"]
 
+    def test_scan_comfyui_preview_files_requires_prefix_boundary(self, tmp_path):
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        Image.new("RGB", (32, 32), color="blue").save(output_dir / "ABC_00001_.png")
+        Image.new("RGB", (32, 32), color="green").save(output_dir / "ABCDEF_00001_.png")
+        Image.new("RGB", (32, 32), color="red").save(output_dir / "ABCD_00001_.png")
+
+        files = server._scan_comfyui_preview_files(str(output_dir), str(tmp_path / "ABC.jpg"))
+
+        assert [Path(path).name for path in files] == ["ABC_00001_.png"]
+
     def test_scan_comfyui_preview_files_sorts_by_filename_number(self, tmp_path):
         output_dir = tmp_path / "output"
         output_dir.mkdir()
