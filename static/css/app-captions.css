@@ -114,6 +114,27 @@
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 10px;
 }
+.metadata-editor-guidance {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.metadata-editor-guidance p {
+  margin: 0;
+}
+.metadata-editor-guidance strong {
+  color: var(--fg);
+}
+.metadata-editor-guidance code {
+  font-size: 11px;
+}
 .metadata-field {
   display: flex;
   flex-direction: column;
