@@ -126,11 +126,34 @@ const state = {
   ollamaGroupPromptTemplate: "You are selecting the single best caption for one media item from a numbered list. Reply with exactly one number from 1 to {count}. Pick the most likely correct caption for the media.\n\nGroup: {group_name}\n{options}\n\nAnswer:",
   ollamaEnableFreeText: true,
   ollamaFreeTextPromptTemplate: "You are improving a media caption file. The caption text below already covers known details and must not be repeated. Look at the media and return only notable, important visual details that are still missing. Return either NONE or one short line per missing detail, with no bullets or numbering.\n\nCurrent caption text:\n{caption_text}\n\nAnswer:",
+  comfyuiServer: "127.0.0.1",
+  comfyuiPort: 8188,
+  comfyuiWorkflowPath: "",
+  comfyuiOutputFolder: "",
   ollamaAvailableModels: [],
   modelLogLines: [],
   modelLogOpen: false,
   cloning: false,
   duplicatingImage: false,
+  promptPreview: {
+    sourcePath: "",
+    jobs: [],
+    summary: {
+      total: 0,
+      spawned: 0,
+      queued: 0,
+      running: 0,
+      completed: 0,
+      failed: 0,
+      latest_prompt_id: "",
+      latest_output_path: "",
+    },
+    files: [],
+    displayPath: "",
+    cycleIndex: -1,
+    lastFilesKey: "",
+    loading: false,
+  },
   folderAutocomplete: {
     items: [],
     highlightedIndex: -1,
@@ -188,6 +211,8 @@ const state = {
     pendingSentenceRender: false,
     pendingPreviewRender: false,
     videoJobPollTimer: null,
+    promptPreviewPollTimer: null,
+    promptPreviewClickTimer: null,
     suppressVideoClick: false,
     videoTimelineFetches: new Map(),
   },
@@ -279,6 +304,9 @@ const cropRemoveBtn = $("#crop-remove-btn");
 const previewActionBar = $("#preview-action-bar");
 const duplicateImageBtn = $("#duplicate-image-btn");
 const imageEditBtn = $("#image-edit-btn");
+const promptPreviewBtn = $("#prompt-preview-btn");
+const promptPreviewBtnThumb = $("#prompt-preview-btn-thumb");
+const promptPreviewBtnLabel = $("#prompt-preview-btn-label");
 const maskEditBtn = $("#mask-edit-btn");
 const videoMaskAddBtn = $("#video-mask-add-btn");
 const gifConvertBtn = $("#gif-convert-btn");
@@ -365,6 +393,10 @@ const settingsPortInput = $("#settings-ollama-port");
 const settingsTimeoutInput = $("#settings-ollama-timeout");
 const settingsModelInput = $("#settings-ollama-model");
 const settingsRefreshModelsBtn = $("#settings-refresh-models-btn");
+const settingsComfyuiServerInput = $("#settings-comfyui-server");
+const settingsComfyuiPortInput = $("#settings-comfyui-port");
+const settingsComfyuiWorkflowPathInput = $("#settings-comfyui-workflow-path");
+const settingsComfyuiOutputFolderInput = $("#settings-comfyui-output-folder");
 const settingsCropAspectRatiosInput = $("#settings-crop-aspect-ratios");
 const settingsMaskLatentBaseWidthPresetsInput = $("#settings-mask-latent-base-width-presets");
 const settingsHttpsCertInput = $("#settings-https-certfile");

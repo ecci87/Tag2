@@ -17,6 +17,7 @@ import shutil
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import warnings
 from collections import deque
@@ -180,6 +181,9 @@ video_job_recent: list[str] = []
 video_job_active_id: str | None = None
 video_job_wakeup = threading.Event()
 MAX_VIDEO_JOB_HISTORY = 24
+comfyui_job_lock = threading.Lock()
+comfyui_job_registry: dict[str, dict] = {}
+MAX_COMFYUI_JOB_HISTORY = 96
 
 # In-memory thumbnail cache lives in `tag2_images`.
 
@@ -189,6 +193,10 @@ DEFAULT_OLLAMA_SERVER = "127.0.0.1"
 DEFAULT_OLLAMA_PORT = 11434
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 20
 DEFAULT_OLLAMA_MODEL = "llava"
+DEFAULT_COMFYUI_SERVER = "127.0.0.1"
+DEFAULT_COMFYUI_PORT = 8188
+DEFAULT_COMFYUI_WORKFLOW_PATH = ""
+DEFAULT_COMFYUI_OUTPUT_FOLDER = ""
 DEFAULT_CROP_ASPECT_RATIOS = ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"]
 DEFAULT_MASK_LATENT_BASE_WIDTH_PRESETS = [512, 768, 1024, 1280]
 DEFAULT_HTTPS_CERTFILE = ""
@@ -262,6 +270,8 @@ DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE = (
     "Current caption text:\n{caption_text}\n\n"
     "Answer:"
 )
+COMFYUI_PROMPT_PLACEHOLDER = "{{TAG2_PROMPT}}"
+COMFYUI_FILENAME_PREFIX_PLACEHOLDER = "{{TAG2_FILENAME_PREFIX}}"
 
 
 def _list_ollama_models(host: str, timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> list[str]:
@@ -288,6 +298,329 @@ def _list_ollama_models(host: str, timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS
         seen.add(name)
         models.append(name)
     return models
+
+
+def _compose_comfyui_host(server: str | None, port: int | None, default_server: str, default_port: int) -> str:
+    """Return the normalized HTTP base URL for the configured ComfyUI instance."""
+    server_name = str(server or default_server).strip() or default_server
+    try:
+        port_number = int(port or default_port)
+    except (TypeError, ValueError):
+        port_number = default_port
+    port_number = max(1, min(65535, port_number))
+    if server_name.startswith("http://") or server_name.startswith("https://"):
+        return server_name.rstrip("/")
+    return f"http://{server_name}:{port_number}"
+
+
+def _get_comfyui_server(cfg: dict, default_server: str = DEFAULT_COMFYUI_SERVER) -> str:
+    """Return the configured ComfyUI host name without protocol."""
+    return str(cfg.get("comfyui_server") or default_server).strip() or default_server
+
+
+def _get_comfyui_port(cfg: dict, default_port: int = DEFAULT_COMFYUI_PORT) -> int:
+    """Return the configured ComfyUI port."""
+    try:
+        port = int(cfg.get("comfyui_port", default_port))
+    except (TypeError, ValueError):
+        port = default_port
+    return max(1, min(65535, port))
+
+
+def _get_comfyui_host(cfg: dict, default_server: str = DEFAULT_COMFYUI_SERVER, default_port: int = DEFAULT_COMFYUI_PORT) -> str:
+    """Return the normalized HTTP base URL for the configured ComfyUI instance."""
+    return _compose_comfyui_host(
+        cfg.get("comfyui_server"),
+        cfg.get("comfyui_port"),
+        default_server,
+        default_port,
+    )
+
+
+def _get_comfyui_workflow_path(cfg: dict, default_path: str = DEFAULT_COMFYUI_WORKFLOW_PATH) -> str:
+    """Return the configured ComfyUI workflow API JSON path."""
+    return _resolve_config_path(cfg.get("comfyui_workflow_path") or default_path)
+
+
+def _get_comfyui_output_folder(cfg: dict, default_path: str = DEFAULT_COMFYUI_OUTPUT_FOLDER) -> str:
+    """Return the configured ComfyUI output directory."""
+    return _resolve_config_path(cfg.get("comfyui_output_folder") or default_path)
+
+
+def _fetch_comfyui_json(host: str, route: str, timeout: int = 20) -> dict:
+    """Fetch one JSON payload from the ComfyUI HTTP API."""
+    url = f"{host.rstrip('/')}/{route.lstrip('/')}"
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(detail or str(exc)) from exc
+    except TimeoutError as exc:
+        raise RuntimeError(f"request timed out after {timeout} seconds") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(str(exc.reason or exc)) from exc
+
+
+def _post_comfyui_json(host: str, route: str, payload: dict, timeout: int = 20) -> dict:
+    """Post one JSON payload to the ComfyUI HTTP API."""
+    url = f"{host.rstrip('/')}/{route.lstrip('/')}"
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(detail or str(exc)) from exc
+    except TimeoutError as exc:
+        raise RuntimeError(f"request timed out after {timeout} seconds") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(str(exc.reason or exc)) from exc
+
+
+def _load_comfyui_workflow_template(workflow_path: str) -> dict:
+    """Read the configured ComfyUI API-export workflow JSON from disk."""
+    normalized_path = os.path.abspath(os.path.normpath(str(workflow_path or "").strip()))
+    if not normalized_path:
+        raise RuntimeError("ComfyUI workflow path is not configured")
+    if not os.path.isfile(normalized_path):
+        raise RuntimeError(f"ComfyUI workflow file not found: {normalized_path}")
+    try:
+        with open(normalized_path, "r", encoding="utf-8") as f:
+            workflow = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid ComfyUI workflow JSON: {exc}") from exc
+    if not isinstance(workflow, dict) or not workflow:
+        raise RuntimeError("ComfyUI workflow JSON must be a non-empty object")
+    return workflow
+
+
+def _replace_comfyui_workflow_placeholders(value, replacements: dict[str, str]):
+    """Recursively replace placeholder tokens inside a workflow JSON payload."""
+    if isinstance(value, str):
+        result = value
+        for placeholder, replacement in replacements.items():
+            result = result.replace(placeholder, replacement)
+        return result
+    if isinstance(value, list):
+        return [_replace_comfyui_workflow_placeholders(item, replacements) for item in value]
+    if isinstance(value, dict):
+        return {key: _replace_comfyui_workflow_placeholders(item, replacements) for key, item in value.items()}
+    return value
+
+
+def _find_comfyui_placeholder_usage(value, placeholder: str) -> bool:
+    """Return whether a workflow JSON payload references a specific placeholder."""
+    if isinstance(value, str):
+        return placeholder in value
+    if isinstance(value, list):
+        return any(_find_comfyui_placeholder_usage(item, placeholder) for item in value)
+    if isinstance(value, dict):
+        return any(_find_comfyui_placeholder_usage(item, placeholder) for item in value.values())
+    return False
+
+
+def _build_comfyui_prompt_payload(workflow_template: dict, prompt_text: str, filename_prefix: str) -> dict:
+    """Build one ComfyUI prompt payload by replacing supported placeholder tokens."""
+    if not _find_comfyui_placeholder_usage(workflow_template, COMFYUI_PROMPT_PLACEHOLDER):
+        raise RuntimeError(f"ComfyUI workflow must reference {COMFYUI_PROMPT_PLACEHOLDER}")
+    if not _find_comfyui_placeholder_usage(workflow_template, COMFYUI_FILENAME_PREFIX_PLACEHOLDER):
+        raise RuntimeError(f"ComfyUI workflow must reference {COMFYUI_FILENAME_PREFIX_PLACEHOLDER}")
+    replacements = {
+        COMFYUI_PROMPT_PLACEHOLDER: str(prompt_text or ""),
+        COMFYUI_FILENAME_PREFIX_PLACEHOLDER: str(filename_prefix or ""),
+    }
+    return _replace_comfyui_workflow_placeholders(copy.deepcopy(workflow_template), replacements)
+
+
+def _queue_comfyui_prompt(host: str, prompt: dict) -> dict:
+    """Submit one prompt graph to ComfyUI and return the queue response."""
+    if not isinstance(prompt, dict) or not prompt:
+        raise RuntimeError("ComfyUI prompt payload is empty")
+    return _post_comfyui_json(host, "/prompt", {"prompt": prompt})
+
+
+def _scan_comfyui_preview_files(output_folder: str, source_path: str) -> list[str]:
+    """Return generated preview images that share the selected source filename prefix."""
+    normalized_folder = os.path.abspath(os.path.normpath(str(output_folder or "").strip()))
+    if not normalized_folder:
+        raise RuntimeError("ComfyUI output folder is not configured")
+    if not os.path.isdir(normalized_folder):
+        raise RuntimeError(f"ComfyUI output folder not found: {normalized_folder}")
+
+    prefix = Path(str(source_path or "")).stem.lower()
+    matches: list[str] = []
+    for entry in sorted(Path(normalized_folder).iterdir(), key=lambda item: (item.stat().st_mtime, item.name.lower())):
+        if not entry.is_file():
+            continue
+        if entry.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        if not entry.stem.lower().startswith(prefix):
+            continue
+        matches.append(str(entry))
+    return matches
+
+
+def _get_comfyui_queue_prompt_ids(queue_payload: dict) -> tuple[set[str], set[str]]:
+    """Extract running and pending prompt ids from the ComfyUI queue response."""
+    running: set[str] = set()
+    pending: set[str] = set()
+
+    def collect_ids(items, target: set[str]):
+        for item in items or []:
+            if isinstance(item, dict):
+                prompt_id = str(item.get("prompt_id") or item.get("id") or "").strip()
+                if prompt_id:
+                    target.add(prompt_id)
+                continue
+            if isinstance(item, (list, tuple)):
+                for value in item:
+                    if isinstance(value, str) and value:
+                        target.add(value)
+                        break
+
+    collect_ids(queue_payload.get("queue_running"), running)
+    collect_ids(queue_payload.get("queue_pending"), pending)
+    return running, pending
+
+
+def _prune_comfyui_job_registry_locked() -> None:
+    """Keep the in-memory ComfyUI job registry from growing without bound."""
+    if len(comfyui_job_registry) <= MAX_COMFYUI_JOB_HISTORY:
+        return
+    removable = sorted(
+        comfyui_job_registry.items(),
+        key=lambda item: float(item[1].get("created_at") or 0.0),
+    )
+    for prompt_id, job in removable:
+        if len(comfyui_job_registry) <= MAX_COMFYUI_JOB_HISTORY:
+            break
+        if str(job.get("status") or "") in {"queued", "running"}:
+            continue
+        comfyui_job_registry.pop(prompt_id, None)
+
+
+def _upsert_comfyui_job_record(prompt_id: str, **patch) -> dict | None:
+    """Create or update one tracked ComfyUI job record."""
+    normalized_prompt_id = str(prompt_id or "").strip()
+    if not normalized_prompt_id:
+        return None
+    with comfyui_job_lock:
+        job = comfyui_job_registry.get(normalized_prompt_id)
+        now = time.time()
+        if not job:
+            job = {
+                "prompt_id": normalized_prompt_id,
+                "status": "queued",
+                "created_at": now,
+                "updated_at": now,
+                "message": "Queued",
+                "error": "",
+                "image_path": "",
+                "folder": "",
+                "filename_prefix": "",
+                "caption_text": "",
+            }
+            comfyui_job_registry[normalized_prompt_id] = job
+        job.update(patch)
+        job["updated_at"] = now
+        _prune_comfyui_job_registry_locked()
+        return dict(job)
+
+
+def _get_comfyui_jobs_for_image(image_path: str) -> list[dict]:
+    """Return tracked ComfyUI jobs for one source image sorted by creation time."""
+    normalized_path = os.path.abspath(os.path.normpath(str(image_path or "").strip()))
+    with comfyui_job_lock:
+        jobs = [
+            dict(job)
+            for job in comfyui_job_registry.values()
+            if os.path.abspath(os.path.normpath(str(job.get("image_path") or "").strip())) == normalized_path
+        ]
+    jobs.sort(key=lambda item: float(item.get("created_at") or 0.0))
+    return jobs
+
+
+def _refresh_comfyui_jobs_for_image(cfg: dict, image_path: str) -> dict:
+    """Refresh tracked ComfyUI jobs for one source image against the live ComfyUI queue/history."""
+    normalized_path = os.path.abspath(os.path.normpath(str(image_path or "").strip()))
+    jobs = _get_comfyui_jobs_for_image(normalized_path)
+    output_files = _scan_comfyui_preview_files(_get_comfyui_output_folder(cfg), normalized_path)
+    if not jobs:
+        return {
+            "jobs": [],
+            "summary": {
+                "total": 0,
+                "spawned": 0,
+                "queued": 0,
+                "running": 0,
+                "completed": 0,
+                "failed": 0,
+                "latest_prompt_id": "",
+                "latest_output_path": output_files[-1] if output_files else "",
+            },
+            "files": output_files,
+        }
+
+    host = _get_comfyui_host(cfg, DEFAULT_COMFYUI_SERVER, DEFAULT_COMFYUI_PORT)
+    queue_payload = _fetch_comfyui_json(host, "/queue")
+    running_ids, pending_ids = _get_comfyui_queue_prompt_ids(queue_payload)
+    refreshed_jobs: list[dict] = []
+    for job in jobs:
+        prompt_id = str(job.get("prompt_id") or "").strip()
+        if not prompt_id:
+            continue
+        next_status = str(job.get("status") or "queued")
+        message = str(job.get("message") or "")
+        error = str(job.get("error") or "")
+        if prompt_id in running_ids:
+            next_status = "running"
+            message = "Running in ComfyUI"
+        elif prompt_id in pending_ids:
+            next_status = "queued"
+            message = "Queued in ComfyUI"
+        else:
+            history_payload = _fetch_comfyui_json(host, f"/history/{urllib.parse.quote(prompt_id)}")
+            history_entry = history_payload.get(prompt_id) if isinstance(history_payload, dict) else None
+            if history_entry:
+                status_info = history_entry.get("status") if isinstance(history_entry, dict) else None
+                completed = bool((status_info or {}).get("completed")) if isinstance(status_info, dict) else False
+                history_error = (status_info or {}).get("messages") if isinstance(status_info, dict) else None
+                if completed:
+                    next_status = "completed"
+                    message = "Completed"
+                elif history_error:
+                    next_status = "error"
+                    error = json.dumps(history_error, ensure_ascii=False)
+                    message = "ComfyUI execution failed"
+                else:
+                    next_status = "completed"
+                    message = "Completed"
+            elif next_status not in {"completed", "error"}:
+                next_status = "completed" if output_files else "unknown"
+                message = "Finished" if output_files else "Prompt not found in live queue"
+        refreshed = _upsert_comfyui_job_record(prompt_id, status=next_status, message=message, error=error) or job
+        refreshed_jobs.append(refreshed)
+
+    refreshed_jobs.sort(key=lambda item: float(item.get("created_at") or 0.0))
+    summary = {
+        "total": len(refreshed_jobs),
+        "spawned": len(refreshed_jobs),
+        "queued": sum(1 for job in refreshed_jobs if job.get("status") == "queued"),
+        "running": sum(1 for job in refreshed_jobs if job.get("status") == "running"),
+        "completed": sum(1 for job in refreshed_jobs if job.get("status") == "completed"),
+        "failed": sum(1 for job in refreshed_jobs if job.get("status") == "error"),
+        "latest_prompt_id": str(refreshed_jobs[-1].get("prompt_id") or "") if refreshed_jobs else "",
+        "latest_output_path": output_files[-1] if output_files else "",
+    }
+    return {"jobs": refreshed_jobs, "summary": summary, "files": output_files}
 
 
 def _load_config() -> dict:
@@ -319,6 +652,11 @@ def _load_config() -> dict:
         "ollama_group_prompt_template": DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE,
         "ollama_enable_free_text": True,
         "ollama_free_text_prompt_template": DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
+        # Local ComfyUI prompt-preview settings
+        "comfyui_server": DEFAULT_COMFYUI_SERVER,
+        "comfyui_port": DEFAULT_COMFYUI_PORT,
+        "comfyui_workflow_path": DEFAULT_COMFYUI_WORKFLOW_PATH,
+        "comfyui_output_folder": DEFAULT_COMFYUI_OUTPUT_FOLDER,
         # Per-folder caption lists. Key = absolute folder path.
         # To copy captions to a new folder, duplicate a block here.
         "folders": {}
@@ -344,6 +682,10 @@ def _load_config() -> dict:
                 DEFAULT_OLLAMA_SERVER,
                 DEFAULT_OLLAMA_PORT,
             )
+            data.setdefault("comfyui_server", DEFAULT_COMFYUI_SERVER)
+            data.setdefault("comfyui_port", DEFAULT_COMFYUI_PORT)
+            data.setdefault("comfyui_workflow_path", DEFAULT_COMFYUI_WORKFLOW_PATH)
+            data.setdefault("comfyui_output_folder", DEFAULT_COMFYUI_OUTPUT_FOLDER)
             # Merge with defaults so new keys are always present
             for k, v in default.items():
                 data.setdefault(k, v)
@@ -3074,6 +3416,20 @@ class SettingsUpdate(BaseModel):
     ollama_group_prompt_template: Optional[str] = None
     ollama_enable_free_text: Optional[bool] = None
     ollama_free_text_prompt_template: Optional[str] = None
+    comfyui_server: Optional[str] = None
+    comfyui_port: Optional[int] = None
+    comfyui_workflow_path: Optional[str] = None
+    comfyui_output_folder: Optional[str] = None
+
+
+class ComfyUiPromptPreviewRequest(BaseModel):
+    image_path: str
+    enabled_captions: list[str] = Field(default_factory=list)
+    enabled_sentences: list[str] = Field(default_factory=list)
+    free_text: str = ""
+
+    def resolved_enabled_captions(self) -> list[str]:
+        return list(self.enabled_captions or self.enabled_sentences)
 
 
 @app.get("/api/settings")
@@ -3104,6 +3460,10 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
         "ollama_group_prompt_template": _get_ollama_group_prompt_template(cfg, DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE),
         "ollama_enable_free_text": _get_ollama_enable_free_text(cfg),
         "ollama_free_text_prompt_template": _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE),
+        "comfyui_server": _get_comfyui_server(cfg, DEFAULT_COMFYUI_SERVER),
+        "comfyui_port": _get_comfyui_port(cfg, DEFAULT_COMFYUI_PORT),
+        "comfyui_workflow_path": str(cfg.get("comfyui_workflow_path") or ""),
+        "comfyui_output_folder": str(cfg.get("comfyui_output_folder") or ""),
     }
     if folder:
         result["sections"] = _get_folder_sections(cfg, folder)
@@ -3186,6 +3546,14 @@ async def update_settings(data: SettingsUpdate):
         cfg["ollama_enable_free_text"] = bool(data.ollama_enable_free_text)
     if data.ollama_free_text_prompt_template is not None:
         cfg["ollama_free_text_prompt_template"] = data.ollama_free_text_prompt_template or DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE
+    if data.comfyui_server is not None:
+        cfg["comfyui_server"] = str(data.comfyui_server or "").strip() or DEFAULT_COMFYUI_SERVER
+    if data.comfyui_port is not None:
+        cfg["comfyui_port"] = max(1, min(65535, int(data.comfyui_port)))
+    if data.comfyui_workflow_path is not None:
+        cfg["comfyui_workflow_path"] = str(data.comfyui_workflow_path or "").strip()
+    if data.comfyui_output_folder is not None:
+        cfg["comfyui_output_folder"] = str(data.comfyui_output_folder or "").strip()
     cfg["ollama_host"] = _compose_ollama_host(cfg.get("ollama_server"), cfg.get("ollama_port"), DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
     if data.video_training_profile_key is not None and data.folder:
         presets = _get_video_training_presets(cfg)
@@ -3194,6 +3562,116 @@ async def update_settings(data: SettingsUpdate):
         _set_folder_sections(cfg, data.folder, data.sections)
     _save_config(cfg)
     return {"ok": True}
+
+
+@app.get("/api/comfyui/prompt-preview/status")
+async def get_comfyui_prompt_preview_status(image_path: str = Query(...)):
+    """Return tracked ComfyUI prompt-preview jobs and summary information for one source image."""
+    normalized_path = _normalize_existing_media_path(image_path)
+    if not _is_image_path(normalized_path):
+        raise HTTPException(status_code=400, detail="Prompt preview currently supports images only")
+    cfg = _load_config()
+    try:
+        snapshot = _refresh_comfyui_jobs_for_image(cfg, normalized_path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "image_path": normalized_path,
+        "jobs": snapshot["jobs"],
+        "summary": snapshot["summary"],
+        "files": snapshot["files"],
+    }
+
+
+@app.get("/api/comfyui/prompt-preview/files")
+async def get_comfyui_prompt_preview_files(image_path: str = Query(...)):
+    """Return generated preview files for one source image based on filename prefix matching."""
+    normalized_path = _normalize_existing_media_path(image_path)
+    if not _is_image_path(normalized_path):
+        raise HTTPException(status_code=400, detail="Prompt preview currently supports images only")
+    cfg = _load_config()
+    try:
+        files = _scan_comfyui_preview_files(_get_comfyui_output_folder(cfg), normalized_path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "image_path": normalized_path,
+        "filename_prefix": Path(normalized_path).stem,
+        "files": files,
+    }
+
+
+@app.post("/api/comfyui/prompt-preview")
+async def post_comfyui_prompt_preview(data: ComfyUiPromptPreviewRequest):
+    """Submit the selected image caption text to the configured ComfyUI workflow."""
+    normalized_path = _normalize_existing_media_path(data.image_path)
+    if not _is_image_path(normalized_path):
+        raise HTTPException(status_code=400, detail="Prompt preview currently supports images only")
+
+    cfg = _load_config()
+    host = _get_comfyui_host(cfg, DEFAULT_COMFYUI_SERVER, DEFAULT_COMFYUI_PORT)
+    workflow_path = _get_comfyui_workflow_path(cfg, DEFAULT_COMFYUI_WORKFLOW_PATH)
+    output_folder = _get_comfyui_output_folder(cfg, DEFAULT_COMFYUI_OUTPUT_FOLDER)
+    folder = str(Path(normalized_path).parent)
+    sections = _get_folder_sections(cfg, folder)
+    enabled_captions = _normalize_enabled_captions(data.resolved_enabled_captions(), sections)
+    free_text = str(data.free_text or "")
+    caption_text = _build_caption_text(enabled_captions, free_text, sections)
+    if not caption_text.strip():
+        raise HTTPException(status_code=400, detail="Prompt preview requires caption text")
+
+    try:
+        workflow_template = _load_comfyui_workflow_template(workflow_path)
+        if not os.path.isdir(output_folder):
+            raise RuntimeError(f"ComfyUI output folder not found: {output_folder}")
+        prompt_payload = _build_comfyui_prompt_payload(workflow_template, caption_text, Path(normalized_path).stem)
+        response = _queue_comfyui_prompt(host, prompt_payload)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    prompt_id = str(response.get("prompt_id") or "").strip()
+    if not prompt_id:
+        raise HTTPException(status_code=502, detail="ComfyUI did not return a prompt_id")
+
+    job = _upsert_comfyui_job_record(
+        prompt_id,
+        status="queued",
+        message="Queued in ComfyUI",
+        error="",
+        image_path=normalized_path,
+        folder=folder,
+        filename_prefix=Path(normalized_path).stem,
+        caption_text=caption_text,
+        workflow_path=workflow_path,
+        output_folder=output_folder,
+        queue_number=response.get("number"),
+    ) or {}
+
+    try:
+        snapshot = _refresh_comfyui_jobs_for_image(cfg, normalized_path)
+    except RuntimeError:
+        snapshot = {
+            "jobs": [job],
+            "summary": {
+                "total": 1,
+                "spawned": 1,
+                "queued": 1,
+                "running": 0,
+                "completed": 0,
+                "failed": 0,
+                "latest_prompt_id": prompt_id,
+                "latest_output_path": "",
+            },
+            "files": [],
+        }
+
+    return {
+        "ok": True,
+        "job": job,
+        "jobs": snapshot["jobs"],
+        "summary": snapshot["summary"],
+        "files": snapshot["files"],
+    }
 
 
 def _open_file_manager_selection(path: str):

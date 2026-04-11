@@ -187,6 +187,10 @@
           <div id="preview-action-bar">
             <button id="duplicate-image-btn" type="button">Duplicate</button>
             <button id="image-edit-btn" type="button">Edit Image</button>
+            <button id="prompt-preview-btn" type="button" title="Queue or cycle ComfyUI prompt previews">
+              <span id="prompt-preview-btn-thumb" aria-hidden="true"></span>
+              <span id="prompt-preview-btn-label">Prompt Preview</span>
+            </button>
             <button id="mask-edit-btn" type="button">Mask</button>
             <button id="gif-convert-btn" type="button">GIF to MP4</button>
           </div>
@@ -375,6 +379,26 @@
             <label for="settings-ollama-free-text-prompt">Free Text Prompt</label>
             <textarea id="settings-ollama-free-text-prompt" spellcheck="false"></textarea>
             <div class="settings-help">Use <span>{caption_text}</span>, <span>{current_caption}</span>, or <span>{caption}</span> for the updated caption txt.</div>
+          </div>
+          <div class="settings-grid">
+            <div class="settings-field">
+              <label for="settings-comfyui-server">ComfyUI Server</label>
+              <input type="text" id="settings-comfyui-server" placeholder="127.0.0.1" spellcheck="false">
+            </div>
+            <div class="settings-field">
+              <label for="settings-comfyui-port">ComfyUI Port</label>
+              <input type="number" id="settings-comfyui-port" min="1" max="65535" placeholder="8188" spellcheck="false">
+            </div>
+          </div>
+          <div class="settings-field">
+            <label for="settings-comfyui-workflow-path">ComfyUI Workflow API JSON</label>
+            <input type="text" class="compact-code" id="settings-comfyui-workflow-path" placeholder="workflows/prompt-preview.json" spellcheck="false">
+            <div class="settings-help">Export the ComfyUI workflow as API JSON. One string input in the workflow must contain <span>{{TAG2_PROMPT}}</span> and another must contain <span>{{TAG2_FILENAME_PREFIX}}</span>. Tag2 replaces those placeholders before queueing the prompt.</div>
+          </div>
+          <div class="settings-field">
+            <label for="settings-comfyui-output-folder">ComfyUI Output Folder</label>
+            <input type="text" class="compact-code" id="settings-comfyui-output-folder" placeholder="ComfyUI/output" spellcheck="false">
+            <div class="settings-help">Point this at the ComfyUI output folder used by the workflow. Tag2 finds preview images by matching the selected image filename prefix in this folder.</div>
           </div>
         </section>
         <section class="settings-panel" id="settings-panel-server" role="tabpanel" aria-labelledby="settings-tab-server" data-settings-panel="server" hidden>

@@ -274,6 +274,7 @@ async function initFromSettings() {
 }
 initFromSettings();
 startVideoJobPolling();
+startPromptPreviewPolling();
 
 // Initial render of sentences
 setCropAspectRatios(state.cropAspectRatioLabels);

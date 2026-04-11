@@ -23,7 +23,9 @@ def _reset_config(tmp_path, monkeypatch):
     """Use a temporary config file for every test."""
     config_path = str(tmp_path / "config.json")
     monkeypatch.setattr(server, "CONFIG_PATH", config_path)
+    server.comfyui_job_registry.clear()
     yield
+    server.comfyui_job_registry.clear()
 
 
 @pytest.fixture
@@ -1501,6 +1503,21 @@ class TestSettingsAPI:
         assert data["ffmpeg_hwaccel"] == "off"
         assert data["processing_reserved_cores"] == 3
 
+    def test_save_and_load_comfyui_settings(self, client):
+        client.post("/api/settings", json={
+            "comfyui_server": "localhost",
+            "comfyui_port": 8199,
+            "comfyui_workflow_path": "workflows/prompt-preview.json",
+            "comfyui_output_folder": "comfy-output",
+        })
+        resp = client.get("/api/settings")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["comfyui_server"] == "localhost"
+        assert data["comfyui_port"] == 8199
+        assert data["comfyui_workflow_path"] == "workflows/prompt-preview.json"
+        assert data["comfyui_output_folder"] == "comfy-output"
+
     def test_get_ollama_models(self, client, monkeypatch):
         monkeypatch.setattr(server, "_list_ollama_models", lambda host, timeout=20: ["llava:latest", "qwen2.5vl"])
         resp = client.get("/api/ollama/models", params={"server": "localhost", "port": 11435})
@@ -1585,6 +1602,157 @@ class TestSettingsAPI:
         cfg = server._load_config()
         sections = server._get_folder_sections(cfg, folder)
         assert sections[0]["sentences"] == ["s1"]
+
+
+class TestComfyUiPromptPreview:
+    def test_replace_comfyui_workflow_placeholders(self):
+        workflow = {
+            "1": {"inputs": {"text": "Prompt: {{TAG2_PROMPT}}"}},
+            "2": {"inputs": {"filename_prefix": "{{TAG2_FILENAME_PREFIX}}"}},
+        }
+
+        result = server._build_comfyui_prompt_payload(workflow, "A scenic lake", "photo1")
+
+        assert result["1"]["inputs"]["text"] == "Prompt: A scenic lake"
+        assert result["2"]["inputs"]["filename_prefix"] == "photo1"
+
+    def test_replace_comfyui_workflow_placeholders_requires_both_tokens(self):
+        workflow = {"1": {"inputs": {"text": "Prompt only {{TAG2_PROMPT}}"}}}
+
+        with pytest.raises(RuntimeError, match="TAG2_FILENAME_PREFIX"):
+            server._build_comfyui_prompt_payload(workflow, "A scenic lake", "photo1")
+
+    def test_scan_comfyui_preview_files_filters_by_prefix(self, tmp_path):
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        Image.new("RGB", (32, 32), color="blue").save(output_dir / "photo1_00001_.png")
+        Image.new("RGB", (32, 32), color="green").save(output_dir / "photo1_00002_.png")
+        Image.new("RGB", (32, 32), color="red").save(output_dir / "photo2_00001_.png")
+
+        files = server._scan_comfyui_preview_files(str(output_dir), str(tmp_path / "photo1.jpg"))
+
+        assert [Path(path).name for path in files] == ["photo1_00001_.png", "photo1_00002_.png"]
+
+    def test_post_prompt_preview_queues_comfyui_prompt(self, client, img_dir, monkeypatch):
+        image_path = str(img_dir / "photo1.jpg")
+        workflow_path = img_dir / "prompt-preview.json"
+        output_dir = img_dir / "comfy-output"
+        output_dir.mkdir()
+        workflow_path.write_text(json.dumps({
+            "1": {"inputs": {"text": "{{TAG2_PROMPT}}"}},
+            "2": {"inputs": {"filename_prefix": "{{TAG2_FILENAME_PREFIX}}"}},
+        }), encoding="utf-8")
+        client.post("/api/settings", json={
+            "comfyui_server": "127.0.0.1",
+            "comfyui_port": 8188,
+            "comfyui_workflow_path": str(workflow_path),
+            "comfyui_output_folder": str(output_dir),
+            "folder": str(img_dir),
+            "sections": [{"name": "", "sentences": ["lake"], "groups": []}],
+        })
+
+        captured = {}
+
+        def fake_queue(host, prompt):
+            captured["host"] = host
+            captured["prompt"] = prompt
+            return {"prompt_id": "prompt-1", "number": 3}
+
+        def fake_refresh(cfg, image_path):
+            return {
+                "jobs": [{"prompt_id": "prompt-1", "status": "queued", "image_path": image_path}],
+                "summary": {
+                    "total": 1,
+                    "spawned": 1,
+                    "queued": 1,
+                    "running": 0,
+                    "completed": 0,
+                    "failed": 0,
+                    "latest_prompt_id": "prompt-1",
+                    "latest_output_path": "",
+                },
+                "files": [],
+            }
+
+        monkeypatch.setattr(server, "_queue_comfyui_prompt", fake_queue)
+        monkeypatch.setattr(server, "_refresh_comfyui_jobs_for_image", fake_refresh)
+
+        resp = client.post("/api/comfyui/prompt-preview", json={
+            "image_path": image_path,
+            "enabled_captions": ["lake"],
+            "free_text": "sunset lighting",
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["job"]["prompt_id"] == "prompt-1"
+        assert captured["host"] == "http://127.0.0.1:8188"
+        assert captured["prompt"]["1"]["inputs"]["text"] == "lake\n\nsunset lighting"
+        assert captured["prompt"]["2"]["inputs"]["filename_prefix"] == "photo1"
+
+    def test_post_prompt_preview_rejects_missing_workflow(self, client, img_dir):
+        image_path = str(img_dir / "photo1.jpg")
+        output_dir = img_dir / "comfy-output"
+        output_dir.mkdir()
+        client.post("/api/settings", json={
+            "comfyui_workflow_path": str(img_dir / "missing.json"),
+            "comfyui_output_folder": str(output_dir),
+        })
+
+        resp = client.post("/api/comfyui/prompt-preview", json={
+            "image_path": image_path,
+            "enabled_captions": ["lake"],
+            "free_text": "sunset lighting",
+        })
+
+        assert resp.status_code == 400
+        assert "workflow file not found" in resp.json()["detail"].lower()
+
+    def test_get_prompt_preview_files(self, client, img_dir):
+        image_path = str(img_dir / "photo1.jpg")
+        output_dir = img_dir / "comfy-output"
+        output_dir.mkdir()
+        Image.new("RGB", (32, 32), color="blue").save(output_dir / "photo1_00001_.png")
+        Image.new("RGB", (32, 32), color="green").save(output_dir / "photo1_00002_.png")
+        client.post("/api/settings", json={"comfyui_output_folder": str(output_dir)})
+
+        resp = client.get("/api/comfyui/prompt-preview/files", params={"image_path": image_path})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert [Path(path).name for path in data["files"]] == ["photo1_00001_.png", "photo1_00002_.png"]
+
+    def test_get_prompt_preview_status_returns_summary(self, client, img_dir, monkeypatch):
+        image_path = str(img_dir / "photo1.jpg")
+        output_dir = img_dir / "comfy-output"
+        output_dir.mkdir()
+        client.post("/api/settings", json={"comfyui_output_folder": str(output_dir)})
+
+        def fake_refresh(cfg, image_path):
+            return {
+                "jobs": [{"prompt_id": "prompt-1", "status": "running", "image_path": image_path}],
+                "summary": {
+                    "total": 1,
+                    "spawned": 1,
+                    "queued": 0,
+                    "running": 1,
+                    "completed": 0,
+                    "failed": 0,
+                    "latest_prompt_id": "prompt-1",
+                    "latest_output_path": "",
+                },
+                "files": [],
+            }
+
+        monkeypatch.setattr(server, "_refresh_comfyui_jobs_for_image", fake_refresh)
+
+        resp = client.get("/api/comfyui/prompt-preview/status", params={"image_path": image_path})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["summary"]["running"] == 1
+        assert data["jobs"][0]["prompt_id"] == "prompt-1"
 
     def test_remote_http_redirects_to_https_for_other_computers(self, client, monkeypatch):
         monkeypatch.setattr(server, "_load_config", lambda: {

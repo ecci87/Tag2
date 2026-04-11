@@ -2254,6 +2254,7 @@ function renderPreviewActionBar() {
   const maskAvailable = isMaskEditAvailable();
   duplicateImageBtn.classList.toggle("visible", imageAvailable && !active);
   imageEditBtn.classList.toggle("visible", imageAvailable && !active);
+  renderPromptPreviewButton();
   maskEditBtn.classList.toggle("visible", maskAvailable && !active);
   duplicateImageBtn.disabled = !imageAvailable || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading;
   imageEditBtn.disabled = !imageAvailable || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading;
@@ -2262,7 +2263,7 @@ function renderPreviewActionBar() {
   duplicateImageBtn.title = "Duplicate this image with its caption and mask sidecars";
   imageEditBtn.title = "Paint a color overlay that preserves the image detail and shading";
   renderGifConvertButton();
-  const visible = !active && [duplicateImageBtn, imageEditBtn, maskEditBtn, gifConvertBtn].some((button) => button.classList.contains("visible"));
+  const visible = !active && [duplicateImageBtn, imageEditBtn, promptPreviewBtn, maskEditBtn, gifConvertBtn].some((button) => button.classList.contains("visible"));
   previewActionBar.classList.toggle("visible", visible);
 }
 
@@ -2861,6 +2862,7 @@ async function loadMaskEditorForPath(path, options = {}) {
 async function enterMaskEditMode(options = {}) {
   const { createNew = false } = options;
   if (!isMaskEditAvailable()) return;
+  await clearPromptPreviewDisplay({ preserveView: true });
   if (state.cropDraft || state.cropInteraction) {
     clearCropDraft();
   }
@@ -2888,6 +2890,7 @@ async function enterMaskEditMode(options = {}) {
 
 async function enterImageEditMode() {
   if (!isImageEditAvailable()) return;
+  await clearPromptPreviewDisplay({ preserveView: true });
   if (state.cropDraft || state.cropInteraction) {
     clearCropDraft();
   }
@@ -3500,6 +3503,9 @@ function preloadPreview(path) {
       if (state.previewPath === path) {
         if (state.previewMediaType === "video") {
           previewVideo.poster = url;
+          return;
+        }
+        if (state.promptPreview.sourcePath === path && state.promptPreview.displayPath && state.promptPreview.displayPath !== path) {
           return;
         }
         const previousViewState = capturePreviewViewState();
@@ -4551,6 +4557,389 @@ function renderGifConvertButton() {
     : "Convert this GIF into an MP4 beside the original GIF";
 }
 
+function createPromptPreviewSummary() {
+  return {
+    total: 0,
+    spawned: 0,
+    queued: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    latest_prompt_id: "",
+    latest_output_path: "",
+  };
+}
+
+function isPromptPreviewSourceActive(sourcePath = state.previewPath) {
+  return !!sourcePath && state.promptPreview.sourcePath === sourcePath;
+}
+
+function getPromptPreviewFiles(sourcePath = state.previewPath) {
+  if (!isPromptPreviewSourceActive(sourcePath)) return [];
+  return Array.isArray(state.promptPreview.files) ? state.promptPreview.files.filter(Boolean) : [];
+}
+
+function getPromptPreviewCyclePaths(sourcePath = state.previewPath, files = getPromptPreviewFiles(sourcePath)) {
+  const uniqueFiles = Array.from(new Set((files || []).filter(Boolean)));
+  if (!sourcePath) return uniqueFiles;
+  return uniqueFiles.length > 0 ? [...uniqueFiles, sourcePath] : [sourcePath];
+}
+
+function getPromptPreviewCurrentDisplayPath(sourcePath = state.previewPath) {
+  if (isPromptPreviewSourceActive(sourcePath) && state.promptPreview.displayPath) {
+    return state.promptPreview.displayPath;
+  }
+  return sourcePath;
+}
+
+function resetPromptPreviewState() {
+  state.promptPreview.sourcePath = "";
+  state.promptPreview.jobs = [];
+  state.promptPreview.summary = createPromptPreviewSummary();
+  state.promptPreview.files = [];
+  state.promptPreview.displayPath = "";
+  state.promptPreview.cycleIndex = -1;
+  state.promptPreview.lastFilesKey = "";
+  state.promptPreview.loading = false;
+  renderPreviewInfo();
+  renderPromptPreviewButton();
+}
+
+function renderPreviewInfo() {
+  if (!state.previewPath) {
+    previewInfo.style.display = "none";
+    return;
+  }
+
+  const media = state.images.find((item) => item.path === state.previewPath);
+  if (!media) {
+    previewInfo.style.display = "none";
+    return;
+  }
+
+  const parts = [];
+  if (state.previewMediaType === "video") {
+    parts.push(`${media.name} • video`);
+  } else {
+    parts.push(hasAppliedCrop() ? `${media.name} • cropped` : media.name);
+  }
+
+  const promptPreviewFiles = getPromptPreviewFiles(state.previewPath);
+  if (promptPreviewFiles.length > 0) {
+    const cyclePaths = getPromptPreviewCyclePaths(state.previewPath, promptPreviewFiles);
+    const currentDisplayPath = getPromptPreviewCurrentDisplayPath(state.previewPath);
+    const currentIndex = Math.max(0, cyclePaths.indexOf(currentDisplayPath));
+    if (currentDisplayPath !== state.previewPath) {
+      parts.push(`prompt preview ${currentIndex + 1}/${cyclePaths.length}`);
+    } else {
+      parts.push(`original ${currentIndex + 1}/${cyclePaths.length}`);
+    }
+  }
+
+  previewInfo.textContent = parts.join(" • ");
+  previewInfo.style.display = "block";
+}
+
+function loadPromptPreviewImage(path, { preserveView = true } = {}) {
+  if (!path) return;
+  if (!(state.imageVersions[path] > 0)) {
+    state.imageVersions[path] = Date.now();
+  }
+  const previousViewState = preserveView ? capturePreviewViewState() : null;
+  previewImg.style.display = "none";
+  previewImg.onload = () => {
+    restorePreviewViewState(previousViewState);
+    renderPreviewCaptionOverlay();
+    renderPreviewInfo();
+  };
+  previewImg.src = buildImageApiUrl("preview", path);
+  previewPlaceholder.style.display = "none";
+}
+
+async function setPromptPreviewDisplayPath(path, options = {}) {
+  const { preserveView = true } = options;
+  if (!state.previewPath || state.previewMediaType !== "image") return;
+  const sourcePath = state.previewPath;
+  state.promptPreview.sourcePath = sourcePath;
+
+  if (!path || path === sourcePath) {
+    state.promptPreview.displayPath = "";
+    state.promptPreview.cycleIndex = getPromptPreviewCyclePaths(sourcePath).indexOf(sourcePath);
+    await showPreview(sourcePath, { preserveView });
+    renderPreviewInfo();
+    renderPromptPreviewButton();
+    return;
+  }
+
+  state.promptPreview.displayPath = path;
+  state.promptPreview.cycleIndex = getPromptPreviewCyclePaths(sourcePath).indexOf(path);
+  loadPromptPreviewImage(path, { preserveView });
+  renderPreviewInfo();
+  renderPromptPreviewButton();
+}
+
+async function clearPromptPreviewDisplay(options = {}) {
+  if (!state.previewPath || state.promptPreview.displayPath === "") return;
+  await setPromptPreviewDisplayPath("", options);
+}
+
+function updatePromptPreviewButtonThumb(sourcePath = state.previewPath) {
+  const promptPreviewFiles = getPromptPreviewFiles(sourcePath);
+  const summary = isPromptPreviewSourceActive(sourcePath) ? state.promptPreview.summary : createPromptPreviewSummary();
+  const thumbPath = state.promptPreview.displayPath
+    || summary.latest_output_path
+    || promptPreviewFiles[promptPreviewFiles.length - 1]
+    || "";
+
+  if (thumbPath && thumbPath !== sourcePath) {
+    if (!(state.imageVersions[thumbPath] > 0)) {
+      state.imageVersions[thumbPath] = Date.now();
+    }
+    promptPreviewBtnThumb.hidden = false;
+    promptPreviewBtnThumb.style.backgroundImage = `url("${buildImageApiUrl("thumbnail", thumbPath, { size: 64 })}")`;
+    promptPreviewBtn.classList.add("has-thumb");
+    return;
+  }
+
+  promptPreviewBtnThumb.hidden = true;
+  promptPreviewBtnThumb.style.backgroundImage = "none";
+  promptPreviewBtn.classList.remove("has-thumb");
+}
+
+function canPromptPreviewCurrentImage() {
+  return state.selectedPaths.size === 1
+    && !!state.previewPath
+    && state.previewMediaType === "image"
+    && !!imgNatW
+    && !!imgNatH;
+}
+
+function renderPromptPreviewButton() {
+  const visible = canPromptPreviewCurrentImage() && !isMaskEditorVisible();
+  const sourcePath = state.previewPath;
+  const sourceActive = isPromptPreviewSourceActive(sourcePath);
+  const summary = sourceActive ? state.promptPreview.summary : createPromptPreviewSummary();
+  const promptPreviewFiles = sourceActive ? getPromptPreviewFiles(sourcePath) : [];
+  const queued = Math.max(0, Number(summary.queued || 0));
+  const running = Math.max(0, Number(summary.running || 0));
+  const spawned = Math.max(0, Number(summary.spawned || summary.total || 0));
+  const hasActiveJobs = queued > 0 || running > 0;
+  const disabled = !visible || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading || state.promptPreview.loading;
+
+  promptPreviewBtn.classList.toggle("visible", visible);
+  promptPreviewBtn.classList.toggle("running", hasActiveJobs || state.promptPreview.loading);
+  promptPreviewBtn.disabled = disabled;
+
+  let label = "Prompt Preview";
+  let title = "Queue a ComfyUI prompt preview from the current caption";
+  if (state.promptPreview.loading && sourceActive) {
+    label = "Prompt Preview...";
+    title = "Refreshing ComfyUI prompt preview status";
+  } else if (hasActiveJobs) {
+    if (running > 0) {
+      label = `Preview ${spawned} running`;
+    } else {
+      label = `Preview ${spawned} queued`;
+    }
+    title = `${spawned} prompt preview job${spawned === 1 ? "" : "s"} spawned for ${getFileLabel(sourcePath)}. Running: ${running}. Queued: ${queued}. Click again to queue another job.`;
+  } else if (promptPreviewFiles.length > 0) {
+    const cyclePaths = getPromptPreviewCyclePaths(sourcePath, promptPreviewFiles);
+    const currentDisplayPath = getPromptPreviewCurrentDisplayPath(sourcePath);
+    const currentIndex = Math.max(0, cyclePaths.indexOf(currentDisplayPath));
+    label = `Preview ${currentIndex + 1}/${cyclePaths.length}`;
+    title = `Cycle through ${promptPreviewFiles.length} generated prompt preview image${promptPreviewFiles.length === 1 ? "" : "s"} and the original image. Double-click to reveal the current preview in Explorer.`;
+  }
+
+  promptPreviewBtnLabel.textContent = label;
+  promptPreviewBtn.title = title;
+  updatePromptPreviewButtonThumb(sourcePath);
+}
+
+function applyPromptPreviewSnapshot(sourcePath, payload, options = {}) {
+  const { autoDisplayLatest = false } = options;
+  const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+  const summary = { ...createPromptPreviewSummary(), ...(payload?.summary || {}) };
+  const files = Array.from(new Set((Array.isArray(payload?.files) ? payload.files : []).filter(Boolean)));
+  const previousCompleted = Number(state.promptPreview.summary.completed || 0);
+  const previousFilesKey = state.promptPreview.lastFilesKey || "";
+  const nextFilesKey = files.join("\n");
+  const filesChanged = nextFilesKey !== previousFilesKey;
+
+  if (filesChanged) {
+    const versionBase = Date.now();
+    files.forEach((path, index) => {
+      state.imageVersions[path] = versionBase + index;
+    });
+  }
+
+  state.promptPreview.sourcePath = sourcePath;
+  state.promptPreview.jobs = jobs;
+  state.promptPreview.summary = summary;
+  state.promptPreview.files = files;
+  state.promptPreview.lastFilesKey = nextFilesKey;
+
+  if (state.promptPreview.displayPath && !files.includes(state.promptPreview.displayPath)) {
+    state.promptPreview.displayPath = "";
+  }
+
+  const cyclePaths = getPromptPreviewCyclePaths(sourcePath, files);
+  const currentDisplayPath = getPromptPreviewCurrentDisplayPath(sourcePath);
+  state.promptPreview.cycleIndex = cyclePaths.indexOf(currentDisplayPath);
+
+  renderPromptPreviewButton();
+  renderPreviewInfo();
+
+  const completedIncreased = Number(summary.completed || 0) > previousCompleted;
+  const shouldAutoDisplayLatest = state.previewPath === sourcePath
+    && state.previewMediaType === "image"
+    && files.length > 0
+    && (autoDisplayLatest || completedIncreased || (previousFilesKey && filesChanged));
+
+  if (shouldAutoDisplayLatest) {
+    setPromptPreviewDisplayPath(files[files.length - 1], { preserveView: true }).catch(() => {});
+  }
+}
+
+async function fetchPromptPreviewStatus(imagePath, options = {}) {
+  const { showErrors = true } = options;
+  const resp = await fetch(`/api/comfyui/prompt-preview/status?image_path=${encodeURIComponent(imagePath)}`);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const message = data.detail || "Failed to load prompt preview status";
+    if (showErrors) {
+      showErrorToast(`Prompt preview error: ${message}`);
+    }
+    throw new Error(message);
+  }
+  return data;
+}
+
+async function refreshPromptPreviewStatus(sourcePath = state.previewPath, options = {}) {
+  const data = await fetchPromptPreviewStatus(sourcePath, options);
+  applyPromptPreviewSnapshot(sourcePath, data, { autoDisplayLatest: !!options.autoDisplayLatest });
+  return data;
+}
+
+async function queuePromptPreviewFromCurrentCaption(sourcePath = state.previewPath) {
+  if (!state.captionCache[sourcePath]) {
+    await loadCaptionData(sourcePath);
+  }
+  const caption = state.captionCache[sourcePath] || { enabled_sentences: [], free_text: "" };
+  const resp = await fetch("/api/comfyui/prompt-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      image_path: sourcePath,
+      enabled_captions: caption.enabled_sentences || [],
+      free_text: caption.free_text || "",
+    }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.detail || "Failed to queue prompt preview");
+  }
+  return data;
+}
+
+async function cyclePromptPreviewDisplay(direction = "forward") {
+  const sourcePath = state.previewPath;
+  const cyclePaths = getPromptPreviewCyclePaths(sourcePath);
+  if (!sourcePath || cyclePaths.length <= 1) {
+    return false;
+  }
+
+  const currentDisplayPath = getPromptPreviewCurrentDisplayPath(sourcePath);
+  const currentIndex = Math.max(0, cyclePaths.indexOf(currentDisplayPath));
+  const delta = direction === "backward" ? -1 : 1;
+  const nextIndex = (currentIndex + delta + cyclePaths.length) % cyclePaths.length;
+  const nextPath = cyclePaths[nextIndex];
+  state.promptPreview.cycleIndex = nextIndex;
+  await setPromptPreviewDisplayPath(nextPath === sourcePath ? "" : nextPath, { preserveView: true });
+  return true;
+}
+
+async function runPromptPreviewButtonAction() {
+  if (!canPromptPreviewCurrentImage()) {
+    showErrorToast("Select a single image first.");
+    return;
+  }
+  const sourcePath = state.previewPath;
+  state.promptPreview.sourcePath = sourcePath;
+  state.promptPreview.loading = true;
+  renderPromptPreviewButton();
+  try {
+    const status = await refreshPromptPreviewStatus(sourcePath, { showErrors: false, autoDisplayLatest: false }).catch(() => ({
+      image_path: sourcePath,
+      jobs: [],
+      summary: createPromptPreviewSummary(),
+      files: [],
+    }));
+    const summary = { ...createPromptPreviewSummary(), ...(status.summary || {}) };
+    const hasActiveJobs = Number(summary.running || 0) > 0 || Number(summary.queued || 0) > 0;
+    const hasFiles = Array.isArray(status.files) && status.files.length > 0;
+
+    if (!hasFiles || hasActiveJobs) {
+      const queued = await queuePromptPreviewFromCurrentCaption(sourcePath);
+      applyPromptPreviewSnapshot(sourcePath, queued, { autoDisplayLatest: false });
+      statusBar.textContent = `Queued prompt preview ${Math.max(1, Number(state.promptPreview.summary.spawned || 1))} for ${getFileLabel(sourcePath)}`;
+      return;
+    }
+
+    const changed = await cyclePromptPreviewDisplay("forward");
+    if (changed) {
+      statusBar.textContent = `Switched prompt preview for ${getFileLabel(sourcePath)}`;
+    }
+  } catch (err) {
+    showErrorToast(`Prompt preview error: ${err.message}`);
+    statusBar.textContent = `Prompt preview error: ${err.message}`;
+  } finally {
+    state.promptPreview.loading = false;
+    renderPromptPreviewButton();
+  }
+}
+
+async function revealCurrentPromptPreviewInExplorer() {
+  if (!canPromptPreviewCurrentImage()) {
+    showErrorToast("Select a single image first.");
+    return;
+  }
+  const sourcePath = state.previewPath;
+  const promptPreviewFiles = getPromptPreviewFiles(sourcePath);
+  const revealPath = state.promptPreview.displayPath || promptPreviewFiles[promptPreviewFiles.length - 1] || "";
+  if (!revealPath || revealPath === sourcePath) {
+    showErrorToast("No generated prompt preview file found yet.");
+    return;
+  }
+
+  const resp = await fetch(`/api/open-in-explorer?path=${encodeURIComponent(revealPath)}`);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.detail || "Failed to reveal prompt preview file");
+  }
+}
+
+async function pollPromptPreviewStatus() {
+  const sourcePath = state.previewPath;
+  if (!sourcePath || state.previewMediaType !== "image") return;
+  if (!isPromptPreviewSourceActive(sourcePath)) return;
+  if (state.promptPreview.loading) return;
+  const summary = state.promptPreview.summary || createPromptPreviewSummary();
+  const shouldPoll = Number(summary.running || 0) > 0 || Number(summary.queued || 0) > 0;
+  if (!shouldPoll) return;
+  try {
+    await refreshPromptPreviewStatus(sourcePath, { showErrors: false, autoDisplayLatest: true });
+  } catch (err) {
+    console.error("Failed to poll prompt preview status:", err);
+  }
+}
+
+function startPromptPreviewPolling() {
+  if (state.ui.promptPreviewPollTimer) return;
+  state.ui.promptPreviewPollTimer = window.setInterval(() => {
+    pollPromptPreviewStatus().catch(() => {});
+  }, 1500);
+}
+
 function handleVideoTrainingPresetsInput() {
   const currentSelection = String(settingsVideoProfileInput.value || state.videoTrainingProfileKey || "").trim();
   try {
@@ -4591,6 +4980,10 @@ function applySettings(settings) {
   state.ollamaGroupPromptTemplate = settings.ollama_group_prompt_template || state.ollamaGroupPromptTemplate;
   state.ollamaEnableFreeText = settings.ollama_enable_free_text ?? state.ollamaEnableFreeText;
   state.ollamaFreeTextPromptTemplate = settings.ollama_free_text_prompt_template || state.ollamaFreeTextPromptTemplate;
+  state.comfyuiServer = (settings.comfyui_server || "127.0.0.1").trim() || "127.0.0.1";
+  state.comfyuiPort = Number(settings.comfyui_port || 8188) || 8188;
+  state.comfyuiWorkflowPath = String(settings.comfyui_workflow_path || "").trim();
+  state.comfyuiOutputFolder = String(settings.comfyui_output_folder || "").trim();
   if (Object.prototype.hasOwnProperty.call(settings, "video_training_presets")) {
     state.videoTrainingPresets = Array.isArray(settings.video_training_presets) ? settings.video_training_presets : [];
   }
@@ -4666,6 +5059,10 @@ function fillSettingsForm() {
   settingsPortInput.value = String(state.ollamaPort);
   settingsTimeoutInput.value = String(state.ollamaTimeoutSeconds);
   populateOllamaModelSelect(state.ollamaAvailableModels || [], state.ollamaModel);
+  settingsComfyuiServerInput.value = state.comfyuiServer;
+  settingsComfyuiPortInput.value = String(state.comfyuiPort);
+  settingsComfyuiWorkflowPathInput.value = state.comfyuiWorkflowPath;
+  settingsComfyuiOutputFolderInput.value = state.comfyuiOutputFolder;
   settingsCropAspectRatiosInput.value = state.cropAspectRatioLabels.join(", ");
   settingsMaskLatentBaseWidthPresetsInput.value = getMaskLatentBaseWidthPresets().join(", ");
   settingsHttpsCertInput.value = state.httpsCertFile;
@@ -5873,6 +6270,10 @@ async function saveOllamaSettingsFromForm() {
   const port = Number(settingsPortInput.value || "11434") || 11434;
   const timeoutSeconds = Number(settingsTimeoutInput.value || "20") || 20;
   const model = String(settingsModelInput.value || "").trim() || "llava";
+  const comfyuiServer = settingsComfyuiServerInput.value.trim() || "127.0.0.1";
+  const comfyuiPort = Number(settingsComfyuiPortInput.value || "8188") || 8188;
+  const comfyuiWorkflowPath = settingsComfyuiWorkflowPathInput.value.trim();
+  const comfyuiOutputFolder = settingsComfyuiOutputFolderInput.value.trim();
   const cropAspectRatios = settingsCropAspectRatiosInput.value.split(",").map(s => s.trim()).filter(Boolean);
   let maskLatentBaseWidthPresets;
   const httpsCertFile = settingsHttpsCertInput.value.trim();
@@ -5921,6 +6322,10 @@ async function saveOllamaSettingsFromForm() {
     ollama_port: port,
     ollama_timeout_seconds: timeoutSeconds,
     ollama_model: model,
+    comfyui_server: comfyuiServer,
+    comfyui_port: comfyuiPort,
+    comfyui_workflow_path: comfyuiWorkflowPath,
+    comfyui_output_folder: comfyuiOutputFolder,
     crop_aspect_ratios: cropAspectRatios,
     mask_latent_base_width_presets: maskLatentBaseWidthPresets,
     video_training_presets: videoTrainingPresets,
@@ -6906,6 +7311,9 @@ function applyTransform() {
 async function showPreview(path, options = {}) {
   const { preserveView = false } = options;
   const previousPath = state.previewPath;
+  if (state.promptPreview.sourcePath && state.promptPreview.sourcePath !== path) {
+    resetPromptPreviewState();
+  }
   if (previousPath && previousPath !== path && state.maskEditor.active) {
     try {
       await saveMaskEdit();
@@ -7021,17 +7429,14 @@ async function showPreview(path, options = {}) {
   }
 
   previewPlaceholder.style.display = "none";
-  const img = state.images.find(i => i.path === path);
-  if (img) {
-    previewInfo.textContent = state.previewMediaType === "video"
-      ? `${img.name} • video`
-      : (hasAppliedCrop() ? `${img.name} • cropped` : img.name);
-    previewInfo.style.display = "block";
-  }
+  renderPreviewInfo();
   renderPreviewCaptionOverlay();
   renderVideoEditPanel();
   renderMaskEditorUi();
   renderGifConvertButton();
+  if (state.promptPreview.sourcePath === path && state.promptPreview.displayPath && state.promptPreview.displayPath !== path && state.previewMediaType === "image") {
+    loadPromptPreviewImage(state.promptPreview.displayPath, { preserveView });
+  }
 }
 
 function hidePreview() {
@@ -7040,6 +7445,7 @@ function hidePreview() {
   }
   state.previewPath = null;
   state.previewMediaType = null;
+  resetPromptPreviewState();
   previewImg.style.display = "none";
   stopPreviewVideo({ clearSource: true });
   previewPlaceholder.style.display = "flex";
@@ -7304,6 +7710,27 @@ cropBox.querySelectorAll("[data-handle]").forEach(handleEl => {
 });
 maskEditBtn.addEventListener("click", enterMaskEditMode);
 imageEditBtn.addEventListener("click", enterImageEditMode);
+promptPreviewBtn.addEventListener("click", () => {
+  if (state.ui.promptPreviewClickTimer) {
+    window.clearTimeout(state.ui.promptPreviewClickTimer);
+  }
+  state.ui.promptPreviewClickTimer = window.setTimeout(() => {
+    state.ui.promptPreviewClickTimer = null;
+    runPromptPreviewButtonAction().catch(() => {});
+  }, 220);
+});
+promptPreviewBtn.addEventListener("dblclick", (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  if (state.ui.promptPreviewClickTimer) {
+    window.clearTimeout(state.ui.promptPreviewClickTimer);
+    state.ui.promptPreviewClickTimer = null;
+  }
+  revealCurrentPromptPreviewInExplorer().catch((err) => {
+    showErrorToast(`Prompt preview error: ${err.message}`);
+    statusBar.textContent = `Prompt preview error: ${err.message}`;
+  });
+});
 duplicateImageBtn.addEventListener("click", duplicateCurrentImage);
 videoMaskAddBtn.addEventListener("click", enterVideoMaskAddMode);
 maskApplyBtn.addEventListener("click", () => saveMaskEdit().catch(() => {}));
