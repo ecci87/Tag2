@@ -3441,12 +3441,22 @@ const previewCache = new Map(); // path -> blob URL
 const previewLoadingVersions = new Map(); // path -> image version currently being fetched
 
 function capturePreviewViewState() {
+  const displayWidth = imgNatW > 0 && zoomLevel > 0 ? imgNatW * zoomLevel : 0;
+  const displayHeight = imgNatH > 0 && zoomLevel > 0 ? imgNatH * zoomLevel : 0;
+  const panelCenterX = previewStage.clientWidth / 2;
+  const panelCenterY = previewStage.clientHeight / 2;
+  const imageCenterX = panX + displayWidth / 2;
+  const imageCenterY = panY + displayHeight / 2;
   return {
     naturalWidth: imgNatW,
     naturalHeight: imgNatH,
     zoomLevel,
     panX,
     panY,
+    displayWidth,
+    displayHeight,
+    centerOffsetX: panelCenterX - imageCenterX,
+    centerOffsetY: panelCenterY - imageCenterY,
     wasUserZoomed: userHasZoomed,
   };
 }
@@ -3456,25 +3466,30 @@ function restorePreviewViewState(previousState = null) {
   imgNatH = previewImg.naturalHeight;
   syncMaskEditorPreviewScaleFromCurrentImage();
   if (
-    previousState?.wasUserZoomed
-    && previousState.naturalWidth > 0
-    && previousState.naturalHeight > 0
-    && previousState.zoomLevel > 0
+    previousState
+    && previousState.displayWidth > 0
+    && previousState.displayHeight > 0
     && imgNatW > 0
     && imgNatH > 0
   ) {
-    const scaleRatio = previousState.naturalWidth / imgNatW;
-    zoomLevel = previousState.zoomLevel * scaleRatio;
     const panel = previewStage;
     const cx = panel.clientWidth / 2;
     const cy = panel.clientHeight / 2;
-    const oldImgX = (cx - previousState.panX) / previousState.zoomLevel;
-    const oldImgY = (cy - previousState.panY) / previousState.zoomLevel;
-    const newImgX = oldImgX / scaleRatio;
-    const newImgY = oldImgY / scaleRatio;
-    panX = cx - newImgX * zoomLevel;
-    panY = cy - newImgY * zoomLevel;
-    userHasZoomed = true;
+    const widthZoom = previousState.displayWidth / imgNatW;
+    const heightZoom = previousState.displayHeight / imgNatH;
+    const targetZoom = Number.isFinite(widthZoom) && widthZoom > 0
+      ? widthZoom
+      : heightZoom;
+    zoomLevel = Math.max(0.0001, targetZoom || 0.0001);
+    const displayWidth = imgNatW * zoomLevel;
+    const displayHeight = imgNatH * zoomLevel;
+    const centerOffsetX = Number.isFinite(previousState.centerOffsetX) ? previousState.centerOffsetX : 0;
+    const centerOffsetY = Number.isFinite(previousState.centerOffsetY) ? previousState.centerOffsetY : 0;
+    const imageCenterX = cx - centerOffsetX;
+    const imageCenterY = cy - centerOffsetY;
+    panX = imageCenterX - displayWidth / 2;
+    panY = imageCenterY - displayHeight / 2;
+    userHasZoomed = !!previousState.wasUserZoomed;
     applyTransform();
   } else {
     resetZoomPan();
@@ -4188,6 +4203,7 @@ function updateActionButtons() {
   addFreeTextNowBtn.title = state.autoCaptioning && state.autoCaptionMode === "free-text-only"
     ? "Stop the running free-text enhancement"
     : "Ask Ollama to add only free-text details for the selected media";
+  renderCreatePromptPreviewButton();
   renderPreviewActionBar();
   renderVideoEditPanel();
 }
@@ -4579,10 +4595,17 @@ function getPromptPreviewFiles(sourcePath = state.previewPath) {
   return Array.isArray(state.promptPreview.files) ? state.promptPreview.files.filter(Boolean) : [];
 }
 
-function getPromptPreviewCyclePaths(sourcePath = state.previewPath, files = getPromptPreviewFiles(sourcePath)) {
+function getLatestPromptPreviewFile(sourcePath = state.previewPath, files = getPromptPreviewFiles(sourcePath)) {
   const uniqueFiles = Array.from(new Set((files || []).filter(Boolean)));
-  if (!sourcePath) return uniqueFiles;
-  return uniqueFiles.length > 0 ? [...uniqueFiles, sourcePath] : [sourcePath];
+  return uniqueFiles.length > 0 ? uniqueFiles[uniqueFiles.length - 1] : "";
+}
+
+function getPromptPreviewCyclePaths(sourcePath = state.previewPath, files = getPromptPreviewFiles(sourcePath)) {
+  const latestFile = getLatestPromptPreviewFile(sourcePath, files);
+  if (!sourcePath) {
+    return latestFile ? [latestFile] : [];
+  }
+  return latestFile ? [sourcePath, latestFile] : [sourcePath];
 }
 
 function getPromptPreviewCurrentDisplayPath(sourcePath = state.previewPath) {
@@ -4602,7 +4625,7 @@ function resetPromptPreviewState() {
   state.promptPreview.lastFilesKey = "";
   state.promptPreview.loading = false;
   renderPreviewInfo();
-  renderPromptPreviewButton();
+  renderPromptPreviewControls();
 }
 
 function renderPreviewInfo() {
@@ -4624,16 +4647,9 @@ function renderPreviewInfo() {
     parts.push(hasAppliedCrop() ? `${media.name} • cropped` : media.name);
   }
 
-  const promptPreviewFiles = getPromptPreviewFiles(state.previewPath);
-  if (promptPreviewFiles.length > 0) {
-    const cyclePaths = getPromptPreviewCyclePaths(state.previewPath, promptPreviewFiles);
-    const currentDisplayPath = getPromptPreviewCurrentDisplayPath(state.previewPath);
-    const currentIndex = Math.max(0, cyclePaths.indexOf(currentDisplayPath));
-    if (currentDisplayPath !== state.previewPath) {
-      parts.push(`prompt preview ${currentIndex + 1}/${cyclePaths.length}`);
-    } else {
-      parts.push(`original ${currentIndex + 1}/${cyclePaths.length}`);
-    }
+  const latestPromptPreviewPath = getLatestPromptPreviewFile(state.previewPath);
+  if (latestPromptPreviewPath) {
+    parts.push(state.promptPreview.displayPath === latestPromptPreviewPath ? "prompt preview" : "original");
   }
 
   previewInfo.textContent = parts.join(" • ");
@@ -4667,7 +4683,7 @@ async function setPromptPreviewDisplayPath(path, options = {}) {
     state.promptPreview.cycleIndex = getPromptPreviewCyclePaths(sourcePath).indexOf(sourcePath);
     await showPreview(sourcePath, { preserveView });
     renderPreviewInfo();
-    renderPromptPreviewButton();
+    renderPromptPreviewControls();
     return;
   }
 
@@ -4675,35 +4691,12 @@ async function setPromptPreviewDisplayPath(path, options = {}) {
   state.promptPreview.cycleIndex = getPromptPreviewCyclePaths(sourcePath).indexOf(path);
   loadPromptPreviewImage(path, { preserveView });
   renderPreviewInfo();
-  renderPromptPreviewButton();
+  renderPromptPreviewControls();
 }
 
 async function clearPromptPreviewDisplay(options = {}) {
   if (!state.previewPath || state.promptPreview.displayPath === "") return;
   await setPromptPreviewDisplayPath("", options);
-}
-
-function updatePromptPreviewButtonThumb(sourcePath = state.previewPath) {
-  const promptPreviewFiles = getPromptPreviewFiles(sourcePath);
-  const summary = isPromptPreviewSourceActive(sourcePath) ? state.promptPreview.summary : createPromptPreviewSummary();
-  const thumbPath = state.promptPreview.displayPath
-    || summary.latest_output_path
-    || promptPreviewFiles[promptPreviewFiles.length - 1]
-    || "";
-
-  if (thumbPath && thumbPath !== sourcePath) {
-    if (!(state.imageVersions[thumbPath] > 0)) {
-      state.imageVersions[thumbPath] = Date.now();
-    }
-    promptPreviewBtnThumb.hidden = false;
-    promptPreviewBtnThumb.style.backgroundImage = `url("${buildImageApiUrl("thumbnail", thumbPath, { size: 64 })}")`;
-    promptPreviewBtn.classList.add("has-thumb");
-    return;
-  }
-
-  promptPreviewBtnThumb.hidden = true;
-  promptPreviewBtnThumb.style.backgroundImage = "none";
-  promptPreviewBtn.classList.remove("has-thumb");
 }
 
 function canPromptPreviewCurrentImage() {
@@ -4729,52 +4722,86 @@ function getPromptPreviewConfigError(options = {}) {
   return "";
 }
 
+function renderCreatePromptPreviewButton() {
+  if (!createPromptPreviewBtn) return;
+  const selectionReady = canPromptPreviewCurrentImage();
+  const sourcePath = state.previewPath;
+  const sourceActive = isPromptPreviewSourceActive(sourcePath);
+  const summary = sourceActive ? state.promptPreview.summary : createPromptPreviewSummary();
+  const hasActiveJobs = hasPromptPreviewActiveJobs(summary);
+  const spawned = Math.max(0, Number(summary.spawned || summary.total || 0));
+  const configError = getPromptPreviewConfigError({ requireWorkflow: true });
+  const disabled = !selectionReady
+    || state.duplicatingImage
+    || state.autoCaptioning
+    || state.cloning
+    || state.uploading
+    || state.promptPreview.loading
+    || !!configError;
+
+  createPromptPreviewBtn.disabled = disabled;
+  createPromptPreviewBtn.classList.toggle("running", hasActiveJobs || state.promptPreview.loading);
+
+  let label = "Create Preview";
+  let title = configError || "Queue a new ComfyUI prompt preview for the selected image";
+  if (!selectionReady) {
+    title = "Select a single image to queue a prompt preview";
+  } else if (state.promptPreview.loading && sourceActive) {
+    label = "Creating Preview...";
+    title = "Queueing a new ComfyUI prompt preview";
+  } else if (hasActiveJobs) {
+    title = `${spawned} prompt preview job${spawned === 1 ? "" : "s"} queued for ${getFileLabel(sourcePath)}. The latest result will show automatically when it finishes.`;
+  }
+
+  setGenerateButtonContent(createPromptPreviewBtn, label);
+  createPromptPreviewBtn.title = title;
+}
+
 function renderPromptPreviewButton() {
   const visible = canPromptPreviewCurrentImage() && !isMaskEditorVisible();
   const sourcePath = state.previewPath;
   const sourceActive = isPromptPreviewSourceActive(sourcePath);
   const summary = sourceActive ? state.promptPreview.summary : createPromptPreviewSummary();
-  const promptPreviewFiles = sourceActive ? getPromptPreviewFiles(sourcePath) : [];
-  const queued = Math.max(0, Number(summary.queued || 0));
-  const running = Math.max(0, Number(summary.running || 0));
-  const spawned = Math.max(0, Number(summary.spawned || summary.total || 0));
   const hasActiveJobs = hasPromptPreviewActiveJobs(summary);
-  const clickPending = visible && sourceActive && !!state.ui.promptPreviewClickTimer;
-  const canCycleLocally = sourceActive && promptPreviewFiles.length > 0 && !hasActiveJobs;
-  const configError = canCycleLocally ? "" : getPromptPreviewConfigError({ requireWorkflow: true });
-  const disabled = !visible || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading || state.promptPreview.loading;
+  const latestPreviewPath = sourceActive ? getLatestPromptPreviewFile(sourcePath) : "";
+  const showingPreview = !!latestPreviewPath && state.promptPreview.displayPath === latestPreviewPath;
+  const configError = !latestPreviewPath ? getPromptPreviewConfigError({ requireWorkflow: false }) : "";
+  const disabled = !visible
+    || state.duplicatingImage
+    || state.autoCaptioning
+    || state.cloning
+    || state.uploading
+    || state.promptPreview.loading
+    || (!!configError && !latestPreviewPath);
 
   promptPreviewBtn.classList.toggle("visible", visible);
-  promptPreviewBtn.classList.toggle("running", hasActiveJobs || state.promptPreview.loading || clickPending);
+  promptPreviewBtn.classList.toggle("running", hasActiveJobs);
+  promptPreviewBtn.classList.toggle("active", showingPreview);
   promptPreviewBtn.disabled = disabled;
-  promptPreviewBtn.setAttribute("aria-busy", String(hasActiveJobs || state.promptPreview.loading || clickPending));
+  promptPreviewBtn.setAttribute("aria-busy", String(hasActiveJobs));
+  promptPreviewBtn.setAttribute("aria-pressed", showingPreview ? "true" : "false");
 
-  let label = "Prompt Preview";
-  let title = configError || "Queue a ComfyUI prompt preview from the current caption";
-  if (clickPending) {
-    label = "Prompt Preview...";
-    title = "Preparing the prompt preview action";
+  let label = showingPreview ? "Original" : "Preview";
+  let title = configError || "Toggle between the original image and the latest generated prompt preview";
+  if (showingPreview) {
+    title = "Show the original dataset image";
   } else if (state.promptPreview.loading && sourceActive) {
-    label = "Prompt Preview...";
-    title = "Refreshing ComfyUI prompt preview status";
+    title = "Queueing a new prompt preview";
+  } else if (latestPreviewPath) {
+    title = "Show the latest generated prompt preview image";
   } else if (hasActiveJobs) {
-    if (running > 0) {
-      label = `Preview ${spawned} running`;
-    } else {
-      label = `Preview ${spawned} queued`;
-    }
-    title = `${spawned} prompt preview job${spawned === 1 ? "" : "s"} spawned for ${getFileLabel(sourcePath)}. Running: ${running}. Queued: ${queued}. Click again to queue another job.`;
-  } else if (promptPreviewFiles.length > 0) {
-    const cyclePaths = getPromptPreviewCyclePaths(sourcePath, promptPreviewFiles);
-    const currentDisplayPath = getPromptPreviewCurrentDisplayPath(sourcePath);
-    const currentIndex = Math.max(0, cyclePaths.indexOf(currentDisplayPath));
-    label = `Preview ${currentIndex + 1}/${cyclePaths.length}`;
-    title = `Cycle through ${promptPreviewFiles.length} generated prompt preview image${promptPreviewFiles.length === 1 ? "" : "s"} and the original image. Double-click to reveal the current preview in Explorer.`;
+    title = "Wait for the latest prompt preview to finish, then click to toggle it";
+  } else if (!configError) {
+    title = "Load and show the latest generated prompt preview image if one exists";
   }
 
-  promptPreviewBtnLabel.textContent = label;
+  promptPreviewBtn.textContent = label;
   promptPreviewBtn.title = title;
-  updatePromptPreviewButtonThumb(sourcePath);
+}
+
+function renderPromptPreviewControls() {
+  renderCreatePromptPreviewButton();
+  renderPromptPreviewButton();
 }
 
 function applyPromptPreviewSnapshot(sourcePath, payload, options = {}) {
@@ -4808,7 +4835,7 @@ function applyPromptPreviewSnapshot(sourcePath, payload, options = {}) {
   const currentDisplayPath = getPromptPreviewCurrentDisplayPath(sourcePath);
   state.promptPreview.cycleIndex = cyclePaths.indexOf(currentDisplayPath);
 
-  renderPromptPreviewButton();
+  renderPromptPreviewControls();
   renderPreviewInfo();
 
   const completedIncreased = Number(summary.completed || 0) > previousCompleted;
@@ -4863,106 +4890,89 @@ async function queuePromptPreviewFromCurrentCaption(sourcePath = state.previewPa
   return data;
 }
 
-async function cyclePromptPreviewDisplay(direction = "forward") {
-  const sourcePath = state.previewPath;
-  const cyclePaths = getPromptPreviewCyclePaths(sourcePath);
-  if (!sourcePath || cyclePaths.length <= 1) {
-    return false;
-  }
-
-  const currentDisplayPath = getPromptPreviewCurrentDisplayPath(sourcePath);
-  const currentIndex = Math.max(0, cyclePaths.indexOf(currentDisplayPath));
-  const delta = direction === "backward" ? -1 : 1;
-  const nextIndex = (currentIndex + delta + cyclePaths.length) % cyclePaths.length;
-  const nextPath = cyclePaths[nextIndex];
-  state.promptPreview.cycleIndex = nextIndex;
-  await setPromptPreviewDisplayPath(nextPath === sourcePath ? "" : nextPath, { preserveView: true });
-  return true;
-}
-
-async function runPromptPreviewButtonAction() {
+async function runCreatePromptPreviewAction() {
   if (!canPromptPreviewCurrentImage()) {
     showErrorToast("Select a single image first.");
     statusBar.textContent = "Prompt preview requires a single selected image.";
     return;
   }
   const sourcePath = state.previewPath;
-  const sourceActive = isPromptPreviewSourceActive(sourcePath);
-  const localSummary = sourceActive ? state.promptPreview.summary : createPromptPreviewSummary();
-  const localFiles = sourceActive ? getPromptPreviewFiles(sourcePath) : [];
-  const localHasActiveJobs = hasPromptPreviewActiveJobs(localSummary);
-
-  if (localFiles.length > 0 && !localHasActiveJobs) {
-    state.promptPreview.sourcePath = sourcePath;
-    state.promptPreview.loading = true;
-    statusBar.textContent = `Switching prompt preview for ${getFileLabel(sourcePath)}...`;
-    renderPromptPreviewButton();
-    try {
-      const changed = await cyclePromptPreviewDisplay("forward");
-      if (changed) {
-        statusBar.textContent = `Switched prompt preview for ${getFileLabel(sourcePath)}`;
-      }
-    } catch (err) {
-      showErrorToast(`Prompt preview error: ${err.message}`);
-      statusBar.textContent = `Prompt preview error: ${err.message}`;
-    } finally {
-      state.promptPreview.loading = false;
-      renderPromptPreviewButton();
-    }
-    return;
-  }
-
   const configError = getPromptPreviewConfigError({ requireWorkflow: true });
   if (configError) {
     showErrorToast(configError);
     statusBar.textContent = configError;
-    renderPromptPreviewButton();
+    renderPromptPreviewControls();
     return;
   }
 
   state.promptPreview.sourcePath = sourcePath;
   state.promptPreview.loading = true;
-  statusBar.textContent = localHasActiveJobs
-    ? `Queueing another prompt preview for ${getFileLabel(sourcePath)}...`
-    : `Checking prompt preview for ${getFileLabel(sourcePath)}...`;
-  renderPromptPreviewButton();
+  statusBar.textContent = `Queueing prompt preview for ${getFileLabel(sourcePath)}...`;
+  renderPromptPreviewControls();
   try {
-    if (localHasActiveJobs) {
-      const queued = await queuePromptPreviewFromCurrentCaption(sourcePath);
-      applyPromptPreviewSnapshot(sourcePath, queued, { autoDisplayLatest: false });
-      statusBar.textContent = `Queued prompt preview ${Math.max(1, Number(state.promptPreview.summary.spawned || 1))} for ${getFileLabel(sourcePath)}`;
-      return;
-    }
-
-    const status = await refreshPromptPreviewStatus(sourcePath, { showErrors: false, autoDisplayLatest: false }).catch(() => ({
-      image_path: sourcePath,
-      jobs: [],
-      summary: createPromptPreviewSummary(),
-      files: [],
-    }));
-    const summary = { ...createPromptPreviewSummary(), ...(status.summary || {}) };
-    const hasActiveJobs = Number(summary.running || 0) > 0 || Number(summary.queued || 0) > 0;
-    const hasFiles = Array.isArray(status.files) && status.files.length > 0;
-
-    if (!hasFiles || hasActiveJobs) {
-      statusBar.textContent = `Queueing prompt preview for ${getFileLabel(sourcePath)}...`;
-      const queued = await queuePromptPreviewFromCurrentCaption(sourcePath);
-      applyPromptPreviewSnapshot(sourcePath, queued, { autoDisplayLatest: false });
-      statusBar.textContent = `Queued prompt preview ${Math.max(1, Number(state.promptPreview.summary.spawned || 1))} for ${getFileLabel(sourcePath)}`;
-      return;
-    }
-
-    statusBar.textContent = `Switching prompt preview for ${getFileLabel(sourcePath)}...`;
-    const changed = await cyclePromptPreviewDisplay("forward");
-    if (changed) {
-      statusBar.textContent = `Switched prompt preview for ${getFileLabel(sourcePath)}`;
-    }
+    const queued = await queuePromptPreviewFromCurrentCaption(sourcePath);
+    applyPromptPreviewSnapshot(sourcePath, queued, { autoDisplayLatest: false });
+    statusBar.textContent = `Queued prompt preview ${Math.max(1, Number(state.promptPreview.summary.spawned || 1))} for ${getFileLabel(sourcePath)}`;
   } catch (err) {
     showErrorToast(`Prompt preview error: ${err.message}`);
     statusBar.textContent = `Prompt preview error: ${err.message}`;
   } finally {
     state.promptPreview.loading = false;
-    renderPromptPreviewButton();
+    renderPromptPreviewControls();
+  }
+}
+
+async function togglePromptPreviewButtonAction() {
+  if (!canPromptPreviewCurrentImage()) {
+    showErrorToast("Select a single image first.");
+    statusBar.textContent = "Prompt preview requires a single selected image.";
+    return;
+  }
+
+  const sourcePath = state.previewPath;
+  let latestPreviewPath = isPromptPreviewSourceActive(sourcePath) ? getLatestPromptPreviewFile(sourcePath) : "";
+
+  if (!latestPreviewPath) {
+    const configError = getPromptPreviewConfigError({ requireWorkflow: false });
+    if (configError) {
+      showErrorToast(configError);
+      statusBar.textContent = configError;
+      renderPromptPreviewControls();
+      return;
+    }
+
+    statusBar.textContent = `Checking prompt preview for ${getFileLabel(sourcePath)}...`;
+    try {
+      const status = await refreshPromptPreviewStatus(sourcePath, { showErrors: false, autoDisplayLatest: false });
+      latestPreviewPath = getLatestPromptPreviewFile(sourcePath, Array.isArray(status.files) ? status.files : []);
+    } catch (err) {
+      showErrorToast(`Prompt preview error: ${err.message}`);
+      statusBar.textContent = `Prompt preview error: ${err.message}`;
+      renderPromptPreviewControls();
+      return;
+    }
+  }
+
+  if (!latestPreviewPath) {
+    showErrorToast("No generated prompt preview file found yet.");
+    statusBar.textContent = `No generated prompt preview file found yet for ${getFileLabel(sourcePath)}`;
+    renderPromptPreviewControls();
+    return;
+  }
+
+  try {
+    if (state.promptPreview.displayPath === latestPreviewPath) {
+      await setPromptPreviewDisplayPath("", { preserveView: true });
+      statusBar.textContent = `Showing original image for ${getFileLabel(sourcePath)}`;
+    } else {
+      await setPromptPreviewDisplayPath(latestPreviewPath, { preserveView: true });
+      statusBar.textContent = `Showing latest prompt preview for ${getFileLabel(sourcePath)}`;
+    }
+  } catch (err) {
+    showErrorToast(`Prompt preview error: ${err.message}`);
+    statusBar.textContent = `Prompt preview error: ${err.message}`;
+  } finally {
+    renderPromptPreviewControls();
   }
 }
 
@@ -5055,6 +5065,7 @@ function applySettings(settings) {
   state.comfyuiPort = Number(settings.comfyui_port || 8188) || 8188;
   state.comfyuiWorkflowPath = String(settings.comfyui_workflow_path || "").trim();
   state.comfyuiOutputFolder = String(settings.comfyui_output_folder || "").trim();
+  state.comfyuiAutoPreviewEnabled = settings.comfyui_auto_preview ?? state.comfyuiAutoPreviewEnabled;
   if (Object.prototype.hasOwnProperty.call(settings, "video_training_presets")) {
     state.videoTrainingPresets = Array.isArray(settings.video_training_presets) ? settings.video_training_presets : [];
   }
@@ -5074,6 +5085,7 @@ function applySettings(settings) {
     state.sections = normalizeSectionsData(settings.sections);
   }
   autoFreeTextCheckbox.checked = !!state.ollamaEnableFreeText;
+  autoPreviewCheckbox.checked = !!state.comfyuiAutoPreviewEnabled;
   populateVideoTrainingProfileSelect();
   setVideoTrainingPresetsStatus();
   renderVideoTrainingSummary();
@@ -7781,38 +7793,11 @@ cropBox.querySelectorAll("[data-handle]").forEach(handleEl => {
 });
 maskEditBtn.addEventListener("click", enterMaskEditMode);
 imageEditBtn.addEventListener("click", enterImageEditMode);
-promptPreviewBtn.addEventListener("click", () => {
-  if (!canPromptPreviewCurrentImage()) {
-    return;
-  }
-  const sourcePath = state.previewPath;
-  state.promptPreview.sourcePath = sourcePath;
-  if (state.ui.promptPreviewClickTimer) {
-    window.clearTimeout(state.ui.promptPreviewClickTimer);
-  }
-  statusBar.textContent = `Preparing prompt preview for ${getFileLabel(sourcePath)}...`;
-  state.ui.promptPreviewClickTimer = window.setTimeout(() => {
-    state.ui.promptPreviewClickTimer = null;
-    renderPromptPreviewButton();
-    runPromptPreviewButtonAction().catch(() => {});
-  }, 220);
-  renderPromptPreviewButton();
+createPromptPreviewBtn.addEventListener("click", () => {
+  runCreatePromptPreviewAction().catch(() => {});
 });
-promptPreviewBtn.addEventListener("dblclick", (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  if (state.ui.promptPreviewClickTimer) {
-    window.clearTimeout(state.ui.promptPreviewClickTimer);
-    state.ui.promptPreviewClickTimer = null;
-  }
-  renderPromptPreviewButton();
-  if (canPromptPreviewCurrentImage()) {
-    statusBar.textContent = `Revealing prompt preview for ${getFileLabel(state.previewPath)}...`;
-  }
-  revealCurrentPromptPreviewInExplorer().catch((err) => {
-    showErrorToast(`Prompt preview error: ${err.message}`);
-    statusBar.textContent = `Prompt preview error: ${err.message}`;
-  });
+promptPreviewBtn.addEventListener("click", () => {
+  togglePromptPreviewButtonAction().catch(() => {});
 });
 duplicateImageBtn.addEventListener("click", duplicateCurrentImage);
 videoMaskAddBtn.addEventListener("click", enterVideoMaskAddMode);
@@ -9246,6 +9231,8 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
     return;
   }
   const scope = getAutoCaptionScope({ freeTextOnly, targetSectionIndex, targetGroupIndex, targetSentence });
+  const autoPreviewConfigError = state.comfyuiAutoPreviewEnabled ? getPromptPreviewConfigError({ requireWorkflow: true }) : "";
+  const autoPreviewEnabled = !!state.comfyuiAutoPreviewEnabled && !autoPreviewConfigError;
 
   state.autoCaptioning = true;
   state.autoCaptionMode = scope;
@@ -9297,6 +9284,14 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         appendModelLog(getAutoCaptionStartLog(scope, event), "log-dim");
         if (event.enable_free_text || event.free_text_only) {
           appendModelLog("Free-text enhancement is enabled", "log-dim");
+        }
+        if (state.comfyuiAutoPreviewEnabled) {
+          appendModelLog(
+            autoPreviewEnabled
+              ? "Auto Preview is enabled"
+              : `Auto Preview skipped for this run: ${autoPreviewConfigError}`,
+            autoPreviewEnabled ? "log-dim" : "log-warn"
+          );
         }
       } else if (event.type === "image-start") {
         const baseSteps = event.free_text_only
@@ -9390,6 +9385,20 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         appendModelLog(getAutoCaptionCompleteLog(scope, event), "log-ok");
         if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
           freeText.value = event.free_text || "";
+        }
+        if (autoPreviewEnabled && hasContent) {
+          queuePromptPreviewFromCurrentCaption(event.path)
+            .then((queued) => {
+              appendModelLog(`[${getFileLabel(event.path)}] Auto Preview queued`, "log-dim");
+              if (state.previewPath === event.path && state.previewMediaType === "image") {
+                state.promptPreview.sourcePath = event.path;
+                applyPromptPreviewSnapshot(event.path, queued, { autoDisplayLatest: false });
+                renderPromptPreviewControls();
+              }
+            })
+            .catch((queueErr) => {
+              appendModelLog(`[${getFileLabel(event.path)}] Auto Preview failed: ${queueErr.message}`, "log-warn");
+            });
         }
         scheduleUiRender({ sentences: true });
         statusBar.textContent = getAutoCaptionProgressText(scope, processed, paths.length, errors, false);

@@ -88,6 +88,18 @@ autoFreeTextCheckbox.addEventListener("change", async () => {
     console.error("Failed to save free-text toggle:", err);
   }
 });
+autoPreviewCheckbox.addEventListener("change", async () => {
+  state.comfyuiAutoPreviewEnabled = autoPreviewCheckbox.checked;
+  try {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ comfyui_auto_preview: state.comfyuiAutoPreviewEnabled }),
+    });
+  } catch (err) {
+    console.error("Failed to save auto-preview toggle:", err);
+  }
+});
 settingsCloseBtn.addEventListener("click", closeSettingsModal);
 settingsCancelBtn.addEventListener("click", closeSettingsModal);
 settingsSaveBtn.addEventListener("click", saveOllamaSettingsFromForm);

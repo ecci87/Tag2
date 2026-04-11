@@ -16,6 +16,7 @@ import platform
 import shutil
 import threading
 import time
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -197,6 +198,7 @@ DEFAULT_COMFYUI_SERVER = "127.0.0.1"
 DEFAULT_COMFYUI_PORT = 8188
 DEFAULT_COMFYUI_WORKFLOW_PATH = ""
 DEFAULT_COMFYUI_OUTPUT_FOLDER = ""
+DEFAULT_COMFYUI_AUTO_PREVIEW = False
 DEFAULT_CROP_ASPECT_RATIOS = ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"]
 DEFAULT_MASK_LATENT_BASE_WIDTH_PRESETS = [512, 768, 1024, 1280]
 DEFAULT_HTTPS_CERTFILE = ""
@@ -347,6 +349,11 @@ def _get_comfyui_output_folder(cfg: dict, default_path: str = DEFAULT_COMFYUI_OU
     return _resolve_config_path(cfg.get("comfyui_output_folder") or default_path)
 
 
+def _get_comfyui_auto_preview(cfg: dict, default_value: bool = DEFAULT_COMFYUI_AUTO_PREVIEW) -> bool:
+    """Return whether auto-preview should queue ComfyUI jobs after auto-caption completes."""
+    return bool(cfg.get("comfyui_auto_preview", default_value))
+
+
 def _fetch_comfyui_json(host: str, route: str, timeout: int = 20) -> dict:
     """Fetch one JSON payload from the ComfyUI HTTP API."""
     url = f"{host.rstrip('/')}/{route.lstrip('/')}"
@@ -386,7 +393,7 @@ def _post_comfyui_json(host: str, route: str, payload: dict, timeout: int = 20) 
 
 
 def _load_comfyui_workflow_template(workflow_path: str) -> dict:
-    """Read the configured ComfyUI API-export workflow JSON from disk."""
+    """Read and validate the configured ComfyUI API prompt-graph JSON from disk."""
     normalized_path = os.path.abspath(os.path.normpath(str(workflow_path or "").strip()))
     if not normalized_path:
         raise RuntimeError("ComfyUI workflow path is not configured")
@@ -399,7 +406,35 @@ def _load_comfyui_workflow_template(workflow_path: str) -> dict:
         raise RuntimeError(f"Invalid ComfyUI workflow JSON: {exc}") from exc
     if not isinstance(workflow, dict) or not workflow:
         raise RuntimeError("ComfyUI workflow JSON must be a non-empty object")
-    return workflow
+
+    prompt_graph = workflow.get("prompt") if isinstance(workflow.get("prompt"), dict) and workflow.get("prompt") else workflow
+    if not isinstance(prompt_graph, dict) or not prompt_graph:
+        raise RuntimeError("ComfyUI API prompt graph must be a non-empty object")
+
+    if isinstance(prompt_graph.get("nodes"), list):
+        raise RuntimeError(
+            "This looks like a normal ComfyUI workflow, not an API prompt graph. "
+            "Export a second file with Save (API format). The API JSON is for Tag2 and will not reopen in the ComfyUI canvas."
+        )
+
+    invalid_top_level_keys = [key for key, node in prompt_graph.items() if not isinstance(node, dict)]
+    if invalid_top_level_keys:
+        raise RuntimeError(
+            f"ComfyUI API prompt graph is invalid at top-level key '{invalid_top_level_keys[0]}'. "
+            "Export with Save (API format), not the normal workflow JSON."
+        )
+
+    invalid_nodes = [
+        key for key, node in prompt_graph.items()
+        if "class_type" not in node or "inputs" not in node
+    ]
+    if invalid_nodes:
+        raise RuntimeError(
+            f"ComfyUI API prompt graph is invalid at node '{invalid_nodes[0]}': missing class_type or inputs. "
+            "Export with Save (API format)."
+        )
+
+    return prompt_graph
 
 
 def _replace_comfyui_workflow_placeholders(value, replacements: dict[str, str]):
@@ -456,8 +491,14 @@ def _scan_comfyui_preview_files(output_folder: str, source_path: str) -> list[st
         raise RuntimeError(f"ComfyUI output folder not found: {normalized_folder}")
 
     prefix = Path(str(source_path or "")).stem.lower()
+
+    def sort_key(path_obj: Path):
+        tokens = re.split(r"(\d+)", path_obj.stem.lower())
+        normalized_tokens = tuple((1, int(token)) if token.isdigit() else (0, token) for token in tokens)
+        return normalized_tokens, path_obj.name.lower()
+
     matches: list[str] = []
-    for entry in sorted(Path(normalized_folder).iterdir(), key=lambda item: (item.stat().st_mtime, item.name.lower())):
+    for entry in Path(normalized_folder).iterdir():
         if not entry.is_file():
             continue
         if entry.suffix.lower() not in IMAGE_EXTENSIONS:
@@ -465,6 +506,7 @@ def _scan_comfyui_preview_files(output_folder: str, source_path: str) -> list[st
         if not entry.stem.lower().startswith(prefix):
             continue
         matches.append(str(entry))
+    matches.sort(key=lambda item: sort_key(Path(item)))
     return matches
 
 
@@ -657,6 +699,7 @@ def _load_config() -> dict:
         "comfyui_port": DEFAULT_COMFYUI_PORT,
         "comfyui_workflow_path": DEFAULT_COMFYUI_WORKFLOW_PATH,
         "comfyui_output_folder": DEFAULT_COMFYUI_OUTPUT_FOLDER,
+        "comfyui_auto_preview": DEFAULT_COMFYUI_AUTO_PREVIEW,
         # Per-folder caption lists. Key = absolute folder path.
         # To copy captions to a new folder, duplicate a block here.
         "folders": {}
@@ -686,6 +729,7 @@ def _load_config() -> dict:
             data.setdefault("comfyui_port", DEFAULT_COMFYUI_PORT)
             data.setdefault("comfyui_workflow_path", DEFAULT_COMFYUI_WORKFLOW_PATH)
             data.setdefault("comfyui_output_folder", DEFAULT_COMFYUI_OUTPUT_FOLDER)
+            data.setdefault("comfyui_auto_preview", DEFAULT_COMFYUI_AUTO_PREVIEW)
             # Merge with defaults so new keys are always present
             for k, v in default.items():
                 data.setdefault(k, v)
@@ -1293,7 +1337,13 @@ async def enforce_remote_http_policy(request: Request, call_next):
     response = _get_remote_http_response(request, _load_config())
     if response is not None:
         return response
-    return await call_next(request)
+    response = await call_next(request)
+    path = str(request.url.path or "")
+    if path == "/" or path.endswith(".html") or path.endswith(".js") or path.endswith(".css"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 def _read_live_caption_state(
@@ -3420,6 +3470,7 @@ class SettingsUpdate(BaseModel):
     comfyui_port: Optional[int] = None
     comfyui_workflow_path: Optional[str] = None
     comfyui_output_folder: Optional[str] = None
+    comfyui_auto_preview: Optional[bool] = None
 
 
 class ComfyUiPromptPreviewRequest(BaseModel):
@@ -3464,6 +3515,7 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
         "comfyui_port": _get_comfyui_port(cfg, DEFAULT_COMFYUI_PORT),
         "comfyui_workflow_path": str(cfg.get("comfyui_workflow_path") or ""),
         "comfyui_output_folder": str(cfg.get("comfyui_output_folder") or ""),
+        "comfyui_auto_preview": _get_comfyui_auto_preview(cfg),
     }
     if folder:
         result["sections"] = _get_folder_sections(cfg, folder)
@@ -3554,6 +3606,8 @@ async def update_settings(data: SettingsUpdate):
         cfg["comfyui_workflow_path"] = str(data.comfyui_workflow_path or "").strip()
     if data.comfyui_output_folder is not None:
         cfg["comfyui_output_folder"] = str(data.comfyui_output_folder or "").strip()
+    if data.comfyui_auto_preview is not None:
+        cfg["comfyui_auto_preview"] = bool(data.comfyui_auto_preview)
     cfg["ollama_host"] = _compose_ollama_host(cfg.get("ollama_server"), cfg.get("ollama_port"), DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
     if data.video_training_profile_key is not None and data.folder:
         presets = _get_video_training_presets(cfg)

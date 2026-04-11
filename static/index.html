@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Image Captioning Tool</title>
 <link rel="stylesheet" href="/static/css/app-shell.css?v=20260404g">
-<link rel="stylesheet" href="/static/css/app-preview.css?v=20260411a">
-<link rel="stylesheet" href="/static/css/app-captions.css?v=20260407a">
+<link rel="stylesheet" href="/static/css/app-preview.css?v=20260411c">
+<link rel="stylesheet" href="/static/css/app-captions.css?v=20260411c">
 <link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260404b">
 </head>
 <body>
@@ -185,10 +185,7 @@
           <button id="crop-cancel-btn" type="button">Cancel</button>
           <button id="crop-remove-btn" type="button">Remove Crop</button>
           <div id="preview-action-bar">
-            <button id="prompt-preview-btn" type="button" title="Queue or cycle ComfyUI prompt previews">
-              <span id="prompt-preview-btn-thumb" aria-hidden="true"></span>
-              <span id="prompt-preview-btn-label">Prompt Preview</span>
-            </button>
+            <button id="prompt-preview-btn" type="button" title="Toggle between the original image and the latest prompt preview">Preview</button>
             <button id="duplicate-image-btn" type="button">Duplicate</button>
             <button id="image-edit-btn" type="button">Edit Image</button>
             <button id="mask-edit-btn" type="button">Mask</button>
@@ -268,10 +265,17 @@
             <div class="panel-header">
               <span></span>
               <div class="panel-actions">
-                <label class="toggle-label" title="Ask Ollama for additional free-text details after checking structured captions">
-                  <input type="checkbox" id="auto-free-text-checkbox" checked>
-                  <span>Auto Caption</span>
-                </label>
+                <button id="create-prompt-preview-btn" class="generate-btn generate-btn-compact" type="button" title="Queue a new ComfyUI prompt preview for the selected image"><span class="btn-content"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">Create Preview</span></span></button>
+                <div id="freetext-toggle-stack">
+                  <label class="toggle-label" title="Ask Ollama for additional free-text details after checking structured captions">
+                    <input type="checkbox" id="auto-free-text-checkbox" checked>
+                    <span>Auto Caption</span>
+                  </label>
+                  <label class="toggle-label" title="Queue a ComfyUI preview automatically after auto-caption finishes each image">
+                    <input type="checkbox" id="auto-preview-checkbox">
+                    <span>Auto Preview</span>
+                  </label>
+                </div>
                 <button id="add-free-text-now-btn" class="generate-btn generate-btn-compact generate-btn-icon" type="button" title="Ask Ollama to add only free-text details for the selected media" aria-label="Ask Ollama to add only free-text details for the selected media"><span class="btn-icon" aria-hidden="true"></span></button>
               </div>
             </div>
@@ -391,9 +395,9 @@
             </div>
           </div>
           <div class="settings-field">
-            <label for="settings-comfyui-workflow-path">ComfyUI Workflow API JSON</label>
+            <label for="settings-comfyui-workflow-path">ComfyUI API Prompt JSON</label>
             <input type="text" class="compact-code" id="settings-comfyui-workflow-path" placeholder="workflows/prompt-preview.json" spellcheck="false">
-            <div class="settings-help">Export the ComfyUI workflow as API JSON. One string input in the workflow must contain <span>{{TAG2_PROMPT}}</span> and another must contain <span>{{TAG2_FILENAME_PREFIX}}</span>. Tag2 replaces those placeholders before queueing the prompt.</div>
+            <div class="settings-help">Use Save (API format) to export a second JSON for Tag2. That API file will not reopen in the canvas. Include <span>{{TAG2_PROMPT}}</span> and <span>{{TAG2_FILENAME_PREFIX}}</span> in string inputs.</div>
           </div>
           <div class="settings-field">
             <label for="settings-comfyui-output-folder">ComfyUI Output Folder</label>
@@ -484,8 +488,8 @@
   </div>
 </div>
 
-<script defer src="/static/js/app-shared.js?v=20260411a"></script>
-<script defer src="/static/js/app-features.js?v=20260411a"></script>
-<script defer src="/static/js/app-init.js?v=20260411a"></script>
+<script defer src="/static/js/app-shared.js?v=20260411c"></script>
+<script defer src="/static/js/app-features.js?v=20260411c"></script>
+<script defer src="/static/js/app-init.js?v=20260411c"></script>
 </body>
 </html>

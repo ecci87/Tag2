@@ -388,17 +388,6 @@
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
 }
 #crop-cancel-btn.visible { display: block; }
-#crop-cancel-btn:hover { filter: brightness(1.08); }
-#crop-remove-btn {
-  position: absolute; bottom: 16px; display: none; padding: 5px 14px; border-radius: 8px;
-  font-weight: 700; cursor: pointer; pointer-events: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
-}
-#crop-remove-btn {
-  left: 50%; transform: translateX(-50%);
-  background: rgba(243,139,168,0.14); color: #f38ba8; border: 1px solid rgba(243,139,168,0.35);
-}
-#crop-remove-btn.visible { display: block; }
-#crop-remove-btn:hover { filter: brightness(1.08); }
 #preview-action-bar {
   position: absolute;
   right: 18px;
@@ -450,36 +439,18 @@
   border: 1px solid rgba(137,180,250,0.36);
 }
 #prompt-preview-btn {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
   background: rgba(137,180,250,0.16);
   color: #b8d6ff;
   border: 1px solid rgba(137,180,250,0.36);
 }
 #prompt-preview-btn.running {
-  background: rgba(137,180,250,0.24);
-  color: #dcecff;
-  border-color: rgba(137,180,250,0.48);
+  border-color: rgba(250,179,135,0.55);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35), 0 0 0 1px rgba(250,179,135,0.18);
 }
-#prompt-preview-btn-thumb {
-  display: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  border: 1px solid rgba(255,255,255,0.18);
-  background-color: rgba(255,255,255,0.08);
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: cover;
-  flex: 0 0 auto;
-}
-#prompt-preview-btn.has-thumb #prompt-preview-btn-thumb {
-  display: inline-block;
-}
-#prompt-preview-btn-label {
-  display: inline-block;
+#prompt-preview-btn.active {
+  background: rgba(137,180,250,0.92);
+  color: #181822;
+  border-color: rgba(137,180,250,0.55);
 }
 #mask-edit-btn {
   background: rgba(250, 220, 140, 0.96);

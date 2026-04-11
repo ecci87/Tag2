@@ -684,6 +684,18 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+#create-prompt-preview-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+#freetext-toggle-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 #freetext-section .panel-header .toggle-label {
   display: inline-flex; align-items: center; gap: 6px;

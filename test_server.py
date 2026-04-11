@@ -1509,6 +1509,7 @@ class TestSettingsAPI:
             "comfyui_port": 8199,
             "comfyui_workflow_path": "workflows/prompt-preview.json",
             "comfyui_output_folder": "comfy-output",
+            "comfyui_auto_preview": True,
         })
         resp = client.get("/api/settings")
         assert resp.status_code == 200
@@ -1517,6 +1518,7 @@ class TestSettingsAPI:
         assert data["comfyui_port"] == 8199
         assert data["comfyui_workflow_path"] == "workflows/prompt-preview.json"
         assert data["comfyui_output_folder"] == "comfy-output"
+        assert data["comfyui_auto_preview"] is True
 
     def test_get_ollama_models(self, client, monkeypatch):
         monkeypatch.setattr(server, "_list_ollama_models", lambda host, timeout=20: ["llava:latest", "qwen2.5vl"])
@@ -1607,8 +1609,8 @@ class TestSettingsAPI:
 class TestComfyUiPromptPreview:
     def test_replace_comfyui_workflow_placeholders(self):
         workflow = {
-            "1": {"inputs": {"text": "Prompt: {{TAG2_PROMPT}}"}},
-            "2": {"inputs": {"filename_prefix": "{{TAG2_FILENAME_PREFIX}}"}},
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "Prompt: {{TAG2_PROMPT}}"}},
+            "2": {"class_type": "SaveImage", "inputs": {"filename_prefix": "{{TAG2_FILENAME_PREFIX}}"}},
         }
 
         result = server._build_comfyui_prompt_payload(workflow, "A scenic lake", "photo1")
@@ -1617,10 +1619,40 @@ class TestComfyUiPromptPreview:
         assert result["2"]["inputs"]["filename_prefix"] == "photo1"
 
     def test_replace_comfyui_workflow_placeholders_requires_both_tokens(self):
-        workflow = {"1": {"inputs": {"text": "Prompt only {{TAG2_PROMPT}}"}}}
+        workflow = {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "Prompt only {{TAG2_PROMPT}}"}}}
 
         with pytest.raises(RuntimeError, match="TAG2_FILENAME_PREFIX"):
             server._build_comfyui_prompt_payload(workflow, "A scenic lake", "photo1")
+
+    def test_load_comfyui_workflow_template_rejects_editor_workflow(self, tmp_path):
+        workflow_path = tmp_path / "editor-workflow.json"
+        workflow_path.write_text(json.dumps({
+            "last_node_id": 2,
+            "last_link_id": 1,
+            "nodes": [
+                {"id": 1, "type": "CLIPTextEncode", "widgets_values": ["{{TAG2_PROMPT}}"]},
+                {"id": 2, "type": "SaveImage", "widgets_values": ["{{TAG2_FILENAME_PREFIX}}"]},
+            ],
+            "links": [],
+            "version": 1,
+        }), encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="normal ComfyUI workflow"):
+            server._load_comfyui_workflow_template(str(workflow_path))
+
+    def test_load_comfyui_workflow_template_unwraps_prompt_graph(self, tmp_path):
+        workflow_path = tmp_path / "prompt-wrapper.json"
+        workflow_path.write_text(json.dumps({
+            "prompt": {
+                "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{TAG2_PROMPT}}"}},
+                "2": {"class_type": "SaveImage", "inputs": {"filename_prefix": "{{TAG2_FILENAME_PREFIX}}"}},
+            }
+        }), encoding="utf-8")
+
+        result = server._load_comfyui_workflow_template(str(workflow_path))
+
+        assert result["1"]["class_type"] == "CLIPTextEncode"
+        assert result["2"]["class_type"] == "SaveImage"
 
     def test_scan_comfyui_preview_files_filters_by_prefix(self, tmp_path):
         output_dir = tmp_path / "output"
@@ -1633,14 +1665,24 @@ class TestComfyUiPromptPreview:
 
         assert [Path(path).name for path in files] == ["photo1_00001_.png", "photo1_00002_.png"]
 
+    def test_scan_comfyui_preview_files_sorts_by_filename_number(self, tmp_path):
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        Image.new("RGB", (32, 32), color="blue").save(output_dir / "photo1_00010_.png")
+        Image.new("RGB", (32, 32), color="green").save(output_dir / "photo1_00002_.png")
+
+        files = server._scan_comfyui_preview_files(str(output_dir), str(tmp_path / "photo1.jpg"))
+
+        assert [Path(path).name for path in files] == ["photo1_00002_.png", "photo1_00010_.png"]
+
     def test_post_prompt_preview_queues_comfyui_prompt(self, client, img_dir, monkeypatch):
         image_path = str(img_dir / "photo1.jpg")
         workflow_path = img_dir / "prompt-preview.json"
         output_dir = img_dir / "comfy-output"
         output_dir.mkdir()
         workflow_path.write_text(json.dumps({
-            "1": {"inputs": {"text": "{{TAG2_PROMPT}}"}},
-            "2": {"inputs": {"filename_prefix": "{{TAG2_FILENAME_PREFIX}}"}},
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{TAG2_PROMPT}}"}},
+            "2": {"class_type": "SaveImage", "inputs": {"filename_prefix": "{{TAG2_FILENAME_PREFIX}}"}},
         }), encoding="utf-8")
         client.post("/api/settings", json={
             "comfyui_server": "127.0.0.1",

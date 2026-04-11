@@ -130,6 +130,7 @@ const state = {
   comfyuiPort: 8188,
   comfyuiWorkflowPath: "",
   comfyuiOutputFolder: "",
+  comfyuiAutoPreviewEnabled: false,
   ollamaAvailableModels: [],
   modelLogLines: [],
   modelLogOpen: false,
@@ -212,7 +213,6 @@ const state = {
     pendingPreviewRender: false,
     videoJobPollTimer: null,
     promptPreviewPollTimer: null,
-    promptPreviewClickTimer: null,
     suppressVideoClick: false,
     videoTimelineFetches: new Map(),
   },
@@ -305,8 +305,6 @@ const previewActionBar = $("#preview-action-bar");
 const duplicateImageBtn = $("#duplicate-image-btn");
 const imageEditBtn = $("#image-edit-btn");
 const promptPreviewBtn = $("#prompt-preview-btn");
-const promptPreviewBtnThumb = $("#prompt-preview-btn-thumb");
-const promptPreviewBtnLabel = $("#prompt-preview-btn-label");
 const maskEditBtn = $("#mask-edit-btn");
 const videoMaskAddBtn = $("#video-mask-add-btn");
 const gifConvertBtn = $("#gif-convert-btn");
@@ -352,7 +350,9 @@ const captionsSection = $("#captions-section");
 const rightHorizontalResize = $("#right-horizontal-resize");
 const autoCaptionBtn = $("#auto-caption-btn");
 const modelLogOpenBtn = $("#model-log-open-btn");
+const createPromptPreviewBtn = $("#create-prompt-preview-btn");
 const autoFreeTextCheckbox = $("#auto-free-text-checkbox");
+const autoPreviewCheckbox = $("#auto-preview-checkbox");
 const addFreeTextNowBtn = $("#add-free-text-now-btn");
 const hideAddButtonsCheckbox = $("#hide-add-buttons-checkbox");
 const freeTextSection = $("#freetext-section");
