@@ -4714,6 +4714,21 @@ function canPromptPreviewCurrentImage() {
     && !!imgNatH;
 }
 
+function hasPromptPreviewActiveJobs(summary = state.promptPreview.summary) {
+  return Number(summary?.running || 0) > 0 || Number(summary?.queued || 0) > 0;
+}
+
+function getPromptPreviewConfigError(options = {}) {
+  const { requireWorkflow = true } = options;
+  if (!String(state.comfyuiOutputFolder || "").trim()) {
+    return "Set a ComfyUI output folder in Settings first.";
+  }
+  if (requireWorkflow && !String(state.comfyuiWorkflowPath || "").trim()) {
+    return "Set a ComfyUI workflow API JSON path in Settings first.";
+  }
+  return "";
+}
+
 function renderPromptPreviewButton() {
   const visible = canPromptPreviewCurrentImage() && !isMaskEditorVisible();
   const sourcePath = state.previewPath;
@@ -4723,16 +4738,23 @@ function renderPromptPreviewButton() {
   const queued = Math.max(0, Number(summary.queued || 0));
   const running = Math.max(0, Number(summary.running || 0));
   const spawned = Math.max(0, Number(summary.spawned || summary.total || 0));
-  const hasActiveJobs = queued > 0 || running > 0;
+  const hasActiveJobs = hasPromptPreviewActiveJobs(summary);
+  const clickPending = visible && sourceActive && !!state.ui.promptPreviewClickTimer;
+  const canCycleLocally = sourceActive && promptPreviewFiles.length > 0 && !hasActiveJobs;
+  const configError = canCycleLocally ? "" : getPromptPreviewConfigError({ requireWorkflow: true });
   const disabled = !visible || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading || state.promptPreview.loading;
 
   promptPreviewBtn.classList.toggle("visible", visible);
-  promptPreviewBtn.classList.toggle("running", hasActiveJobs || state.promptPreview.loading);
+  promptPreviewBtn.classList.toggle("running", hasActiveJobs || state.promptPreview.loading || clickPending);
   promptPreviewBtn.disabled = disabled;
+  promptPreviewBtn.setAttribute("aria-busy", String(hasActiveJobs || state.promptPreview.loading || clickPending));
 
   let label = "Prompt Preview";
-  let title = "Queue a ComfyUI prompt preview from the current caption";
-  if (state.promptPreview.loading && sourceActive) {
+  let title = configError || "Queue a ComfyUI prompt preview from the current caption";
+  if (clickPending) {
+    label = "Prompt Preview...";
+    title = "Preparing the prompt preview action";
+  } else if (state.promptPreview.loading && sourceActive) {
     label = "Prompt Preview...";
     title = "Refreshing ComfyUI prompt preview status";
   } else if (hasActiveJobs) {
@@ -4861,13 +4883,57 @@ async function cyclePromptPreviewDisplay(direction = "forward") {
 async function runPromptPreviewButtonAction() {
   if (!canPromptPreviewCurrentImage()) {
     showErrorToast("Select a single image first.");
+    statusBar.textContent = "Prompt preview requires a single selected image.";
     return;
   }
   const sourcePath = state.previewPath;
+  const sourceActive = isPromptPreviewSourceActive(sourcePath);
+  const localSummary = sourceActive ? state.promptPreview.summary : createPromptPreviewSummary();
+  const localFiles = sourceActive ? getPromptPreviewFiles(sourcePath) : [];
+  const localHasActiveJobs = hasPromptPreviewActiveJobs(localSummary);
+
+  if (localFiles.length > 0 && !localHasActiveJobs) {
+    state.promptPreview.sourcePath = sourcePath;
+    state.promptPreview.loading = true;
+    statusBar.textContent = `Switching prompt preview for ${getFileLabel(sourcePath)}...`;
+    renderPromptPreviewButton();
+    try {
+      const changed = await cyclePromptPreviewDisplay("forward");
+      if (changed) {
+        statusBar.textContent = `Switched prompt preview for ${getFileLabel(sourcePath)}`;
+      }
+    } catch (err) {
+      showErrorToast(`Prompt preview error: ${err.message}`);
+      statusBar.textContent = `Prompt preview error: ${err.message}`;
+    } finally {
+      state.promptPreview.loading = false;
+      renderPromptPreviewButton();
+    }
+    return;
+  }
+
+  const configError = getPromptPreviewConfigError({ requireWorkflow: true });
+  if (configError) {
+    showErrorToast(configError);
+    statusBar.textContent = configError;
+    renderPromptPreviewButton();
+    return;
+  }
+
   state.promptPreview.sourcePath = sourcePath;
   state.promptPreview.loading = true;
+  statusBar.textContent = localHasActiveJobs
+    ? `Queueing another prompt preview for ${getFileLabel(sourcePath)}...`
+    : `Checking prompt preview for ${getFileLabel(sourcePath)}...`;
   renderPromptPreviewButton();
   try {
+    if (localHasActiveJobs) {
+      const queued = await queuePromptPreviewFromCurrentCaption(sourcePath);
+      applyPromptPreviewSnapshot(sourcePath, queued, { autoDisplayLatest: false });
+      statusBar.textContent = `Queued prompt preview ${Math.max(1, Number(state.promptPreview.summary.spawned || 1))} for ${getFileLabel(sourcePath)}`;
+      return;
+    }
+
     const status = await refreshPromptPreviewStatus(sourcePath, { showErrors: false, autoDisplayLatest: false }).catch(() => ({
       image_path: sourcePath,
       jobs: [],
@@ -4879,12 +4945,14 @@ async function runPromptPreviewButtonAction() {
     const hasFiles = Array.isArray(status.files) && status.files.length > 0;
 
     if (!hasFiles || hasActiveJobs) {
+      statusBar.textContent = `Queueing prompt preview for ${getFileLabel(sourcePath)}...`;
       const queued = await queuePromptPreviewFromCurrentCaption(sourcePath);
       applyPromptPreviewSnapshot(sourcePath, queued, { autoDisplayLatest: false });
       statusBar.textContent = `Queued prompt preview ${Math.max(1, Number(state.promptPreview.summary.spawned || 1))} for ${getFileLabel(sourcePath)}`;
       return;
     }
 
+    statusBar.textContent = `Switching prompt preview for ${getFileLabel(sourcePath)}...`;
     const changed = await cyclePromptPreviewDisplay("forward");
     if (changed) {
       statusBar.textContent = `Switched prompt preview for ${getFileLabel(sourcePath)}`;
@@ -4901,6 +4969,7 @@ async function runPromptPreviewButtonAction() {
 async function revealCurrentPromptPreviewInExplorer() {
   if (!canPromptPreviewCurrentImage()) {
     showErrorToast("Select a single image first.");
+    statusBar.textContent = "Prompt preview reveal requires a single selected image.";
     return;
   }
   const sourcePath = state.previewPath;
@@ -4908,6 +4977,7 @@ async function revealCurrentPromptPreviewInExplorer() {
   const revealPath = state.promptPreview.displayPath || promptPreviewFiles[promptPreviewFiles.length - 1] || "";
   if (!revealPath || revealPath === sourcePath) {
     showErrorToast("No generated prompt preview file found yet.");
+    statusBar.textContent = `No generated prompt preview file found yet for ${getFileLabel(sourcePath)}`;
     return;
   }
 
@@ -4916,6 +4986,7 @@ async function revealCurrentPromptPreviewInExplorer() {
   if (!resp.ok) {
     throw new Error(data.detail || "Failed to reveal prompt preview file");
   }
+  statusBar.textContent = `Revealed prompt preview for ${getFileLabel(sourcePath)}`;
 }
 
 async function pollPromptPreviewStatus() {
@@ -7711,13 +7782,21 @@ cropBox.querySelectorAll("[data-handle]").forEach(handleEl => {
 maskEditBtn.addEventListener("click", enterMaskEditMode);
 imageEditBtn.addEventListener("click", enterImageEditMode);
 promptPreviewBtn.addEventListener("click", () => {
+  if (!canPromptPreviewCurrentImage()) {
+    return;
+  }
+  const sourcePath = state.previewPath;
+  state.promptPreview.sourcePath = sourcePath;
   if (state.ui.promptPreviewClickTimer) {
     window.clearTimeout(state.ui.promptPreviewClickTimer);
   }
+  statusBar.textContent = `Preparing prompt preview for ${getFileLabel(sourcePath)}...`;
   state.ui.promptPreviewClickTimer = window.setTimeout(() => {
     state.ui.promptPreviewClickTimer = null;
+    renderPromptPreviewButton();
     runPromptPreviewButtonAction().catch(() => {});
   }, 220);
+  renderPromptPreviewButton();
 });
 promptPreviewBtn.addEventListener("dblclick", (e) => {
   e.preventDefault();
@@ -7725,6 +7804,10 @@ promptPreviewBtn.addEventListener("dblclick", (e) => {
   if (state.ui.promptPreviewClickTimer) {
     window.clearTimeout(state.ui.promptPreviewClickTimer);
     state.ui.promptPreviewClickTimer = null;
+  }
+  renderPromptPreviewButton();
+  if (canPromptPreviewCurrentImage()) {
+    statusBar.textContent = `Revealing prompt preview for ${getFileLabel(state.previewPath)}...`;
   }
   revealCurrentPromptPreviewInExplorer().catch((err) => {
     showErrorToast(`Prompt preview error: ${err.message}`);

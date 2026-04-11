@@ -452,24 +452,22 @@
 #prompt-preview-btn {
   display: none;
   align-items: center;
-  gap: 8px;
-  background: rgba(166,227,161,0.16);
-  color: #d8ffd4;
-  border: 1px solid rgba(166,227,161,0.34);
-}
-#prompt-preview-btn.visible {
-  display: inline-flex;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(137,180,250,0.16);
+  color: #b8d6ff;
+  border: 1px solid rgba(137,180,250,0.36);
 }
 #prompt-preview-btn.running {
-  background: rgba(250,179,135,0.2);
-  color: #ffe0cb;
-  border-color: rgba(250,179,135,0.4);
+  background: rgba(137,180,250,0.24);
+  color: #dcecff;
+  border-color: rgba(137,180,250,0.48);
 }
 #prompt-preview-btn-thumb {
   display: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
   border: 1px solid rgba(255,255,255,0.18);
   background-color: rgba(255,255,255,0.08);
   background-position: center;
@@ -490,7 +488,13 @@
 }
 #duplicate-image-btn.visible,
 #image-edit-btn.visible,
-#mask-edit-btn.visible { display: block; }
+#prompt-preview-btn.visible,
+#mask-edit-btn.visible,
+#gif-convert-btn.visible {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 #video-mask-add-btn {
   position: absolute;
   right: 18px;
@@ -511,7 +515,6 @@
   color: #b8d6ff;
   border: 1px solid rgba(137,180,250,0.36);
 }
-#gif-convert-btn.visible { display: block; }
 #mask-action-bar {
   position: absolute;
   right: 18px;
