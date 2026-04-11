@@ -4707,6 +4707,15 @@ function canPromptPreviewCurrentImage() {
     && !!imgNatH;
 }
 
+function getPromptPreviewCreateSelectionPaths() {
+  if (state.selectedPaths.size === 0) return [];
+  return [...state.selectedPaths].filter((path) => isImageMediaPath(path));
+}
+
+function canCreatePromptPreviewSelection() {
+  return state.selectedPaths.size > 0 && isSelectionImagesOnly();
+}
+
 function hasPromptPreviewActiveJobs(summary = state.promptPreview.summary) {
   return Number(summary?.running || 0) > 0 || Number(summary?.queued || 0) > 0;
 }
@@ -4724,9 +4733,11 @@ function getPromptPreviewConfigError(options = {}) {
 
 function renderCreatePromptPreviewButton() {
   if (!createPromptPreviewBtn) return;
-  const selectionReady = canPromptPreviewCurrentImage();
-  const sourcePath = state.previewPath;
-  const sourceActive = isPromptPreviewSourceActive(sourcePath);
+  const selectedPaths = getPromptPreviewCreateSelectionPaths();
+  const selectionReady = canCreatePromptPreviewSelection();
+  const selectionCount = selectedPaths.length;
+  const sourcePath = selectedPaths.includes(state.previewPath) ? state.previewPath : "";
+  const sourceActive = sourcePath ? isPromptPreviewSourceActive(sourcePath) : false;
   const summary = sourceActive ? state.promptPreview.summary : createPromptPreviewSummary();
   const hasActiveJobs = hasPromptPreviewActiveJobs(summary);
   const spawned = Math.max(0, Number(summary.spawned || summary.total || 0));
@@ -4743,14 +4754,20 @@ function renderCreatePromptPreviewButton() {
   createPromptPreviewBtn.classList.toggle("running", hasActiveJobs || state.promptPreview.loading);
 
   let label = "Create Preview";
-  let title = configError || "Queue a new ComfyUI prompt preview for the selected image";
+  let title = configError || (selectionCount === 1
+    ? "Queue a new ComfyUI prompt preview for the selected image"
+    : `Queue new ComfyUI prompt preview jobs for ${selectionCount} selected images`);
   if (!selectionReady) {
-    title = "Select a single image to queue a prompt preview";
+    title = state.selectedPaths.size > 0
+      ? "Prompt preview currently supports image selections only"
+      : "Select one or more images to queue prompt previews";
   } else if (state.promptPreview.loading && sourceActive) {
     label = "Creating Preview...";
-    title = "Queueing a new ComfyUI prompt preview";
+    title = selectionCount === 1
+      ? "Queueing a new ComfyUI prompt preview"
+      : `Queueing ComfyUI prompt previews for ${selectionCount} images`;
   } else if (hasActiveJobs) {
-    title = `${spawned} prompt preview job${spawned === 1 ? "" : "s"} queued for ${getFileLabel(sourcePath)}. The latest result will show automatically when it finishes.`;
+    title = `${spawned} prompt preview job${spawned === 1 ? "" : "s"} queued for ${getFileLabel(sourcePath)}. The latest result will show automatically when the next job finishes.`;
   }
 
   setGenerateButtonContent(createPromptPreviewBtn, label);
@@ -4805,7 +4822,11 @@ function renderPromptPreviewControls() {
 }
 
 function applyPromptPreviewSnapshot(sourcePath, payload, options = {}) {
-  const { autoDisplayLatest = false } = options;
+  const {
+    autoDisplayLatest = false,
+    allowCompletedAutodisplay = true,
+    allowFileChangeAutodisplay = true,
+  } = options;
   const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
   const summary = { ...createPromptPreviewSummary(), ...(payload?.summary || {}) };
   const files = Array.from(new Set((Array.isArray(payload?.files) ? payload.files : []).filter(Boolean)));
@@ -4842,7 +4863,11 @@ function applyPromptPreviewSnapshot(sourcePath, payload, options = {}) {
   const shouldAutoDisplayLatest = state.previewPath === sourcePath
     && state.previewMediaType === "image"
     && files.length > 0
-    && (autoDisplayLatest || completedIncreased || (previousFilesKey && filesChanged));
+    && (
+      autoDisplayLatest
+      || (allowCompletedAutodisplay && completedIncreased)
+      || (allowFileChangeAutodisplay && previousFilesKey && filesChanged)
+    );
 
   if (shouldAutoDisplayLatest) {
     setPromptPreviewDisplayPath(files[files.length - 1], { preserveView: true }).catch(() => {});
@@ -4891,12 +4916,16 @@ async function queuePromptPreviewFromCurrentCaption(sourcePath = state.previewPa
 }
 
 async function runCreatePromptPreviewAction() {
-  if (!canPromptPreviewCurrentImage()) {
-    showErrorToast("Select a single image first.");
-    statusBar.textContent = "Prompt preview requires a single selected image.";
+  const selectedPaths = getPromptPreviewCreateSelectionPaths();
+  if (!canCreatePromptPreviewSelection()) {
+    const message = state.selectedPaths.size > 0
+      ? "Prompt preview currently supports image selections only."
+      : "Select one or more images first.";
+    showErrorToast(message);
+    statusBar.textContent = message;
     return;
   }
-  const sourcePath = state.previewPath;
+  const sourcePath = selectedPaths.includes(state.previewPath) ? state.previewPath : selectedPaths[0] || "";
   const configError = getPromptPreviewConfigError({ requireWorkflow: true });
   if (configError) {
     showErrorToast(configError);
@@ -4905,14 +4934,53 @@ async function runCreatePromptPreviewAction() {
     return;
   }
 
-  state.promptPreview.sourcePath = sourcePath;
+  if (sourcePath) {
+    state.promptPreview.sourcePath = sourcePath;
+  }
   state.promptPreview.loading = true;
-  statusBar.textContent = `Queueing prompt preview for ${getFileLabel(sourcePath)}...`;
+  statusBar.textContent = selectedPaths.length === 1
+    ? `Queueing prompt preview for ${getFileLabel(sourcePath)}...`
+    : `Queueing prompt previews for ${selectedPaths.length} images...`;
   renderPromptPreviewControls();
+  let queuedCount = 0;
+  let failedCount = 0;
+  let firstErrorMessage = "";
   try {
-    const queued = await queuePromptPreviewFromCurrentCaption(sourcePath);
-    applyPromptPreviewSnapshot(sourcePath, queued, { autoDisplayLatest: false });
-    statusBar.textContent = `Queued prompt preview ${Math.max(1, Number(state.promptPreview.summary.spawned || 1))} for ${getFileLabel(sourcePath)}`;
+    for (let index = 0; index < selectedPaths.length; index += 1) {
+      const path = selectedPaths[index];
+      if (selectedPaths.length > 1) {
+        statusBar.textContent = `Queueing prompt previews ${index + 1}/${selectedPaths.length}: ${getFileLabel(path)}...`;
+      }
+      try {
+        const queued = await queuePromptPreviewFromCurrentCaption(path);
+        queuedCount += 1;
+        if (path === sourcePath) {
+          applyPromptPreviewSnapshot(path, queued, {
+            autoDisplayLatest: false,
+            allowCompletedAutodisplay: false,
+            allowFileChangeAutodisplay: false,
+          });
+        }
+      } catch (err) {
+        failedCount += 1;
+        if (!firstErrorMessage) {
+          firstErrorMessage = err.message || "Failed to queue prompt preview";
+        }
+        console.error(`Failed to queue prompt preview for ${path}:`, err);
+      }
+    }
+
+    if (queuedCount > 0 && failedCount === 0) {
+      statusBar.textContent = queuedCount === 1
+        ? `Queued prompt preview for ${getFileLabel(sourcePath)}`
+        : `Queued ${queuedCount} prompt preview jobs`;
+    } else if (queuedCount > 0) {
+      const message = `Queued ${queuedCount} prompt preview job${queuedCount === 1 ? "" : "s"}; ${failedCount} failed.`;
+      showErrorToast(message);
+      statusBar.textContent = message;
+    } else {
+      throw new Error(firstErrorMessage || "Failed to queue prompt previews");
+    }
   } catch (err) {
     showErrorToast(`Prompt preview error: ${err.message}`);
     statusBar.textContent = `Prompt preview error: ${err.message}`;
@@ -9392,7 +9460,11 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
               appendModelLog(`[${getFileLabel(event.path)}] Auto Preview queued`, "log-dim");
               if (state.previewPath === event.path && state.previewMediaType === "image") {
                 state.promptPreview.sourcePath = event.path;
-                applyPromptPreviewSnapshot(event.path, queued, { autoDisplayLatest: false });
+                applyPromptPreviewSnapshot(event.path, queued, {
+                  autoDisplayLatest: false,
+                  allowCompletedAutodisplay: false,
+                  allowFileChangeAutodisplay: false,
+                });
                 renderPromptPreviewControls();
               }
             })

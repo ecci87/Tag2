@@ -388,6 +388,15 @@
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
 }
 #crop-cancel-btn.visible { display: block; }
+#crop-cancel-btn:hover { filter: brightness(1.08); }
+#crop-remove-btn {
+  position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+  display: none; padding: 5px 14px; border: 1px solid rgba(243,139,168,0.35); border-radius: 8px;
+  background: rgba(243,139,168,0.14); color: #f38ba8; font-weight: 700; cursor: pointer; pointer-events: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+#crop-remove-btn.visible { display: block; }
+#crop-remove-btn:hover { filter: brightness(1.08); }
 #preview-action-bar {
   position: absolute;
   right: 18px;
