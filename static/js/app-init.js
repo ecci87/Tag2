@@ -49,6 +49,23 @@ function setupVerticalResize(handleEl, topEl, bottomEl, containerEl) {
     document.addEventListener("mouseup", onUp);
   });
 }
+
+function invokeGlobalFunction(functionName, ...args) {
+  const fn = globalThis[functionName];
+  if (typeof fn !== "function") {
+    console.error(`${functionName} is not defined`);
+    return undefined;
+  }
+  return fn(...args);
+}
+
+function addSafeClickListener(element, functionName) {
+  if (!element) return;
+  element.addEventListener("click", () => {
+    invokeGlobalFunction(functionName);
+  });
+}
+
 setupResize($("#left-resize"), $("#left-panel"), "left");
 setupResize($("#right-resize"), $("#right-panel"), "right");
 setupVerticalResize(rightHorizontalResize, captionsSection, freeTextSection, captionsEditorPanel);
@@ -80,12 +97,12 @@ if (promptPreviewGridToggleBtn) {
       : "Showing source thumbnails only";
   });
 }
-autoCaptionBtn.addEventListener("click", autoCaptionSelected);
-addFreeTextNowBtn.addEventListener("click", addFreeTextNow);
-metadataSaveBtn.addEventListener("click", saveMetadataForSelection);
-videoClipBtn.addEventListener("click", queueCurrentVideoClip);
-gifConvertBtn.addEventListener("click", queueCurrentGifConversion);
-videoDownloadBtn.addEventListener("click", downloadCurrentVideo);
+addSafeClickListener(autoCaptionBtn, "autoCaptionSelected");
+addSafeClickListener(addFreeTextNowBtn, "addFreeTextNow");
+addSafeClickListener(metadataSaveBtn, "saveMetadataForSelection");
+addSafeClickListener(videoClipBtn, "queueCurrentVideoClip");
+addSafeClickListener(gifConvertBtn, "queueCurrentGifConversion");
+addSafeClickListener(videoDownloadBtn, "downloadCurrentVideo");
 hideAddButtonsCheckbox.addEventListener("change", () => {
   state.hideAddButtons = hideAddButtonsCheckbox.checked;
   renderSentences();
@@ -237,8 +254,8 @@ document.addEventListener("keydown", (e) => {
       const path = visibleEntries[0]?.img?.path;
       if (path) {
         showPreview(path);
-        loadCaptionData(path);
-        loadMetadataData(path);
+        if (typeof loadCaptionData === "function") loadCaptionData(path);
+        if (typeof loadMetadataData === "function") loadMetadataData(path);
         loadCropData(path);
       }
       freeText.disabled = false;
@@ -247,12 +264,12 @@ document.addEventListener("keydown", (e) => {
       freeText.disabled = true;
       freeText.value = state.selectedPaths.size > 1 ? "(Multiple media files selected)" : "";
       if (state.selectedPaths.size > 1) {
-        loadMultiCaptionState();
-        loadMultiMetadataState();
+        if (typeof loadMultiCaptionState === "function") loadMultiCaptionState();
+        if (typeof loadMultiMetadataState === "function") loadMultiMetadataState();
       }
     }
     renderMetadataEditor();
-    updateMultiInfo();
+    if (typeof updateMultiInfo === "function") updateMultiInfo();
   }
 
   // Arrow keys for navigation
@@ -304,7 +321,7 @@ startPromptPreviewPolling();
 
 // Initial render of sentences
 setCropAspectRatios(state.cropAspectRatioLabels);
-renderSentences();
+if (typeof renderSentences === "function") renderSentences();
 setActiveRightPanelTab(state.ui.activeRightPanelTab);
 renderMetadataEditor();
 renderMaskEditorUi();
