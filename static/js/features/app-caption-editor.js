@@ -1283,6 +1283,11 @@ function getAutoCaptionStartLog(scope, event) {
   }
 }
 
+function getOllamaAnswerLogSuffix(event) {
+  if (!event?.answer_incomplete) return "";
+  return event.answer_done_reason ? ` [partial: ${event.answer_done_reason}]` : " [partial]";
+}
+
 function getAutoCaptionImageStartLog(scope, event, targetSentence) {
   const fileLabel = getFileLabel(event.path);
   if (scope === "free-text-only") {
@@ -1372,6 +1377,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         target_caption: targetSentence,
         free_text_prompt_template: state.ollamaFreeTextPromptTemplate,
         timeout_seconds: state.ollamaTimeoutSeconds,
+        max_output_tokens: state.ollamaMaxOutputTokens,
       }),
     });
     if (!resp.ok) {
@@ -1397,6 +1403,9 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         appendModelLog(getAutoCaptionStartLog(scope, event), "log-dim");
         if (event.enable_free_text || event.free_text_only) {
           appendModelLog("Free-text enhancement is enabled", "log-dim");
+        }
+        if (event.max_output_tokens) {
+          appendModelLog(`Max output tokens: ${event.max_output_tokens}`, "log-dim");
         }
         if (state.comfyuiAutoPreviewEnabled) {
           appendModelLog(
@@ -1432,7 +1441,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentStepTotal: Math.max(state.aiProgress.currentStepTotal || 0, (event.total || 0) + (state.aiProgress.enableFreeText ? 1 : 0)),
         });
         const verdict = event.enabled ? "YES" : "NO";
-        appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${currentCaption} -> ${verdict} | ${event.answer || verdict}`, event.enabled ? "log-ok" : "log-dim");
+        appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${currentCaption} -> ${verdict} | ${event.answer || verdict}${getOllamaAnswerLogSuffix(event)}`, event.enabled ? "log-ok" : "log-dim");
         const cache = ensureCaptionCache(event.path);
         cache.enabled_sentences = orderEnabledSentences(event.enabled_captions || event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";
@@ -1451,7 +1460,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentStepTotal: Math.max(state.aiProgress.currentStepTotal || 0, (event.total || 0) + (state.aiProgress.enableFreeText ? 1 : 0)),
         });
         appendModelLog(
-          `[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.group_name || "Group"} -> ${selectedCaption}${event.selected_hidden ? " (ignored in txt)" : ""} | ${event.answer || ""}`,
+          `[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.group_name || "Group"} -> ${selectedCaption}${event.selected_hidden ? " (ignored in txt)" : ""} | ${event.answer || ""}${getOllamaAnswerLogSuffix(event)}`,
           (event.selected_caption || event.selected_sentence) ? "log-ok" : "log-warn"
         );
         const cache = ensureCaptionCache(event.path);
@@ -1475,9 +1484,9 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         cache.enabled_sentences = orderEnabledSentences(event.enabled_captions || event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";
         if ((event.added_lines || []).length > 0) {
-          appendModelLog(`[${getFileLabel(event.path)}] Added free text: ${(event.added_lines || []).join(" | ")}`, "log-ok");
+          appendModelLog(`[${getFileLabel(event.path)}] Added free text: ${(event.added_lines || []).join(" | ")}${getOllamaAnswerLogSuffix(event)}`, "log-ok");
         } else {
-          appendModelLog(`[${getFileLabel(event.path)}] Free text output: ${event.answer || "NONE"}`, "log-warn");
+          appendModelLog(`[${getFileLabel(event.path)}] Free text output: ${event.answer || "NONE"}${getOllamaAnswerLogSuffix(event)}`, "log-warn");
         }
         if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
           freeText.value = cache.free_text || "";

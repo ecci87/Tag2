@@ -363,6 +363,10 @@
               <label for="settings-ollama-timeout">Timeout (s)</label>
               <input type="number" id="settings-ollama-timeout" min="1" max="600" placeholder="20" spellcheck="false">
             </div>
+            <div class="settings-field">
+              <label for="settings-ollama-max-output-tokens">Max Output Tokens</label>
+              <input type="number" id="settings-ollama-max-output-tokens" min="1" max="2048" placeholder="64" spellcheck="false">
+            </div>
           </div>
           <div class="settings-field">
             <label for="settings-ollama-model">Model</label>
@@ -371,6 +375,7 @@
               <button id="settings-refresh-models-btn" class="settings-inline-btn" type="button" title="Refresh Ollama model list" aria-label="Refresh Ollama model list">↻</button>
             </div>
             <div class="settings-help">Use a multimodal vision model. Video auto-caption sends several representative frames from each clip to the model.</div>
+            <div class="settings-help">Short capped replies reduce looping completions. If a response times out after yielding text, Tag2 now keeps the partial answer.</div>
           </div>
           <div class="settings-field">
             <label for="settings-ollama-prompt">Caption Check Prompt</label>

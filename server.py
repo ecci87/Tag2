@@ -98,12 +98,14 @@ from tag2_ollama import (
     _apply_media_prompt_context,
     _auto_caption_sections,
     _auto_caption_captions,
+    _build_ollama_generate_payload,
     _compose_ollama_host,
     _extract_free_text_lines,
     _get_ollama_enable_free_text,
     _get_ollama_free_text_prompt_template,
     _get_ollama_group_prompt_template,
     _get_ollama_host,
+    _get_ollama_max_output_tokens,
     _get_ollama_model,
     _get_ollama_port,
     _get_ollama_prompt_template,
@@ -115,6 +117,7 @@ from tag2_ollama import (
     _ollama_prompt_for_free_text,
     _ollama_prompt_for_group,
     _ollama_prompt_for_caption,
+    _ollama_response_meta,
     _parse_ollama_selection,
     _parse_ollama_yes_no,
     _split_ollama_host,
@@ -193,6 +196,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.j
 DEFAULT_OLLAMA_SERVER = "127.0.0.1"
 DEFAULT_OLLAMA_PORT = 11434
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 20
+DEFAULT_OLLAMA_MAX_OUTPUT_TOKENS = 64
 DEFAULT_OLLAMA_MODEL = "llava"
 DEFAULT_COMFYUI_SERVER = "127.0.0.1"
 DEFAULT_COMFYUI_PORT = 8188
@@ -765,6 +769,7 @@ def _load_config() -> dict:
         "ollama_server": DEFAULT_OLLAMA_SERVER,
         "ollama_port": DEFAULT_OLLAMA_PORT,
         "ollama_timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+        "ollama_max_output_tokens": DEFAULT_OLLAMA_MAX_OUTPUT_TOKENS,
         "ollama_host": f"http://{DEFAULT_OLLAMA_SERVER}:{DEFAULT_OLLAMA_PORT}",
         "ollama_model": DEFAULT_OLLAMA_MODEL,
         "ollama_prompt_template": DEFAULT_OLLAMA_PROMPT_TEMPLATE,
@@ -1485,6 +1490,11 @@ def _apply_free_text_result_to_live_caption(
     merged_free_text, added_lines = _merge_free_text(base_free_text, model_output, enabled)
     _write_caption_file(image_path, enabled, merged_free_text, sections)
     return enabled, merged_free_text, added_lines
+
+
+def _build_ollama_answer_meta(response: dict) -> dict:
+    """Normalize Ollama completion metadata for API responses."""
+    return _ollama_response_meta(response)
 
 
 @app.get("/api/list-images")
@@ -2920,6 +2930,7 @@ class AutoCaptionRequest(BaseModel):
     target_sentence: Optional[str] = None
     free_text_prompt_template: Optional[str] = None
     timeout_seconds: Optional[int] = None
+    max_output_tokens: Optional[int] = None
 
     def resolved_target_caption(self) -> str | None:
         caption = _read_caption_text(self.target_caption, self.target_sentence)
@@ -3009,6 +3020,7 @@ async def auto_caption(data: AutoCaptionRequest):
     free_text_only = bool(data.free_text_only)
     free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE)
     timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+    max_output_tokens = data.max_output_tokens or _get_ollama_max_output_tokens(cfg, DEFAULT_OLLAMA_MAX_OUTPUT_TOKENS)
 
     if not model:
         raise HTTPException(status_code=400, detail="No Ollama model configured")
@@ -3064,6 +3076,7 @@ async def auto_caption(data: AutoCaptionRequest):
                     prompt_template=prompt_template,
                     group_prompt_template=group_prompt_template,
                     timeout=timeout_seconds,
+                    max_output_tokens=max_output_tokens,
                 )
                 enabled, results = await loop.run_in_executor(
                     executor,
@@ -3078,13 +3091,12 @@ async def auto_caption(data: AutoCaptionRequest):
                 for target in targets or []:
                     if target["type"] == "caption":
                         caption = target["caption"]
-                        payload = {
-                            "model": model,
-                            "prompt": _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), media_path),
-                            "images": media_payload,
-                            "stream": False,
-                            "options": {"temperature": 0},
-                        }
+                        payload = _build_ollama_generate_payload(
+                            model,
+                            _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), media_path),
+                            media_payload,
+                            max_output_tokens=max_output_tokens,
+                        )
                         response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
                         raw_answer = str(response.get("response") or "").strip()
                         is_match = _parse_ollama_yes_no(raw_answer)
@@ -3105,17 +3117,17 @@ async def auto_caption(data: AutoCaptionRequest):
                             "sentence": caption,
                             "enabled": is_match,
                             "answer": raw_answer,
+                            **_build_ollama_answer_meta(response),
                         })
                         continue
 
                     group_captions = target["captions"]
-                    payload = {
-                        "model": model,
-                        "prompt": _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_captions, group_prompt_template), media_path),
-                        "images": media_payload,
-                        "stream": False,
-                        "options": {"temperature": 0},
-                    }
+                    payload = _build_ollama_generate_payload(
+                        model,
+                        _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_captions, group_prompt_template), media_path),
+                        media_payload,
+                        max_output_tokens=max_output_tokens,
+                    )
                     response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
                     raw_answer = str(response.get("response") or "").strip()
                     selection_index = _parse_ollama_selection(raw_answer, group_captions)
@@ -3142,6 +3154,7 @@ async def auto_caption(data: AutoCaptionRequest):
                         "selected_hidden": selected_hidden,
                         "selection_index": selection_index,
                         "answer": raw_answer,
+                        **_build_ollama_answer_meta(response),
                     })
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=f"Ollama error: {e}") from e
@@ -3166,6 +3179,7 @@ async def auto_caption(data: AutoCaptionRequest):
                 generate_func=_ollama_generate,
                 prompt_template=free_text_prompt_template,
                 timeout=timeout_seconds,
+                max_output_tokens=max_output_tokens,
             )
             free_text_model_output = await loop.run_in_executor(
                 executor,
@@ -3192,6 +3206,7 @@ async def auto_caption(data: AutoCaptionRequest):
         "model": model,
         "host": host,
         "timeout_seconds": timeout_seconds,
+        "max_output_tokens": max_output_tokens,
         "prompt_template": prompt_template,
         "group_prompt_template": group_prompt_template,
         "enable_free_text": enable_free_text,
@@ -3222,6 +3237,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
     free_text_only = bool(data.free_text_only)
     free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE)
     timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+    max_output_tokens = data.max_output_tokens or _get_ollama_max_output_tokens(cfg, DEFAULT_OLLAMA_MAX_OUTPUT_TOKENS)
 
     if not model:
         raise HTTPException(status_code=400, detail="No Ollama model configured")
@@ -3253,6 +3269,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
             "enable_free_text": enable_free_text,
             "free_text_only": free_text_only,
             "timeout_seconds": timeout_seconds,
+            "max_output_tokens": max_output_tokens,
         })
 
         for media_path in media_paths:
@@ -3319,16 +3336,16 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             return
                         if target["type"] == "caption":
                             caption = target["caption"]
-                            payload = {
-                                "model": model,
-                                "prompt": _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), media_path),
-                                "images": media_payload,
-                                "stream": False,
-                                "options": {"temperature": 0},
-                            }
+                            payload = _build_ollama_generate_payload(
+                                model,
+                                _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), media_path),
+                                media_payload,
+                                max_output_tokens=max_output_tokens,
+                            )
                             response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
                             raw_answer = str(response.get("response") or "").strip()
                             is_match = _parse_ollama_yes_no(raw_answer)
+                            response_meta = _build_ollama_answer_meta(response)
                             enabled, free_text = _apply_caption_result_to_live_caption(
                                 media_path,
                                 caption,
@@ -3337,7 +3354,14 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                                 headers,
                                 sections,
                             )
-                            result = {"type": "caption", "caption": caption, "sentence": caption, "enabled": is_match, "answer": raw_answer}
+                            result = {
+                                "type": "caption",
+                                "caption": caption,
+                                "sentence": caption,
+                                "enabled": is_match,
+                                "answer": raw_answer,
+                                **response_meta,
+                            }
                             results.append(result)
                             yield _event_bytes({
                                 "type": "caption-check",
@@ -3351,19 +3375,20 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                                 "enabled_sentences": enabled,
                                 "free_text": free_text,
                                 "answer": raw_answer,
+                                **response_meta,
                             })
                             continue
 
                         group_captions = target["captions"]
-                        payload = {
-                            "model": model,
-                            "prompt": _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_captions, group_prompt_template), media_path),
-                            "images": media_payload,
-                            "stream": False,
-                            "options": {"temperature": 0},
-                        }
+                        payload = _build_ollama_generate_payload(
+                            model,
+                            _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_captions, group_prompt_template), media_path),
+                            media_payload,
+                            max_output_tokens=max_output_tokens,
+                        )
                         response = await loop.run_in_executor(executor, _ollama_generate, host, payload, timeout_seconds)
                         raw_answer = str(response.get("response") or "").strip()
+                        response_meta = _build_ollama_answer_meta(response)
                         selection_index = _parse_ollama_selection(raw_answer, group_captions)
                         selected_caption = group_captions[selection_index - 1] if selection_index else None
                         selected_hidden = bool(selected_caption and _is_hidden_group_caption(sections, selected_caption))
@@ -3387,6 +3412,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             "selected_hidden": selected_hidden,
                             "selection_index": selection_index,
                             "answer": raw_answer,
+                            **response_meta,
                         }
                         results.append(result)
                         yield _event_bytes({
@@ -3407,6 +3433,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             "enabled_sentences": enabled,
                             "free_text": free_text,
                             "answer": raw_answer,
+                            **response_meta,
                         })
 
                 free_text_model_output = ""
@@ -3417,15 +3444,15 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                     is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "caption"})
                     enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
                     caption_text = _build_caption_text(enabled, free_text, sections)
-                    free_payload = {
-                        "model": model,
-                        "prompt": _apply_media_prompt_context(_ollama_prompt_for_free_text(caption_text, free_text_prompt_template), media_path),
-                        "images": media_payload,
-                        "stream": False,
-                        "options": {"temperature": 0},
-                    }
+                    free_payload = _build_ollama_generate_payload(
+                        model,
+                        _apply_media_prompt_context(_ollama_prompt_for_free_text(caption_text, free_text_prompt_template), media_path),
+                        media_payload,
+                        max_output_tokens=max_output_tokens,
+                    )
                     response = await loop.run_in_executor(executor, _ollama_generate, host, free_payload, timeout_seconds)
                     free_text_model_output = str(response.get("response") or "").strip()
+                    response_meta = _build_ollama_answer_meta(response)
                     enabled, free_text, added_free_text_lines = _apply_free_text_result_to_live_caption(
                         media_path,
                         free_text_model_output,
@@ -3442,6 +3469,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                         "enabled_sentences": enabled,
                         "free_text": free_text,
                         "added_lines": added_free_text_lines,
+                        **response_meta,
                     })
 
                 enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
@@ -3555,6 +3583,7 @@ class SettingsUpdate(BaseModel):
     ollama_server: Optional[str] = None
     ollama_port: Optional[int] = None
     ollama_timeout_seconds: Optional[int] = None
+    ollama_max_output_tokens: Optional[int] = None
     ollama_model: Optional[str] = None
     ollama_prompt_template: Optional[str] = None
     ollama_group_prompt_template: Optional[str] = None
@@ -3600,6 +3629,7 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
         "ollama_server": _get_ollama_server(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
         "ollama_port": _get_ollama_port(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
         "ollama_timeout_seconds": _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS),
+        "ollama_max_output_tokens": _get_ollama_max_output_tokens(cfg, DEFAULT_OLLAMA_MAX_OUTPUT_TOKENS),
         "ollama_model": _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL),
         "ollama_prompt_template": _get_ollama_prompt_template(cfg, DEFAULT_OLLAMA_PROMPT_TEMPLATE),
         "ollama_group_prompt_template": _get_ollama_group_prompt_template(cfg, DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE),
@@ -3682,6 +3712,8 @@ async def update_settings(data: SettingsUpdate):
         cfg["ollama_port"] = int(data.ollama_port)
     if data.ollama_timeout_seconds is not None:
         cfg["ollama_timeout_seconds"] = max(1, int(data.ollama_timeout_seconds))
+    if data.ollama_max_output_tokens is not None:
+        cfg["ollama_max_output_tokens"] = max(1, int(data.ollama_max_output_tokens))
     if data.ollama_model is not None:
         cfg["ollama_model"] = data.ollama_model.strip()
     if data.ollama_prompt_template is not None:

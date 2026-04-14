@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 import piexif
+import tag2_ollama
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -1467,6 +1468,7 @@ class TestSettingsAPI:
         assert data["ollama_server"] == "127.0.0.1"
         assert data["ollama_port"] == 11434
         assert data["ollama_timeout_seconds"] == 20
+        assert data["ollama_max_output_tokens"] == 64
         assert data["ollama_model"] == "llava"
         assert "{caption}" in data["ollama_prompt_template"]
         assert "{group_name}" in data["ollama_group_prompt_template"]
@@ -1902,6 +1904,7 @@ class TestConfigPersistence:
         assert cfg["ollama_server"] == "127.0.0.1"
         assert cfg["ollama_port"] == 11434
         assert cfg["ollama_timeout_seconds"] == 20
+        assert cfg["ollama_max_output_tokens"] == 64
         assert cfg["ollama_model"] == "llava"
         assert "{caption}" in cfg["ollama_prompt_template"]
         assert "{group_name}" in cfg["ollama_group_prompt_template"]
@@ -1934,6 +1937,31 @@ class TestOllamaHelpers:
         assert server._parse_ollama_selection("Answer: 2", ["Red Car", "Blue Car"]) == 2
         assert server._parse_ollama_selection("Blue Car", ["Red Car", "Blue Car"]) == 2
 
+    def test_ollama_generate_returns_partial_text_on_timeout(self, monkeypatch):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield b'{"response":"YES","done":false}\n'
+                raise TimeoutError("timed out")
+
+        monkeypatch.setattr(tag2_ollama.urllib.request, "urlopen", lambda request, timeout=120: FakeResponse())
+
+        result = server._ollama_generate(
+            "http://127.0.0.1:11434",
+            {"model": "llava", "prompt": "Caption: Moon", "images": ["image-bytes"], "stream": False},
+            timeout=5,
+        )
+
+        assert result["response"] == "YES"
+        assert result["done"] is False
+        assert result["incomplete"] is True
+        assert result["done_reason"] == "timeout"
+
     def test_merge_free_text_avoids_duplicates(self):
         merged, added = server._merge_free_text(
             "Already there\nNight sky",
@@ -1947,6 +1975,7 @@ class TestOllamaHelpers:
         def fake_generate(host, payload, timeout=120):
             assert timeout == 17
             assert payload["images"] == ["image-bytes"]
+            assert payload["options"]["num_predict"] == 7
             prompt = payload["prompt"]
             if "Moon" in prompt:
                 return {"response": "YES"}
@@ -1963,6 +1992,7 @@ class TestOllamaHelpers:
             generate_func=server._ollama_generate,
             prompt_template="Caption? {caption}",
             timeout=17,
+            max_output_tokens=7,
         )
         assert enabled == ["Moon"]
         assert len(results) == 3
@@ -1972,6 +2002,7 @@ class TestOllamaHelpers:
     def test_auto_caption_sections(self, single_image, monkeypatch):
         def fake_generate(host, payload, timeout=120):
             assert payload["images"] == ["image-bytes"]
+            assert payload["options"]["num_predict"] == 11
             prompt = payload["prompt"]
             if "Caption:" in prompt:
                 return {"response": "YES" if "Moon" in prompt else "NO"}
@@ -1996,6 +2027,7 @@ class TestOllamaHelpers:
             prompt_template="Caption: {caption}",
             group_prompt_template="Group: {group_name}\n{options}",
             timeout=15,
+            max_output_tokens=11,
         )
         assert enabled == ["Moon", "Blue Car"]
         assert results[0]["type"] == "sentence"
@@ -2025,6 +2057,7 @@ class TestOllamaHelpers:
             prompt_template="Caption: {caption}",
             group_prompt_template="Group: {group_name}\n{options}",
             timeout=15,
+            max_output_tokens=9,
         )
         assert enabled == ["Chair not in frame"]
         assert results[0]["selected_sentence"] == "Chair not in frame"
@@ -2035,6 +2068,7 @@ class TestOllamaHelpers:
             assert timeout == 9
             assert "Current caption text" in payload["prompt"]
             assert payload["images"] == ["image-bytes"]
+            assert payload["options"]["num_predict"] == 13
             return {"response": "Moon visible\nBright stars"}
 
         monkeypatch.setattr(server, "_encode_media_for_ollama", lambda path, **kwargs: ["image-bytes"])
@@ -2048,6 +2082,7 @@ class TestOllamaHelpers:
             generate_func=server._ollama_generate,
             prompt_template=server.DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
             timeout=9,
+            max_output_tokens=13,
         )
         assert "Moon visible" in result
 
@@ -2366,6 +2401,7 @@ class TestAutoCaptionAPI:
             "ollama_server": "localhost",
             "ollama_port": 11435,
             "ollama_timeout_seconds": 12,
+            "ollama_max_output_tokens": 7,
             "ollama_model": "llava",
             "ollama_prompt_template": "Caption: {caption}",
             "ollama_group_prompt_template": "Group: {group_name}\n{options}",
@@ -2383,6 +2419,7 @@ class TestAutoCaptionAPI:
             assert kwargs["prompt_template"] == "Caption: {caption}"
             assert kwargs["group_prompt_template"] == "Group: {group_name}\n{options}"
             assert kwargs["timeout"] == 12
+            assert kwargs["max_output_tokens"] == 7
             return ["Moon", "Night", "Blue Car"], [
                 {"sentence": "Moon", "enabled": True, "answer": "YES"},
                 {"sentence": "Night", "enabled": True, "answer": "YES"},
@@ -2406,6 +2443,7 @@ class TestAutoCaptionAPI:
         assert data["results"][2]["selected_sentence"] == "Blue Car"
         assert data["host"] == "http://localhost:11435"
         assert data["timeout_seconds"] == 12
+        assert data["max_output_tokens"] == 7
         assert data["prompt_template"] == "Caption: {caption}"
         assert data["group_prompt_template"] == "Group: {group_name}\n{options}"
         assert data["added_free_text_lines"] == ["Moon visible", "Night sky"]

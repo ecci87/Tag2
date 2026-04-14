@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
@@ -87,6 +88,15 @@ def _get_ollama_timeout_seconds(cfg: dict, default_timeout: int) -> int:
     return max(1, timeout)
 
 
+def _get_ollama_max_output_tokens(cfg: dict, default_max_output_tokens: int) -> int:
+    """Get the configured Ollama output token cap."""
+    try:
+        max_output_tokens = int(cfg.get("ollama_max_output_tokens", default_max_output_tokens))
+    except (TypeError, ValueError):
+        max_output_tokens = default_max_output_tokens
+    return max(1, max_output_tokens)
+
+
 def _get_ollama_prompt_template(cfg: dict, default_template: str) -> str:
     """Get the configured Ollama prompt template."""
     return str(cfg.get("ollama_prompt_template") or default_template)
@@ -155,24 +165,104 @@ def _apply_media_prompt_context(prompt: str, media_path: str) -> str:
     return prefix + prompt
 
 
+def _build_ollama_generate_payload(
+    model: str,
+    prompt: str,
+    images: list[str],
+    *,
+    max_output_tokens: int | None = None,
+    temperature: float = 0,
+) -> dict:
+    """Build a generate payload with conservative decoding defaults."""
+    options = {"temperature": temperature}
+    try:
+        if max_output_tokens is not None:
+            options["num_predict"] = max(1, int(max_output_tokens))
+    except (TypeError, ValueError):
+        pass
+    return {
+        "model": model,
+        "prompt": prompt,
+        "images": images,
+        "stream": True,
+        "options": options,
+    }
+
+
+def _ollama_response_meta(response: dict) -> dict:
+    """Normalize completion metadata for downstream logging and UI state."""
+    incomplete = bool(response.get("incomplete") or response.get("done") is False)
+    done_reason = str(response.get("done_reason") or "").strip()
+    if incomplete and not done_reason:
+        done_reason = "timeout"
+    return {
+        "answer_incomplete": incomplete,
+        "answer_done_reason": done_reason,
+    }
+
+
+def _is_timeout_error(reason: object) -> bool:
+    """Return whether an exception reason represents a network timeout."""
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return True
+    return "timed out" in str(reason or "").lower()
+
+
 def _ollama_generate(host: str, payload: dict, timeout: int = 120) -> dict:
-    """Call the local Ollama generate API."""
+    """Call the local Ollama generate API and keep partial streamed output on timeout."""
     url = f"{host.rstrip('/')}/api/generate"
+    request_payload = dict(payload or {})
+    request_payload["stream"] = True
     request = urllib.request.Request(
         url,
-        data=json.dumps(payload).encode("utf-8"),
+        data=json.dumps(request_payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    response_chunks: list[str] = []
+    last_event: dict = {}
+
+    def _build_response(*, incomplete: bool = False, done_reason: str | None = None) -> dict:
+        merged = dict(last_event)
+        merged["response"] = "".join(response_chunks).strip()
+        if incomplete:
+            merged["done"] = False
+            merged["incomplete"] = True
+            merged["done_reason"] = done_reason or merged.get("done_reason") or "timeout"
+        elif "done" not in merged:
+            merged["done"] = True
+        return merged
+
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            for raw_line in response:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("invalid response from Ollama") from exc
+                if event.get("error"):
+                    raise RuntimeError(str(event.get("error")))
+                last_event = event
+                chunk = event.get("response")
+                if chunk:
+                    response_chunks.append(str(chunk))
+            return _build_response()
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(detail or str(exc)) from exc
-    except TimeoutError as exc:
+    except (TimeoutError, socket.timeout) as exc:
+        partial = "".join(response_chunks).strip()
+        if partial:
+            return _build_response(incomplete=True, done_reason="timeout")
         raise RuntimeError(f"request timed out after {timeout} seconds") from exc
     except urllib.error.URLError as exc:
+        if _is_timeout_error(exc.reason or exc):
+            partial = "".join(response_chunks).strip()
+            if partial:
+                return _build_response(incomplete=True, done_reason="timeout")
         raise RuntimeError(str(exc.reason or exc)) from exc
 
 
@@ -273,6 +363,7 @@ def _auto_caption_captions(
     generate_func,
     prompt_template: str,
     timeout: int,
+    max_output_tokens: int | None = None,
 ) -> tuple[list[str], list[dict]]:
     """Ask Ollama about each caption candidate and return enabled captions."""
     image_payload = _normalize_ollama_images(encode_image_func(image_path))
@@ -280,13 +371,12 @@ def _auto_caption_captions(
     results: list[dict] = []
 
     for caption in captions:
-        payload = {
-            "model": model,
-            "prompt": _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), image_path),
-            "images": image_payload,
-            "stream": False,
-            "options": {"temperature": 0},
-        }
+        payload = _build_ollama_generate_payload(
+            model,
+            _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), image_path),
+            image_payload,
+            max_output_tokens=max_output_tokens,
+        )
         response = generate_func(host, payload, timeout=timeout)
         raw_answer = str(response.get("response") or "").strip()
         is_match = _parse_ollama_yes_no(raw_answer)
@@ -295,6 +385,7 @@ def _auto_caption_captions(
             "sentence": caption,
             "enabled": is_match,
             "answer": raw_answer,
+            **_ollama_response_meta(response),
         })
         if is_match:
             enabled.append(caption)
@@ -313,6 +404,7 @@ def _auto_caption_sections(
     prompt_template: str,
     group_prompt_template: str,
     timeout: int,
+    max_output_tokens: int | None = None,
 ) -> tuple[list[str], list[dict]]:
     """Ask Ollama about configured captions, including exclusive groups."""
     image_payload = _normalize_ollama_images(encode_image_func(image_path))
@@ -322,13 +414,12 @@ def _auto_caption_sections(
     for target in _iter_caption_targets(sections):
         if target["type"] == "caption":
             caption = target["caption"]
-            payload = {
-                "model": model,
-                "prompt": _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), image_path),
-                "images": image_payload,
-                "stream": False,
-                "options": {"temperature": 0},
-            }
+            payload = _build_ollama_generate_payload(
+                model,
+                _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), image_path),
+                image_payload,
+                max_output_tokens=max_output_tokens,
+            )
             response = generate_func(host, payload, timeout=timeout)
             raw_answer = str(response.get("response") or "").strip()
             is_match = _parse_ollama_yes_no(raw_answer)
@@ -339,13 +430,14 @@ def _auto_caption_sections(
                 "sentence": caption,
                 "enabled": is_match,
                 "answer": raw_answer,
+                **_ollama_response_meta(response),
             })
             continue
 
         group_captions = target["captions"]
-        payload = {
-            "model": model,
-            "prompt": _apply_media_prompt_context(
+        payload = _build_ollama_generate_payload(
+            model,
+            _apply_media_prompt_context(
                 _ollama_prompt_for_group(
                     target.get("group_name", ""),
                     group_captions,
@@ -353,10 +445,9 @@ def _auto_caption_sections(
                 ),
                 image_path,
             ),
-            "images": image_payload,
-            "stream": False,
-            "options": {"temperature": 0},
-        }
+            image_payload,
+            max_output_tokens=max_output_tokens,
+        )
         response = generate_func(host, payload, timeout=timeout)
         raw_answer = str(response.get("response") or "").strip()
         selection_index = _parse_ollama_selection(raw_answer, group_captions)
@@ -375,6 +466,7 @@ def _auto_caption_sections(
             "selected_hidden": selected_hidden,
             "selection_index": selection_index,
             "answer": raw_answer,
+            **_ollama_response_meta(response),
         })
 
     return enabled, results
@@ -390,15 +482,15 @@ def _suggest_free_text(
     generate_func,
     prompt_template: str,
     timeout: int,
+    max_output_tokens: int | None = None,
 ) -> str:
     """Ask Ollama for additional free-text image details."""
     image_payload = _normalize_ollama_images(encode_image_func(image_path))
-    payload = {
-        "model": model,
-        "prompt": _apply_media_prompt_context(_ollama_prompt_for_free_text(caption_text, prompt_template), image_path),
-        "images": image_payload,
-        "stream": False,
-        "options": {"temperature": 0},
-    }
+    payload = _build_ollama_generate_payload(
+        model,
+        _apply_media_prompt_context(_ollama_prompt_for_free_text(caption_text, prompt_template), image_path),
+        image_payload,
+        max_output_tokens=max_output_tokens,
+    )
     response = generate_func(host, payload, timeout=timeout)
     return str(response.get("response") or "").strip()

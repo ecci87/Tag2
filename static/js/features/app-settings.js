@@ -257,6 +257,7 @@ function applySettings(settings) {
   state.ollamaServer = (settings.ollama_server || "127.0.0.1").trim();
   state.ollamaPort = Number(settings.ollama_port || 11434) || 11434;
   state.ollamaTimeoutSeconds = Number(settings.ollama_timeout_seconds || 20) || 20;
+  state.ollamaMaxOutputTokens = Number(settings.ollama_max_output_tokens || 64) || 64;
   state.ollamaModel = (settings.ollama_model || "llava").trim() || "llava";
   state.ollamaPromptTemplate = settings.ollama_prompt_template || state.ollamaPromptTemplate;
   state.ollamaGroupPromptTemplate = settings.ollama_group_prompt_template || state.ollamaGroupPromptTemplate;
@@ -347,6 +348,7 @@ function fillSettingsForm() {
   settingsServerInput.value = state.ollamaServer;
   settingsPortInput.value = String(state.ollamaPort);
   settingsTimeoutInput.value = String(state.ollamaTimeoutSeconds);
+  settingsMaxOutputTokensInput.value = String(state.ollamaMaxOutputTokens);
   populateOllamaModelSelect(state.ollamaAvailableModels || [], state.ollamaModel);
   settingsComfyuiServerInput.value = state.comfyuiServer;
   settingsComfyuiPortInput.value = String(state.comfyuiPort);
@@ -410,6 +412,7 @@ async function saveOllamaSettingsFromForm() {
   const server = settingsServerInput.value.trim() || "127.0.0.1";
   const port = Number(settingsPortInput.value || "11434") || 11434;
   const timeoutSeconds = Number(settingsTimeoutInput.value || "20") || 20;
+  const maxOutputTokens = Number(settingsMaxOutputTokensInput.value || "64") || 64;
   const model = String(settingsModelInput.value || "").trim() || "llava";
   const comfyuiServer = settingsComfyuiServerInput.value.trim() || "127.0.0.1";
   const comfyuiPort = Number(settingsComfyuiPortInput.value || "8188") || 8188;
@@ -462,6 +465,7 @@ async function saveOllamaSettingsFromForm() {
     ollama_server: server,
     ollama_port: port,
     ollama_timeout_seconds: timeoutSeconds,
+    ollama_max_output_tokens: maxOutputTokens,
     ollama_model: model,
     comfyui_server: comfyuiServer,
     comfyui_port: comfyuiPort,

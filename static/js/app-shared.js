@@ -122,6 +122,7 @@ const state = {
   ollamaServer: "127.0.0.1",
   ollamaPort: 11434,
   ollamaTimeoutSeconds: 20,
+  ollamaMaxOutputTokens: 64,
   ollamaModel: "llava",
   ollamaPromptTemplate: "You are verifying a caption for one media item. Reply with exactly one word: YES or NO. Reply YES only if the caption is clearly correct for the media. Reply NO if it is wrong, uncertain, too specific, or not clearly visible.\n\nCaption: {caption}\nAnswer:",
   ollamaGroupPromptTemplate: "You are selecting the single best caption for one media item from a numbered list. Reply with exactly one number from 1 to {count}. Pick the most likely correct caption for the media.\n\nGroup: {group_name}\n{options}\n\nAnswer:",
@@ -394,6 +395,7 @@ const settingsPanels = [...document.querySelectorAll(".settings-panel")];
 const settingsServerInput = $("#settings-ollama-server");
 const settingsPortInput = $("#settings-ollama-port");
 const settingsTimeoutInput = $("#settings-ollama-timeout");
+const settingsMaxOutputTokensInput = $("#settings-ollama-max-output-tokens");
 const settingsModelInput = $("#settings-ollama-model");
 const settingsRefreshModelsBtn = $("#settings-refresh-models-btn");
 const settingsComfyuiServerInput = $("#settings-comfyui-server");
