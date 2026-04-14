@@ -620,11 +620,6 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const li = document.createElement("li");
   li.dataset.sentence = sentence;
   sentenceListElements.set(sentence, li);
-      const nextCaption = normalizeCaptionCacheEntry(data);
-      if (shouldPreserveLocalFreeTextDraft(path, nextCaption)) {
-        nextCaption.free_text = getLocalDraftFreeText(path);
-      }
-      state.captionCache[path] = nextCaption;
 
   const dragHandle = document.createElement("span");
   dragHandle.className = "drag-handle";
@@ -650,11 +645,6 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     document.querySelectorAll(".section-sentences li.drag-over").forEach(item => item.classList.remove("drag-over"));
     document.querySelectorAll(".section-sentences.drag-over-end").forEach(list => list.classList.remove("drag-over-end"));
   });
-      const nextCaption = normalizeCaptionCacheEntry(caption);
-      if (shouldPreserveLocalFreeTextDraft(path, nextCaption)) {
-        nextCaption.free_text = getLocalDraftFreeText(path);
-      }
-      state.captionCache[path] = nextCaption;
   const checkBox = document.createElement("div");
   checkBox.className = `check-box${isExclusive ? " radio" : ""}`;
   if (isChecked) checkBox.classList.add("checked");
@@ -699,9 +689,6 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const filterToggleBtn = document.createElement("button");
   filterToggleBtn.type = "button";
   filterToggleBtn.className = `filter-toggle-btn${filterMode === "has" ? " active" : ""}${filterMode === "missing" ? " missing" : ""}`;
-    if (String(state.captionCache[path]?.free_text || "") === savedFreeText) {
-      state.captionDraftPaths.delete(path);
-    }
   if (isGroupSentence) {
     filterToggleBtn.title = isFilterActive
       ? "Remove this group caption from the thumbnail filter"
