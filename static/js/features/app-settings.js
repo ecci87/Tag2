@@ -290,8 +290,10 @@ function applySettings(settings) {
   populateVideoTrainingProfileSelect();
   setVideoTrainingPresetsStatus();
   renderVideoTrainingSummary();
-  renderGifConvertButton();
-  if (state.images.length) {
+  if (typeof renderGifConvertButton === "function") {
+    renderGifConvertButton();
+  }
+  if (state.images.length && typeof renderGrid === "function") {
     renderGrid();
   }
 }

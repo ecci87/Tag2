@@ -70,7 +70,11 @@ if (promptPreviewGridToggleBtn) {
   promptPreviewGridToggleBtn.addEventListener("click", () => {
     state.showPromptPreviewThumbnails = !state.showPromptPreviewThumbnails;
     renderPromptPreviewGridToggle();
-    rerenderGridPreservingView();
+    if (typeof rerenderGridPreservingView === "function") {
+      rerenderGridPreservingView();
+    } else if (typeof renderGrid === "function") {
+      renderGrid();
+    }
     statusBar.textContent = state.showPromptPreviewThumbnails
       ? "Showing prompt preview thumbnails when available"
       : "Showing source thumbnails only";

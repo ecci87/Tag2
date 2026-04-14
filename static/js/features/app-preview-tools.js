@@ -277,6 +277,13 @@ function renderPromptPreviewControls() {
   renderPromptPreviewButton();
 }
 
+function updateImagePromptPreviewPathFallback(sourcePath, previewPath) {
+  const image = state.images.find((item) => item.path === sourcePath);
+  if (!image) return;
+  image.prompt_preview_path = String(previewPath || "").trim();
+  image.prompt_preview_mtime = image.prompt_preview_path ? Number(getImageVersion(image.prompt_preview_path) || Date.now()) : 0;
+}
+
 function renderPromptPreviewGridToggle() {
   if (!promptPreviewGridToggleBtn) return;
   const active = !!state.showPromptPreviewThumbnails;
@@ -359,8 +366,12 @@ function applyPromptPreviewSnapshot(sourcePath, payload, options = {}) {
   state.promptPreview.files = files;
   state.promptPreview.lastFilesKey = nextFilesKey;
 
-  setImagePromptPreviewPath(sourcePath, latestPreviewPath);
-  if (latestPreviewPath && (filesChanged || latestPreviewRefreshed)) {
+  if (typeof setImagePromptPreviewPath === "function") {
+    setImagePromptPreviewPath(sourcePath, latestPreviewPath);
+  } else {
+    updateImagePromptPreviewPathFallback(sourcePath, latestPreviewPath);
+  }
+  if (latestPreviewPath && (filesChanged || latestPreviewRefreshed) && typeof refreshVisibleThumbnail === "function") {
     refreshVisibleThumbnail(latestPreviewPath);
   }
 
@@ -432,10 +443,39 @@ function getPromptPreviewCaptionState(sourcePath = state.previewPath) {
   };
 }
 
-async function queuePromptPreviewFromCurrentCaption(sourcePath = state.previewPath) {
-  if (!state.captionCache[sourcePath]) {
-    await loadCaptionData(sourcePath);
+async function ensurePromptPreviewCaptionCache(sourcePath = state.previewPath) {
+  if (state.captionCache[sourcePath]) {
+    return state.captionCache[sourcePath];
   }
+
+  if (typeof loadCaptionData === "function") {
+    await loadCaptionData(sourcePath);
+    if (state.captionCache[sourcePath]) {
+      return state.captionCache[sourcePath];
+    }
+  }
+
+  const allSentences = typeof getAllConfiguredSentences === "function"
+    ? getAllConfiguredSentences()
+    : [];
+  const sentencesJson = JSON.stringify(allSentences);
+  const resp = await fetch(`/api/caption?path=${encodeURIComponent(sourcePath)}&captions=${encodeURIComponent(sentencesJson)}`);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.detail || "Failed to load caption data");
+  }
+  const nextCaption = typeof normalizeCaptionCacheEntry === "function"
+    ? normalizeCaptionCacheEntry(data)
+    : {
+      enabled_sentences: Array.isArray(data.enabled_captions) ? data.enabled_captions : (Array.isArray(data.enabled_sentences) ? data.enabled_sentences : []),
+      free_text: String(data.free_text || ""),
+    };
+  state.captionCache[sourcePath] = nextCaption;
+  return nextCaption;
+}
+
+async function queuePromptPreviewFromCurrentCaption(sourcePath = state.previewPath) {
+  await ensurePromptPreviewCaptionCache(sourcePath);
   const caption = getPromptPreviewCaptionState(sourcePath);
   const resp = await fetch("/api/comfyui/prompt-preview", {
     method: "POST",
