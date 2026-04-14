@@ -473,6 +473,8 @@ function setActiveRightPanelTab(tabName) {
     panel.hidden = !isActive;
   });
   renderMetadataEditor({ preserveInputs: true });
-  updateMultiInfo();
+  if (typeof updateMultiInfo === "function") {
+    updateMultiInfo();
+  }
 }
 

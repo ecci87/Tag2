@@ -525,8 +525,12 @@ async function selectUploadedImages(paths) {
   }
 
   renderMetadataEditor();
-  updateMultiInfo();
-  renderSentences();
+  if (typeof updateMultiInfo === "function") {
+    updateMultiInfo();
+  }
+  if (typeof renderSentences === "function") {
+    renderSentences();
+  }
   updateActionButtons();
   preloadAdjacent(lastPath);
 }
@@ -724,6 +728,13 @@ function createThumbnailImageElement(imagePath, thumbLoadSize) {
   return imgEl;
 }
 
+function createThumbnailPane(imagePath, thumbLoadSize, paneClassName = "") {
+  const pane = document.createElement("div");
+  pane.className = `thumb-media-pane${paneClassName ? ` ${paneClassName}` : ""}`;
+  pane.appendChild(createThumbnailImageElement(imagePath, thumbLoadSize));
+  return pane;
+}
+
 function appendStandardThumbnailBadges(cell, img) {
   const maskBadge = document.createElement("div");
   maskBadge.className = "mask-badge";
@@ -810,6 +821,61 @@ function createThumbCell(img, index, size, thumbLoadSize, options = {}) {
   return cell;
 }
 
+function createDualThumbCell(img, index, size, thumbLoadSize, previewPath) {
+  const cell = document.createElement("div");
+  let cls = "thumb-cell thumb-cell-double";
+  if (state.selectedPaths.has(img.path)) cls += " selected";
+  if (img.has_caption) cls += " has-caption";
+  if (img.has_mask) cls += " has-mask";
+  if (!imageConformsToAspectRatios(img)) cls += " aspect-mismatch";
+  cell.className = cls;
+  cell.style.width = `${(size * 2) + 8}px`;
+  cell.style.height = size + "px";
+  cell.dataset.index = index;
+  cell.dataset.path = img.path;
+  cell.dataset.mediaType = img.media_type || getMediaType(img.path);
+
+  const mediaRow = document.createElement("div");
+  mediaRow.className = "thumb-dual-media";
+
+  const originalPane = createThumbnailPane(img.path, thumbLoadSize, "thumb-original-pane");
+  mediaRow.appendChild(originalPane);
+
+  const previewPane = createThumbnailPane(previewPath, thumbLoadSize, "thumb-preview-pane");
+  const previewBadge = document.createElement("div");
+  previewBadge.className = "prompt-preview-badge";
+  previewBadge.textContent = "PV";
+  previewBadge.title = `Prompt preview for ${img.name}`;
+  previewPane.appendChild(previewBadge);
+  previewPane.addEventListener("click", (e) => {
+    e.stopPropagation();
+    handlePromptPreviewThumbClick(index, img.path, previewPath, e);
+  });
+  previewPane.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fetch(`/api/open-in-explorer?path=${encodeURIComponent(previewPath)}`);
+  });
+  mediaRow.appendChild(previewPane);
+
+  cell.appendChild(mediaRow);
+
+  const nameEl = document.createElement("div");
+  nameEl.className = "thumb-name";
+  nameEl.textContent = img.name;
+  nameEl.title = img.name;
+  cell.appendChild(nameEl);
+
+  appendStandardThumbnailBadges(cell, img);
+
+  cell.addEventListener("click", (e) => handleThumbClick(index, e));
+  cell.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    fetch(`/api/open-in-explorer?path=${encodeURIComponent(img.path)}`);
+  });
+  return cell;
+}
+
 function renderGrid(options = {}) {
   const { preservePath = null, preserveScrollTop = null } = options;
   fileGrid.innerHTML = "";
@@ -825,17 +891,7 @@ function renderGrid(options = {}) {
       ? String(img.prompt_preview_path || "").trim()
       : "";
     if (previewPath && previewPath !== img.path) {
-      const pair = document.createElement("div");
-      pair.className = "thumb-pair";
-      pair.appendChild(createThumbCell(img, index, size, thumbLoadSize));
-      pair.appendChild(createThumbCell(img, index, size, thumbLoadSize, {
-        imagePath: previewPath,
-        label: "Preview",
-        title: `Prompt preview for ${img.name}`,
-        sourcePath: img.path,
-        isPromptPreview: true,
-      }));
-      fileGrid.appendChild(pair);
+      fileGrid.appendChild(createDualThumbCell(img, index, size, thumbLoadSize, previewPath));
       continue;
     }
     fileGrid.appendChild(createThumbCell(img, index, size, thumbLoadSize));
@@ -953,8 +1009,12 @@ function handleThumbClick(index, event) {
   }
 
   renderMetadataEditor();
-  updateMultiInfo();
-  renderSentences();
+  if (typeof updateMultiInfo === "function") {
+    updateMultiInfo();
+  }
+  if (typeof renderSentences === "function") {
+    renderSentences();
+  }
   updateActionButtons();
 
   // Preload adjacent images

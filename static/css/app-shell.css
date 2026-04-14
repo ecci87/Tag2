@@ -421,6 +421,9 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   flex-wrap: wrap;
   min-width: 0;
 }
+#prompt-preview-grid-toggle-btn {
+  min-width: 36px;
+}
 .filter-chip {
   min-width: 56px;
   height: 22px;
@@ -540,11 +543,6 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 #file-grid {
   display: flex; flex-wrap: wrap; gap: var(--gap); align-content: flex-start;
 }
-.thumb-pair {
-  display: flex;
-  gap: var(--gap);
-  flex-shrink: 0;
-}
 .thumb-cell {
   width: var(--thumb-size); height: var(--thumb-size);
   border-radius: 4px; overflow: hidden; cursor: pointer; position: relative;
@@ -553,17 +551,37 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 }
 .thumb-cell:hover { border-color: rgba(137,180,250,0.4); }
 .thumb-cell.selected { border-color: var(--selected-border); background: var(--selected); }
-.thumb-cell.prompt-preview-thumb {
-  border-style: dashed;
-  border-color: rgba(137,180,250,0.26);
+.thumb-cell.thumb-cell-double {
+  width: calc((var(--thumb-size) * 2) + 8px);
+}
+.thumb-dual-media {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  padding: 0 0 18px;
+  box-sizing: border-box;
+}
+.thumb-media-pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: rgba(0,0,0,0.18);
+}
+.thumb-media-pane img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: rgba(0,0,0,0.18);
+}
+.thumb-preview-pane {
+  border-left: 1px dashed rgba(137,180,250,0.28);
   background: rgba(137,180,250,0.08);
 }
-.thumb-cell.prompt-preview-thumb:hover {
-  border-color: rgba(137,180,250,0.5);
-}
-.thumb-cell.prompt-preview-thumb.selected {
-  border-color: rgba(137,180,250,0.85);
-  background: rgba(137,180,250,0.16);
+.thumb-preview-pane:hover {
+  background: rgba(137,180,250,0.12);
 }
 .thumb-cell img { width: 100%; height: 100%; object-fit: contain; display: block; background: rgba(0,0,0,0.18); }
 .thumb-cell .thumb-name {
@@ -616,6 +634,12 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   display: flex;
   background: rgba(137,180,250,0.94);
   color: #10233f;
+}
+.thumb-cell.thumb-cell-double .caption-dot {
+  right: calc(50% + 6px);
+}
+.thumb-cell.thumb-cell-double .mask-badge {
+  left: 25%;
 }
 .thumb-cell.has-caption .caption-dot { display: flex; }
 .thumb-cell.has-mask .mask-badge { display: flex; }

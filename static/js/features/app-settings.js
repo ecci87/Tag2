@@ -282,8 +282,11 @@ function applySettings(settings) {
   state.videoTrainingProfile = findVideoTrainingProfileByKey(state.videoTrainingProfileKey)
     || state.videoTrainingProfile
     || null;
-  if (settings.sections) {
+  if (Object.prototype.hasOwnProperty.call(settings, "sections")) {
     state.sections = normalizeSectionsData(settings.sections);
+    if (typeof renderSentences === "function") {
+      renderSentences({ force: true, includePreview: false });
+    }
   }
   autoFreeTextCheckbox.checked = !!state.ollamaEnableFreeText;
   autoPreviewCheckbox.checked = !!state.comfyuiAutoPreviewEnabled;

@@ -1839,4 +1839,23 @@ thumbSlider.addEventListener("change", () => {
   }
 });
 
+Object.assign(globalThis, {
+  loadCaptionData,
+  loadMetadataData,
+  loadMultiCaptionState,
+  loadMultiMetadataState,
+  updateMultiInfo,
+  renderSentences,
+  autoCaptionSelected,
+  addFreeTextNow,
+  saveMetadataForSelection,
+  refreshGroupCaptions,
+  refreshSectionCaptions,
+  refreshSentenceCaption,
+});
+
+if (Array.isArray(state.sections) && state.sections.length > 0 && sectionContainer && !sectionContainer.childElementCount) {
+  renderSentences({ force: true, includePreview: false });
+}
+
 // ===== RESIZE HANDLES =====

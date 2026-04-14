@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Image Captioning Tool</title>
-<link rel="stylesheet" href="/static/css/app-shell.css?v=20260414a">
+<link rel="stylesheet" href="/static/css/app-shell.css?v=20260414d">
 <link rel="stylesheet" href="/static/css/app-preview.css?v=20260411c">
-<link rel="stylesheet" href="/static/css/app-captions.css?v=20260414a">
+<link rel="stylesheet" href="/static/css/app-captions.css?v=20260414d">
 <link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260404b">
 </head>
 <body>
@@ -68,6 +68,7 @@
             <button id="filter-ar-btn" class="filter-chip" type="button" title="Show only images with the AR warning badge">AR</button>
             <button id="filter-mask-btn" class="filter-chip" type="button" title="Show only images that have a mask sidecar">M</button>
             <button id="filter-txt-btn" class="filter-chip" type="button" title="Show only images that have a txt caption file">TXT</button>
+            <button id="prompt-preview-grid-toggle-btn" class="filter-chip" type="button" title="Show prompt preview thumbnails beside source thumbnails when available" aria-pressed="false">PV</button>
           </div>
           <button id="clear-filters-btn" type="button" title="Clear active filters" aria-label="Clear active filters"></button>
         </div>
@@ -251,12 +252,9 @@
           <span>Hide Add Buttons</span>
         </label>
       </div>
-      <div id="right-panel-toolbar">
-        <div id="right-panel-tabs" role="tablist" aria-label="Right panel mode">
-          <button id="captions-tab-btn" class="right-panel-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="captions-editor-panel" data-right-panel-tab="captions">Captions</button>
-          <button id="metadata-tab-btn" class="right-panel-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="metadata-editor-panel" data-right-panel-tab="metadata">Metadata</button>
-        </div>
-        <button id="prompt-preview-grid-toggle-btn" class="filter-chip" type="button" title="Show prompt preview thumbnails beside source thumbnails when available" aria-pressed="false">PV</button>
+      <div id="right-panel-tabs" role="tablist" aria-label="Right panel mode">
+        <button id="captions-tab-btn" class="right-panel-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="captions-editor-panel" data-right-panel-tab="captions">Captions</button>
+        <button id="metadata-tab-btn" class="right-panel-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="metadata-editor-panel" data-right-panel-tab="metadata">Metadata</button>
       </div>
       <div id="right-panel-content">
         <div id="captions-editor-panel" class="right-panel-mode-panel active" role="tabpanel" aria-labelledby="captions-tab-btn">
@@ -499,15 +497,15 @@
 
 <script defer src="/static/js/app-shared.js?v=20260414c"></script>
 <script defer src="/static/js/features/app-file-actions.js?v=20260411d"></script>
-<script defer src="/static/js/features/app-caption-data.js?v=20260411d"></script>
+<script defer src="/static/js/features/app-caption-data.js?v=20260414d"></script>
 <script defer src="/static/js/features/app-filters-ui.js?v=20260411d"></script>
 <script defer src="/static/js/features/app-mask-editor.js?v=20260411d"></script>
 <script defer src="/static/js/features/app-media-workspace.js?v=20260411d"></script>
-<script defer src="/static/js/features/app-settings.js?v=20260414c"></script>
+<script defer src="/static/js/features/app-settings.js?v=20260414d"></script>
 <script defer src="/static/js/features/app-preview-tools.js?v=20260414c"></script>
 <script defer src="/static/js/features/app-media-playback.js?v=20260411d"></script>
-<script defer src="/static/js/features/app-browser.js?v=20260414c"></script>
-<script defer src="/static/js/features/app-caption-editor.js?v=20260414c"></script>
+<script defer src="/static/js/features/app-browser.js?v=20260414d"></script>
+<script defer src="/static/js/features/app-caption-editor.js?v=20260414d"></script>
 <script defer src="/static/js/app-init.js?v=20260414c"></script>
 </body>
 </html>
