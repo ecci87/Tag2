@@ -274,6 +274,9 @@ DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE = (
 )
 COMFYUI_PROMPT_PLACEHOLDER = "{{TAG2_PROMPT}}"
 COMFYUI_FILENAME_PREFIX_PLACEHOLDER = "{{TAG2_FILENAME_PREFIX}}"
+COMFYUI_SEED_PLACEHOLDER = "{{TAG2_SEED}}"
+COMFYUI_RANDOM_SEED_PLACEHOLDER = "{{TAG2_RANDOM_SEED}}"
+COMFYUI_RANDOMIZED_SEED_INPUT_NAMES = {"seed", "noise_seed", "seed_num", "sampler_seed"}
 
 
 def _list_ollama_models(host: str, timeout: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> list[str]:
@@ -462,17 +465,63 @@ def _find_comfyui_placeholder_usage(value, placeholder: str) -> bool:
     return False
 
 
+def _generate_comfyui_seed() -> int:
+    """Return one preview seed suitable for ComfyUI sampler nodes."""
+    return uuid4().int & 0xFFFFFFFF
+
+
+def _coerce_comfyui_seed_input(value, seed: int):
+    """Replace one supported ComfyUI seed input with the generated preview seed."""
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized in {COMFYUI_SEED_PLACEHOLDER, COMFYUI_RANDOM_SEED_PLACEHOLDER}:
+            return seed
+        if re.fullmatch(r"-?\d+", normalized):
+            return seed
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return seed
+    return value
+
+
+def _inject_comfyui_seed_inputs(prompt_payload: dict, seed: int) -> None:
+    """Randomize known seed-style inputs in one ComfyUI API prompt graph."""
+    if not isinstance(prompt_payload, dict):
+        return
+    for node in prompt_payload.values():
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        for input_name, input_value in list(inputs.items()):
+            if str(input_name or "").strip().casefold() not in COMFYUI_RANDOMIZED_SEED_INPUT_NAMES:
+                continue
+            inputs[input_name] = _coerce_comfyui_seed_input(input_value, seed)
+
+
+def _build_comfyui_filename_prefix(source_path: str) -> str:
+    """Return a sortable filename prefix that stays grouped under the source stem."""
+    stem = Path(str(source_path or "")).stem.strip() or "tag2-preview"
+    return f"{stem}__tag2__{time.time_ns()}"
+
+
 def _build_comfyui_prompt_payload(workflow_template: dict, prompt_text: str, filename_prefix: str) -> dict:
     """Build one ComfyUI prompt payload by replacing supported placeholder tokens."""
     if not _find_comfyui_placeholder_usage(workflow_template, COMFYUI_PROMPT_PLACEHOLDER):
         raise RuntimeError(f"ComfyUI workflow must reference {COMFYUI_PROMPT_PLACEHOLDER}")
     if not _find_comfyui_placeholder_usage(workflow_template, COMFYUI_FILENAME_PREFIX_PLACEHOLDER):
         raise RuntimeError(f"ComfyUI workflow must reference {COMFYUI_FILENAME_PREFIX_PLACEHOLDER}")
+    preview_seed = _generate_comfyui_seed()
     replacements = {
         COMFYUI_PROMPT_PLACEHOLDER: str(prompt_text or ""),
         COMFYUI_FILENAME_PREFIX_PLACEHOLDER: str(filename_prefix or ""),
+        COMFYUI_SEED_PLACEHOLDER: str(preview_seed),
+        COMFYUI_RANDOM_SEED_PLACEHOLDER: str(preview_seed),
     }
-    return _replace_comfyui_workflow_placeholders(copy.deepcopy(workflow_template), replacements)
+    prompt_payload = _replace_comfyui_workflow_placeholders(copy.deepcopy(workflow_template), replacements)
+    _inject_comfyui_seed_inputs(prompt_payload, preview_seed)
+    return prompt_payload
 
 
 def _queue_comfyui_prompt(host: str, prompt: dict) -> dict:
@@ -524,6 +573,17 @@ def _scan_comfyui_preview_files(output_folder: str, source_path: str) -> list[st
         matches.append(str(entry))
     matches.sort(key=lambda item: sort_key(Path(item)))
     return matches
+
+
+def _select_latest_comfyui_preview_file(files: list[str]) -> str:
+    """Return the newest preview file path from a matched preview file list."""
+    existing_files = [str(path) for path in files or [] if os.path.isfile(path)]
+    if not existing_files:
+        return ""
+    return max(
+        existing_files,
+        key=lambda item: (float(os.path.getmtime(item)), Path(item).name.lower()),
+    )
 
 
 def _get_comfyui_queue_prompt_ids(queue_payload: dict) -> tuple[set[str], set[str]]:
@@ -611,6 +671,7 @@ def _refresh_comfyui_jobs_for_image(cfg: dict, image_path: str) -> dict:
     normalized_path = os.path.abspath(os.path.normpath(str(image_path or "").strip()))
     jobs = _get_comfyui_jobs_for_image(normalized_path)
     output_files = _scan_comfyui_preview_files(_get_comfyui_output_folder(cfg), normalized_path)
+    latest_output_path = _select_latest_comfyui_preview_file(output_files)
     if not jobs:
         return {
             "jobs": [],
@@ -622,7 +683,7 @@ def _refresh_comfyui_jobs_for_image(cfg: dict, image_path: str) -> dict:
                 "completed": 0,
                 "failed": 0,
                 "latest_prompt_id": "",
-                "latest_output_path": output_files[-1] if output_files else "",
+                "latest_output_path": latest_output_path,
             },
             "files": output_files,
         }
@@ -676,7 +737,7 @@ def _refresh_comfyui_jobs_for_image(cfg: dict, image_path: str) -> dict:
         "completed": sum(1 for job in refreshed_jobs if job.get("status") == "completed"),
         "failed": sum(1 for job in refreshed_jobs if job.get("status") == "error"),
         "latest_prompt_id": str(refreshed_jobs[-1].get("prompt_id") or "") if refreshed_jobs else "",
-        "latest_output_path": output_files[-1] if output_files else "",
+        "latest_output_path": latest_output_path,
     }
     return {"jobs": refreshed_jobs, "summary": summary, "files": output_files}
 
@@ -1020,7 +1081,7 @@ def _resolve_ffmpeg_binaries(cfg: dict) -> tuple[str, str]:
     return ffmpeg_binary, ffprobe_binary
 
 
-def _build_media_entry(entry: Path) -> dict:
+def _build_media_entry(entry: Path, prompt_preview_path: str = "", prompt_preview_mtime: float = 0.0) -> dict:
     """Build a list response payload for a supported media file."""
     stat = entry.stat()
     caption_file = entry.with_suffix(".txt")
@@ -1039,6 +1100,8 @@ def _build_media_entry(entry: Path) -> dict:
         "has_mask": mask_count > 0,
         "mask_count": mask_count,
         "media_type": media_type,
+        "prompt_preview_path": str(prompt_preview_path or ""),
+        "prompt_preview_mtime": float(prompt_preview_mtime or 0.0),
     }
 
 
@@ -1428,12 +1491,27 @@ def _apply_free_text_result_to_live_caption(
 async def list_images(folder: str = Query(...)):
     """List all supported media files in the given folder."""
     folder_path = _resolve_folder_path(folder)
+    cfg = _load_config()
+    preview_output_folder = ""
+    try:
+        configured_output_folder = _get_comfyui_output_folder(cfg, DEFAULT_COMFYUI_OUTPUT_FOLDER)
+        if configured_output_folder and os.path.isdir(configured_output_folder):
+            preview_output_folder = configured_output_folder
+    except RuntimeError:
+        preview_output_folder = ""
 
     images = []
     try:
         for entry in sorted(folder_path.iterdir()):
             if entry.is_file() and entry.suffix.lower() in MEDIA_EXTENSIONS and not _is_mask_sidecar_path(str(entry)):
-                images.append(_build_media_entry(entry))
+                prompt_preview_path = ""
+                prompt_preview_mtime = 0.0
+                if preview_output_folder and _is_image_path(str(entry)):
+                    preview_files = _scan_comfyui_preview_files(preview_output_folder, str(entry))
+                    prompt_preview_path = _select_latest_comfyui_preview_file(preview_files)
+                    if prompt_preview_path:
+                        prompt_preview_mtime = float(os.path.getmtime(prompt_preview_path))
+                images.append(_build_media_entry(entry, prompt_preview_path, prompt_preview_mtime))
     except PermissionError:
         raise HTTPException(status_code=403, detail="Permission denied")
 
@@ -3694,7 +3772,8 @@ async def post_comfyui_prompt_preview(data: ComfyUiPromptPreviewRequest):
         workflow_template = _load_comfyui_workflow_template(workflow_path)
         if not os.path.isdir(output_folder):
             raise RuntimeError(f"ComfyUI output folder not found: {output_folder}")
-        prompt_payload = _build_comfyui_prompt_payload(workflow_template, caption_text, Path(normalized_path).stem)
+        filename_prefix = _build_comfyui_filename_prefix(normalized_path)
+        prompt_payload = _build_comfyui_prompt_payload(workflow_template, caption_text, filename_prefix)
         response = _queue_comfyui_prompt(host, prompt_payload)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -3710,7 +3789,7 @@ async def post_comfyui_prompt_preview(data: ComfyUiPromptPreviewRequest):
         error="",
         image_path=normalized_path,
         folder=folder,
-        filename_prefix=Path(normalized_path).stem,
+        filename_prefix=filename_prefix,
         caption_text=caption_text,
         workflow_path=workflow_path,
         output_folder=output_folder,

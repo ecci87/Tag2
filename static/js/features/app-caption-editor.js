@@ -5,7 +5,11 @@ async function loadCaptionData(path) {
     const resp = await fetch(`/api/caption?path=${encodeURIComponent(path)}&captions=${encodeURIComponent(sentencesJson)}`);
     if (resp.ok) {
       const data = await resp.json();
-      state.captionCache[path] = normalizeCaptionCacheEntry(data);
+      const nextCaption = normalizeCaptionCacheEntry(data);
+      if (shouldPreserveLocalFreeTextDraft(path, nextCaption)) {
+        nextCaption.free_text = getLocalDraftFreeText(path);
+      }
+      state.captionCache[path] = nextCaption;
       if (state.activeSentenceFilters.size > 0) {
         state.filterCaptionCacheKey = getActiveSentenceFilterKey();
       }
@@ -39,6 +43,18 @@ async function loadMetadataData(path) {
   }
 }
 
+function getLocalDraftFreeText(path) {
+  if (state.selectedPaths.size === 1 && state.selectedPaths.has(path)) {
+    return String(freeText.value || "");
+  }
+  return String(state.captionCache[path]?.free_text || "");
+}
+
+function shouldPreserveLocalFreeTextDraft(path, nextCaption) {
+  if (!state.captionDraftPaths.has(path)) return false;
+  return getLocalDraftFreeText(path) !== String(nextCaption?.free_text || "");
+}
+
 async function loadMultiCaptionState() {
   const paths = [...state.selectedPaths];
 
@@ -46,7 +62,11 @@ async function loadMultiCaptionState() {
   try {
     const data = await fetchCaptionsBulk(paths);
     for (const [path, caption] of Object.entries(data)) {
-      state.captionCache[path] = normalizeCaptionCacheEntry(caption);
+      const nextCaption = normalizeCaptionCacheEntry(caption);
+      if (shouldPreserveLocalFreeTextDraft(path, nextCaption)) {
+        nextCaption.free_text = getLocalDraftFreeText(path);
+      }
+      state.captionCache[path] = nextCaption;
     }
     if (state.activeSentenceFilters.size > 0) {
       state.filterCaptionCacheKey = getActiveSentenceFilterKey();
@@ -600,7 +620,11 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const li = document.createElement("li");
   li.dataset.sentence = sentence;
   sentenceListElements.set(sentence, li);
-  const topLevelRef = topLevelMix ? createTopLevelSentenceDragRef(sentence) : null;
+      const nextCaption = normalizeCaptionCacheEntry(data);
+      if (shouldPreserveLocalFreeTextDraft(path, nextCaption)) {
+        nextCaption.free_text = getLocalDraftFreeText(path);
+      }
+      state.captionCache[path] = nextCaption;
 
   const dragHandle = document.createElement("span");
   dragHandle.className = "drag-handle";
@@ -626,7 +650,11 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     document.querySelectorAll(".section-sentences li.drag-over").forEach(item => item.classList.remove("drag-over"));
     document.querySelectorAll(".section-sentences.drag-over-end").forEach(list => list.classList.remove("drag-over-end"));
   });
-
+      const nextCaption = normalizeCaptionCacheEntry(caption);
+      if (shouldPreserveLocalFreeTextDraft(path, nextCaption)) {
+        nextCaption.free_text = getLocalDraftFreeText(path);
+      }
+      state.captionCache[path] = nextCaption;
   const checkBox = document.createElement("div");
   checkBox.className = `check-box${isExclusive ? " radio" : ""}`;
   if (isChecked) checkBox.classList.add("checked");
@@ -671,6 +699,9 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const filterToggleBtn = document.createElement("button");
   filterToggleBtn.type = "button";
   filterToggleBtn.className = `filter-toggle-btn${filterMode === "has" ? " active" : ""}${filterMode === "missing" ? " missing" : ""}`;
+    if (String(state.captionCache[path]?.free_text || "") === savedFreeText) {
+      state.captionDraftPaths.delete(path);
+    }
   if (isGroupSentence) {
     filterToggleBtn.title = isFilterActive
       ? "Remove this group caption from the thumbnail filter"
@@ -1453,6 +1484,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentStepTotal: state.aiProgress.currentStepTotal || 1,
         });
         const cache = ensureCaptionCache(event.path);
+        state.captionDraftPaths.delete(event.path);
         cache.enabled_sentences = orderEnabledSentences(event.enabled_captions || event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";
         if ((event.added_lines || []).length > 0) {
@@ -1473,6 +1505,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentMessage: "Completed",
           currentStepIndex: state.aiProgress.currentStepTotal || 1,
         });
+        state.captionDraftPaths.delete(event.path);
         state.captionCache[event.path] = normalizeCaptionCacheEntry(event);
         refreshGridForActiveFilters();
         const hasContent = hasEffectiveCaptionContent(state.captionCache[event.path]);
@@ -1736,15 +1769,20 @@ freeText.addEventListener("input", () => {
     state.captionCache[path] = { enabled_sentences: [], free_text: "" };
   }
   state.captionCache[path].free_text = freeText.value;
+  state.captionDraftPaths.add(path);
 
   // Debounced save
   if (freeTextSaveTimeout) clearTimeout(freeTextSaveTimeout);
-  freeTextSaveTimeout = setTimeout(() => saveFreeText(path), 400);
+  freeTextSaveTimeout = setTimeout(() => {
+    freeTextSaveTimeout = null;
+    saveFreeText(path);
+  }, 400);
 });
 
 async function saveFreeText(path) {
   const cap = state.captionCache[path];
   if (!cap) return;
+  const savedFreeText = String(cap.free_text || "");
   statusBar.textContent = "Saving...";
   try {
     await fetch("/api/caption/save", {
@@ -1760,6 +1798,9 @@ async function saveFreeText(path) {
     // Update caption indicator
     const hasContent = hasEffectiveCaptionContent(cap);
     markCaptionIndicator(path, !!hasContent);
+    if (String(state.captionCache[path]?.free_text || "") === savedFreeText) {
+      state.captionDraftPaths.delete(path);
+    }
   } catch (err) {
     statusBar.textContent = `Error saving: ${err.message}`;
   }

@@ -11,6 +11,7 @@ const state = {
   sections: [],          // [{name: "", captions: [...], groups: [{name: "Car", captions: [...]}]}, ...]
   // Per-image caption cache: path -> {enabled_captions: [...], free_text: ""}
   captionCache: {},
+  captionDraftPaths: new Set(),
   metadataCache: {},     // path -> {seed, min_t, max_t, sampling_frequency}
   activeSentenceFilters: new Map(),
   activeMetaFilters: {
@@ -155,6 +156,7 @@ const state = {
     lastFilesKey: "",
     loading: false,
   },
+  showPromptPreviewThumbnails: false,
   folderAutocomplete: {
     items: [],
     highlightedIndex: -1,
@@ -345,6 +347,7 @@ const previewCaptionList = $("#preview-caption-list");
 const sectionContainer = $("#section-container");
 const rightPanelTabButtons = [...document.querySelectorAll(".right-panel-tab-btn")];
 const rightPanelModePanels = [...document.querySelectorAll(".right-panel-mode-panel")];
+const promptPreviewGridToggleBtn = $("#prompt-preview-grid-toggle-btn");
 const captionsEditorPanel = $("#captions-editor-panel");
 const captionsSection = $("#captions-section");
 const rightHorizontalResize = $("#right-horizontal-resize");

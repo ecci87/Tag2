@@ -540,6 +540,11 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 #file-grid {
   display: flex; flex-wrap: wrap; gap: var(--gap); align-content: flex-start;
 }
+.thumb-pair {
+  display: flex;
+  gap: var(--gap);
+  flex-shrink: 0;
+}
 .thumb-cell {
   width: var(--thumb-size); height: var(--thumb-size);
   border-radius: 4px; overflow: hidden; cursor: pointer; position: relative;
@@ -548,6 +553,18 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 }
 .thumb-cell:hover { border-color: rgba(137,180,250,0.4); }
 .thumb-cell.selected { border-color: var(--selected-border); background: var(--selected); }
+.thumb-cell.prompt-preview-thumb {
+  border-style: dashed;
+  border-color: rgba(137,180,250,0.26);
+  background: rgba(137,180,250,0.08);
+}
+.thumb-cell.prompt-preview-thumb:hover {
+  border-color: rgba(137,180,250,0.5);
+}
+.thumb-cell.prompt-preview-thumb.selected {
+  border-color: rgba(137,180,250,0.85);
+  background: rgba(137,180,250,0.16);
+}
 .thumb-cell img { width: 100%; height: 100%; object-fit: contain; display: block; background: rgba(0,0,0,0.18); }
 .thumb-cell .thumb-name {
   position: absolute; bottom: 0; left: 0; right: 0;
@@ -556,7 +573,8 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 }
 .thumb-cell .caption-dot,
 .thumb-cell .mask-badge,
-.thumb-cell .aspect-warning {
+.thumb-cell .aspect-warning,
+.thumb-cell .prompt-preview-badge {
   position: absolute; top: 3px;
   min-width: 18px; height: 18px; padding: 0 5px;
   border-radius: 999px;
@@ -593,6 +611,12 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   background: rgba(243,139,168,0.94);
   color: #2b0d16;
 }
+.thumb-cell .prompt-preview-badge {
+  right: 3px;
+  display: flex;
+  background: rgba(137,180,250,0.94);
+  color: #10233f;
+}
 .thumb-cell.has-caption .caption-dot { display: flex; }
 .thumb-cell.has-mask .mask-badge { display: flex; }
 .thumb-cell.aspect-mismatch .aspect-warning { display: flex; }
@@ -617,7 +641,8 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 }
 .thumb-cell .caption-dot,
 .thumb-cell .mask-badge,
-.thumb-cell .aspect-warning {
+.thumb-cell .aspect-warning,
+.thumb-cell .prompt-preview-badge {
   z-index: 1;
 }
 .thumb-cell.has-caption {

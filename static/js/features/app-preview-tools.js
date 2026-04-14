@@ -277,6 +277,43 @@ function renderPromptPreviewControls() {
   renderPromptPreviewButton();
 }
 
+function renderPromptPreviewGridToggle() {
+  if (!promptPreviewGridToggleBtn) return;
+  const active = !!state.showPromptPreviewThumbnails;
+  promptPreviewGridToggleBtn.classList.toggle("active", active);
+  promptPreviewGridToggleBtn.setAttribute("aria-pressed", active ? "true" : "false");
+  promptPreviewGridToggleBtn.title = active
+    ? "Hide prompt preview thumbnails beside source thumbnails"
+    : "Show prompt preview thumbnails beside source thumbnails when available";
+}
+
+function seedPromptPreviewSnapshotFromFile(sourcePath, previewPath) {
+  if (!sourcePath || !previewPath) return;
+  const sameSource = isPromptPreviewSourceActive(sourcePath);
+  const baseSummary = sameSource
+    ? { ...createPromptPreviewSummary(), ...(state.promptPreview.summary || {}) }
+    : createPromptPreviewSummary();
+  const files = Array.from(new Set([
+    ...(sameSource ? getPromptPreviewFiles(sourcePath) : []),
+    previewPath,
+  ]));
+  applyPromptPreviewSnapshot(sourcePath, {
+    jobs: sameSource ? state.promptPreview.jobs : [],
+    summary: {
+      ...baseSummary,
+      total: Math.max(1, Number(baseSummary.total || 0)),
+      spawned: Math.max(1, Number(baseSummary.spawned || 0)),
+      completed: Math.max(1, Number(baseSummary.completed || 0)),
+      latest_output_path: previewPath,
+    },
+    files,
+  }, {
+    autoDisplayLatest: false,
+    allowCompletedAutodisplay: false,
+    allowFileChangeAutodisplay: false,
+  });
+}
+
 function applyPromptPreviewSnapshot(sourcePath, payload, options = {}) {
   const {
     autoDisplayLatest = false,
@@ -299,6 +336,11 @@ function applyPromptPreviewSnapshot(sourcePath, payload, options = {}) {
   const filesChanged = nextFilesKey !== previousFilesKey;
   const latestPreviewPath = resolveLatestPromptPreviewFile(files, summary);
   summary.latest_output_path = latestPreviewPath;
+  const completedIncreased = sameSource && Number(summary.completed || 0) > Number(previousSummary.completed || 0);
+  const latestPreviewChanged = !!latestPreviewPath && latestPreviewPath !== previousLatestPreviewPath;
+  const latestPreviewRefreshed = completedIncreased
+    && !!latestPreviewPath
+    && latestPreviewPath === previousLatestPreviewPath;
 
   if (filesChanged) {
     const versionBase = Date.now();
@@ -306,12 +348,21 @@ function applyPromptPreviewSnapshot(sourcePath, payload, options = {}) {
       state.imageVersions[path] = versionBase + index;
     });
   }
+  if (latestPreviewRefreshed) {
+    bumpImageVersion(latestPreviewPath);
+    invalidateImageCaches(latestPreviewPath);
+  }
 
   state.promptPreview.sourcePath = sourcePath;
   state.promptPreview.jobs = jobs;
   state.promptPreview.summary = summary;
   state.promptPreview.files = files;
   state.promptPreview.lastFilesKey = nextFilesKey;
+
+  setImagePromptPreviewPath(sourcePath, latestPreviewPath);
+  if (latestPreviewPath && (filesChanged || latestPreviewRefreshed)) {
+    refreshVisibleThumbnail(latestPreviewPath);
+  }
 
   if (state.promptPreview.displayPath && !files.includes(state.promptPreview.displayPath)) {
     state.promptPreview.displayPath = "";
@@ -322,14 +373,13 @@ function applyPromptPreviewSnapshot(sourcePath, payload, options = {}) {
   state.promptPreview.cycleIndex = cyclePaths.indexOf(currentDisplayPath);
 
   renderPromptPreviewControls();
+  renderPromptPreviewGridToggle();
   renderPreviewInfo();
 
-  const completedIncreased = sameSource && Number(summary.completed || 0) > previousCompleted;
-  const latestPreviewChanged = !!latestPreviewPath && latestPreviewPath !== previousLatestPreviewPath;
   const shouldAutoDisplayLatest = sameSource
     && state.previewPath === sourcePath
     && state.previewMediaType === "image"
-    && latestPreviewChanged
+    && (latestPreviewChanged || latestPreviewRefreshed)
     && (
       autoDisplayLatest
       || (allowCompletedAutodisplay && completedIncreased)
@@ -370,11 +420,23 @@ async function refreshPromptPreviewStatus(sourcePath = state.previewPath, option
   return data;
 }
 
+function getPromptPreviewCaptionState(sourcePath = state.previewPath) {
+  const caption = state.captionCache[sourcePath] || { enabled_sentences: [], free_text: "" };
+  const activeFreeText = state.previewPath === sourcePath
+    && state.selectedPaths.size === 1
+    && state.selectedPaths.has(sourcePath)
+    && !freeText.disabled;
+  return {
+    enabled_sentences: orderEnabledSentences(caption.enabled_sentences || []),
+    free_text: activeFreeText ? String(freeText.value || "") : String(caption.free_text || ""),
+  };
+}
+
 async function queuePromptPreviewFromCurrentCaption(sourcePath = state.previewPath) {
   if (!state.captionCache[sourcePath]) {
     await loadCaptionData(sourcePath);
   }
-  const caption = state.captionCache[sourcePath] || { enabled_sentences: [], free_text: "" };
+  const caption = getPromptPreviewCaptionState(sourcePath);
   const resp = await fetch("/api/comfyui/prompt-preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

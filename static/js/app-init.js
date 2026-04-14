@@ -66,6 +66,16 @@ clearFiltersBtn.addEventListener("click", clearSentenceFilters);
 filterArBtn.addEventListener("click", toggleAspectFilter);
 filterMaskBtn.addEventListener("click", toggleMaskPresenceFilter);
 filterTxtBtn.addEventListener("click", toggleCaptionPresenceFilter);
+if (promptPreviewGridToggleBtn) {
+  promptPreviewGridToggleBtn.addEventListener("click", () => {
+    state.showPromptPreviewThumbnails = !state.showPromptPreviewThumbnails;
+    renderPromptPreviewGridToggle();
+    rerenderGridPreservingView();
+    statusBar.textContent = state.showPromptPreviewThumbnails
+      ? "Showing prompt preview thumbnails when available"
+      : "Showing source thumbnails only";
+  });
+}
 autoCaptionBtn.addEventListener("click", autoCaptionSelected);
 addFreeTextNowBtn.addEventListener("click", addFreeTextNow);
 metadataSaveBtn.addEventListener("click", saveMetadataForSelection);
@@ -296,3 +306,4 @@ renderMetadataEditor();
 renderMaskEditorUi();
 updateActionButtons();
 renderFilterActions();
+renderPromptPreviewGridToggle();

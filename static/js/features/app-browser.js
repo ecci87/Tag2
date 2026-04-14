@@ -263,6 +263,7 @@ async function loadFolder(options = {}) {
   state.lastClickedPath = null;
   state.previewPath = null;
   state.captionCache = {};
+  state.captionDraftPaths.clear();
   state.metadataCache = {};
   state.activeSentenceFilters.clear();
   state.activeMetaFilters.aspectState = "any";
@@ -283,7 +284,15 @@ async function loadFolder(options = {}) {
     const data = await resp.json();
     state.images = data.images;
     state.folder = data.folder;
-    state.imageVersions = Object.fromEntries((state.images || []).map(img => [img.path, img.mtime || 0]));
+    state.imageVersions = Object.fromEntries(
+      (state.images || []).flatMap((img) => {
+        const versions = [[img.path, img.mtime || 0]];
+        if (img.prompt_preview_path) {
+          versions.push([img.prompt_preview_path, img.prompt_preview_mtime || 0]);
+        }
+        return versions;
+      })
+    );
     folderInput.value = data.folder;
     updateFileCountDisplay();
     statusBar.textContent = `Loaded ${state.images.length} media files`;
@@ -680,6 +689,127 @@ function restoreGridViewport(path, previousScrollTop = null) {
   }
 }
 
+function getGridPreservePath() {
+  return state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
+}
+
+function rerenderGridPreservingView() {
+  renderGrid({ preservePath: getGridPreservePath(), preserveScrollTop: fileGridContainer.scrollTop });
+}
+
+function setImagePromptPreviewPath(sourcePath, previewPath) {
+  const image = state.images.find((item) => item.path === sourcePath);
+  if (!image) return false;
+  const nextPreviewPath = String(previewPath || "").trim();
+  if (String(image.prompt_preview_path || "") === nextPreviewPath) {
+    return false;
+  }
+  image.prompt_preview_path = nextPreviewPath;
+  image.prompt_preview_mtime = nextPreviewPath ? Number(getImageVersion(nextPreviewPath) || Date.now()) : 0;
+  if (state.showPromptPreviewThumbnails) {
+    rerenderGridPreservingView();
+  }
+  return true;
+}
+
+function createThumbnailImageElement(imagePath, thumbLoadSize) {
+  const imgEl = document.createElement("img");
+  imgEl.dataset.path = imagePath;
+  imgEl.loading = "lazy";
+  imgEl.addEventListener("load", () => {
+    storeThumbnailDimensions(imagePath, imgEl.naturalWidth, imgEl.naturalHeight);
+  });
+  const cachedUrl = thumbBlobCache.get(`${imagePath}:${thumbLoadSize}:${getImageVersion(imagePath)}`);
+  imgEl.src = cachedUrl || buildImageApiUrl("thumbnail", imagePath, { size: thumbLoadSize });
+  return imgEl;
+}
+
+function appendStandardThumbnailBadges(cell, img) {
+  const maskBadge = document.createElement("div");
+  maskBadge.className = "mask-badge";
+  maskBadge.textContent = "M";
+  maskBadge.title = `${img.media_type === "video" ? "Video" : "Media"} mask sidecar exists`;
+  cell.appendChild(maskBadge);
+
+  const dot = document.createElement("div");
+  dot.className = "caption-dot";
+  dot.textContent = "TXT";
+  dot.title = `${img.media_type === "video" ? "Video" : "Media"} caption text file exists`;
+  dot.dataset.captionDot = img.path;
+  dot.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    fetch(`/api/open-file?path=${encodeURIComponent(getCaptionPathForImage(img.path))}`);
+  });
+  cell.appendChild(dot);
+
+  const aspectWarning = document.createElement("div");
+  aspectWarning.className = "aspect-warning";
+  aspectWarning.textContent = "AR";
+  aspectWarning.title = "Media aspect ratio does not match the configured aspect ratio list";
+  cell.appendChild(aspectWarning);
+}
+
+function createThumbCell(img, index, size, thumbLoadSize, options = {}) {
+  const {
+    imagePath = img.path,
+    label = img.name,
+    title = img.name,
+    sourcePath = img.path,
+    isPromptPreview = false,
+  } = options;
+  const cell = document.createElement("div");
+  let cls = "thumb-cell";
+  if (state.selectedPaths.has(sourcePath)) cls += " selected";
+  if (!isPromptPreview) {
+    if (img.has_caption) cls += " has-caption";
+    if (img.has_mask) cls += " has-mask";
+    if (!imageConformsToAspectRatios(img)) cls += " aspect-mismatch";
+  } else {
+    cls += " prompt-preview-thumb";
+  }
+  cell.className = cls;
+  cell.style.width = size + "px";
+  cell.style.height = size + "px";
+  cell.dataset.index = index;
+  cell.dataset.path = imagePath;
+  if (sourcePath !== imagePath) {
+    cell.dataset.sourcePath = sourcePath;
+  }
+  cell.dataset.mediaType = isPromptPreview ? "image" : (img.media_type || getMediaType(img.path));
+
+  cell.appendChild(createThumbnailImageElement(imagePath, thumbLoadSize));
+
+  const nameEl = document.createElement("div");
+  nameEl.className = "thumb-name";
+  nameEl.textContent = label;
+  nameEl.title = title;
+  cell.appendChild(nameEl);
+
+  if (isPromptPreview) {
+    const previewBadge = document.createElement("div");
+    previewBadge.className = "prompt-preview-badge";
+    previewBadge.textContent = "PV";
+    previewBadge.title = `Prompt preview for ${img.name}`;
+    cell.appendChild(previewBadge);
+    cell.addEventListener("click", (e) => handlePromptPreviewThumbClick(index, sourcePath, imagePath, e));
+    cell.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      fetch(`/api/open-in-explorer?path=${encodeURIComponent(imagePath)}`);
+    });
+    return cell;
+  }
+
+  appendStandardThumbnailBadges(cell, img);
+
+  cell.addEventListener("click", (e) => handleThumbClick(index, e));
+  cell.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    fetch(`/api/open-in-explorer?path=${encodeURIComponent(img.path)}`);
+  });
+  return cell;
+}
+
 function renderGrid(options = {}) {
   const { preservePath = null, preserveScrollTop = null } = options;
   fileGrid.innerHTML = "";
@@ -691,69 +821,24 @@ function renderGrid(options = {}) {
   renderFilterActions();
 
   for (const { img, index } of visibleEntries) {
-    const cell = document.createElement("div");
-    let cls = "thumb-cell";
-    if (state.selectedPaths.has(img.path)) cls += " selected";
-    if (img.has_caption) cls += " has-caption";
-    if (img.has_mask) cls += " has-mask";
-    if (!imageConformsToAspectRatios(img)) cls += " aspect-mismatch";
-    cell.className = cls;
-    cell.style.width = size + "px";
-    cell.style.height = size + "px";
-    cell.dataset.index = index;
-    cell.dataset.path = img.path;
-    cell.dataset.mediaType = img.media_type || getMediaType(img.path);
-
-    const imgEl = document.createElement("img");
-    imgEl.dataset.path = img.path;
-    imgEl.loading = "lazy";
-    imgEl.addEventListener("load", () => {
-      storeThumbnailDimensions(img.path, imgEl.naturalWidth, imgEl.naturalHeight);
-    });
-    const cachedUrl = thumbBlobCache.get(`${img.path}:${thumbLoadSize}:${getImageVersion(img.path)}`);
-    if (cachedUrl) {
-      imgEl.src = cachedUrl;
-    } else {
-      imgEl.src = buildImageApiUrl("thumbnail", img.path, { size: thumbLoadSize });
+    const previewPath = state.showPromptPreviewThumbnails && img.media_type === "image"
+      ? String(img.prompt_preview_path || "").trim()
+      : "";
+    if (previewPath && previewPath !== img.path) {
+      const pair = document.createElement("div");
+      pair.className = "thumb-pair";
+      pair.appendChild(createThumbCell(img, index, size, thumbLoadSize));
+      pair.appendChild(createThumbCell(img, index, size, thumbLoadSize, {
+        imagePath: previewPath,
+        label: "Preview",
+        title: `Prompt preview for ${img.name}`,
+        sourcePath: img.path,
+        isPromptPreview: true,
+      }));
+      fileGrid.appendChild(pair);
+      continue;
     }
-    cell.appendChild(imgEl);
-
-    const nameEl = document.createElement("div");
-    nameEl.className = "thumb-name";
-    nameEl.textContent = img.name;
-    nameEl.title = img.name;
-    cell.appendChild(nameEl);
-
-    const maskBadge = document.createElement("div");
-    maskBadge.className = "mask-badge";
-    maskBadge.textContent = "M";
-    maskBadge.title = `${img.media_type === "video" ? "Video" : "Media"} mask sidecar exists`;
-    cell.appendChild(maskBadge);
-
-    const dot = document.createElement("div");
-    dot.className = "caption-dot";
-    dot.textContent = "TXT";
-    dot.title = `${img.media_type === "video" ? "Video" : "Media"} caption text file exists`;
-    dot.dataset.captionDot = img.path;
-    dot.addEventListener("dblclick", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      fetch(`/api/open-file?path=${encodeURIComponent(getCaptionPathForImage(img.path))}`);
-    });
-    cell.appendChild(dot);
-
-    const aspectWarning = document.createElement("div");
-    aspectWarning.className = "aspect-warning";
-    aspectWarning.textContent = "AR";
-    aspectWarning.title = "Media aspect ratio does not match the configured aspect ratio list";
-    cell.appendChild(aspectWarning);
-
-    cell.addEventListener("click", (e) => handleThumbClick(index, e));
-    cell.addEventListener("dblclick", (e) => {
-      e.preventDefault();
-      fetch(`/api/open-in-explorer?path=${encodeURIComponent(img.path)}`);
-    });
-    fileGrid.appendChild(cell);
+    fileGrid.appendChild(createThumbCell(img, index, size, thumbLoadSize));
   }
 
   restoreGridViewport(preservePath, preserveScrollTop);
@@ -774,8 +859,8 @@ function markCaptionIndicator(path, hasCaption) {
 function updateGridSelection() {
   const cells = fileGrid.querySelectorAll(".thumb-cell");
   cells.forEach(cell => {
-    const path = cell.dataset.path;
-    cell.classList.toggle("selected", state.selectedPaths.has(path));
+    const selectionPath = cell.dataset.sourcePath || cell.dataset.path;
+    cell.classList.toggle("selected", state.selectedPaths.has(selectionPath));
   });
 }
 
@@ -786,6 +871,16 @@ function refreshVisibleThumbnail(path) {
   imgs.forEach((imgEl) => {
     imgEl.src = nextSrc;
   });
+}
+
+function handlePromptPreviewThumbClick(index, sourcePath, previewPath, event) {
+  handleThumbClick(index, event);
+  if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (!previewPath) return;
+  if (state.selectedPaths.size !== 1 || !state.selectedPaths.has(sourcePath)) return;
+  seedPromptPreviewSnapshotFromFile(sourcePath, previewPath);
+  setPromptPreviewDisplayPath(previewPath, { preserveView: true }).catch(() => {});
+  statusBar.textContent = `Showing prompt preview for ${getFileLabel(sourcePath)}`;
 }
 
 // ===== SELECTION HANDLING =====

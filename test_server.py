@@ -480,6 +480,25 @@ class TestListImages:
         photo1 = next(item for item in images if item["name"] == "photo1.jpg")
         assert photo1["has_mask"] is True
 
+    def test_list_images_includes_latest_prompt_preview_path(self, client, img_dir):
+        output_dir = img_dir / "comfy-output"
+        output_dir.mkdir()
+        Image.new("RGB", (32, 32), color="blue").save(output_dir / "photo1__tag2__1000_00001_.png")
+        Image.new("RGB", (32, 32), color="green").save(output_dir / "photo1__tag2__2000_00001_.png")
+
+        client.post("/api/settings", json={"comfyui_output_folder": str(output_dir)})
+
+        resp = client.get("/api/list-images", params={"folder": str(img_dir)})
+
+        assert resp.status_code == 200
+        images = resp.json()["images"]
+        photo1 = next(item for item in images if item["name"] == "photo1.jpg")
+        photo2 = next(item for item in images if item["name"] == "photo2.png")
+        assert Path(photo1["prompt_preview_path"]).name == "photo1__tag2__2000_00001_.png"
+        assert photo1["prompt_preview_mtime"] > 0
+        assert photo2["prompt_preview_path"] == ""
+        assert photo2["prompt_preview_mtime"] == 0.0
+
 
 class TestFolderSuggestions:
     def test_folder_suggestions_match_partial_name(self, client, tmp_path):
@@ -1618,6 +1637,21 @@ class TestComfyUiPromptPreview:
         assert result["1"]["inputs"]["text"] == "Prompt: A scenic lake"
         assert result["2"]["inputs"]["filename_prefix"] == "photo1"
 
+    def test_build_comfyui_prompt_payload_randomizes_seed_inputs(self, monkeypatch):
+        workflow = {
+            "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{TAG2_PROMPT}}"}},
+            "2": {"class_type": "KSampler", "inputs": {"seed": 42}},
+            "3": {"class_type": "RandomNoise", "inputs": {"noise_seed": "{{TAG2_SEED}}"}},
+            "4": {"class_type": "SaveImage", "inputs": {"filename_prefix": "{{TAG2_FILENAME_PREFIX}}"}},
+        }
+
+        monkeypatch.setattr(server, "_generate_comfyui_seed", lambda: 987654321)
+
+        result = server._build_comfyui_prompt_payload(workflow, "A scenic lake", "photo1")
+
+        assert result["2"]["inputs"]["seed"] == 987654321
+        assert result["3"]["inputs"]["noise_seed"] == 987654321
+
     def test_replace_comfyui_workflow_placeholders_requires_both_tokens(self):
         workflow = {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "Prompt only {{TAG2_PROMPT}}"}}}
 
@@ -1729,6 +1763,8 @@ class TestComfyUiPromptPreview:
 
         monkeypatch.setattr(server, "_queue_comfyui_prompt", fake_queue)
         monkeypatch.setattr(server, "_refresh_comfyui_jobs_for_image", fake_refresh)
+        monkeypatch.setattr(server, "_build_comfyui_filename_prefix", lambda source_path: "photo1__tag2__123456")
+        monkeypatch.setattr(server, "_generate_comfyui_seed", lambda: 222333444)
 
         resp = client.post("/api/comfyui/prompt-preview", json={
             "image_path": image_path,
@@ -1742,7 +1778,7 @@ class TestComfyUiPromptPreview:
         assert data["job"]["prompt_id"] == "prompt-1"
         assert captured["host"] == "http://127.0.0.1:8188"
         assert captured["prompt"]["1"]["inputs"]["text"] == "lake\n\nsunset lighting"
-        assert captured["prompt"]["2"]["inputs"]["filename_prefix"] == "photo1"
+        assert captured["prompt"]["2"]["inputs"]["filename_prefix"] == "photo1__tag2__123456"
 
     def test_post_prompt_preview_rejects_missing_workflow(self, client, img_dir):
         image_path = str(img_dir / "photo1.jpg")
