@@ -612,6 +612,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const groupIdx = normalizeGroupIndex(options.groupIdx);
   const sentenceIdx = Number.isInteger(options.sentenceIdx) ? options.sentenceIdx : -1;
   const topLevelMix = !!options.topLevelMix;
+  const topLevelRef = topLevelMix ? createTopLevelSentenceDragRef(sentence) : null;
   const canRefreshSentence = groupIdx === null;
   const isGroupSentence = groupIdx !== null;
   const filterMode = getSentenceFilterMode(sentence);
