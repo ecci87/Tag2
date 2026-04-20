@@ -1337,6 +1337,10 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
     stopAutoCaption();
     return;
   }
+  if (state.uploading || state.cloning || state.moving || state.extractingFrame) {
+    showErrorToast("Finish the current operation before starting auto captioning.");
+    return;
+  }
   if (state.selectedPaths.size === 0 || state.autoCaptioning) return;
   const paths = [...state.selectedPaths];
   const model = state.ollamaModel.trim();

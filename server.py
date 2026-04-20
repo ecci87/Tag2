@@ -66,6 +66,7 @@ from tag2_images import (
     _get_media_type_for_path,
     _get_crop_backup_dir,
     _get_crop_backup_path,
+    _get_crop_mask_backup_path,
     _get_display_image_size,
     _get_image_crop,
     _get_image_mask_info,
@@ -124,6 +125,7 @@ from tag2_ollama import (
     _suggest_free_text,
 )
 from tag2_sections import (
+    _caption_values,
     _all_headers_from_sections,
     _all_captions_from_sections,
     _apply_caption_selection,
@@ -1756,6 +1758,100 @@ class VideoCropJobRequest(BaseModel):
     crop: dict
 
 
+class VideoFrameExtractRequest(BaseModel):
+    video_path: str
+    time_seconds: float = 0.0
+    frame_index: Optional[int] = None
+
+
+@app.post("/api/video/extract-frame")
+async def extract_video_frame_to_image(data: VideoFrameExtractRequest):
+    """Extract the current video frame into a new JPG file beside the source video."""
+    video_path = os.path.abspath(os.path.normpath(str(data.video_path or "").strip()))
+    if not os.path.isfile(video_path):
+        raise HTTPException(status_code=404, detail="Video file not found")
+    if not _is_video_path(video_path):
+        raise HTTPException(status_code=400, detail="Unsupported video file")
+
+    cfg = _load_config()
+    ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+    ffmpeg_threads = _get_ffmpeg_threads(cfg)
+    ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
+    loop = asyncio.get_event_loop()
+    try:
+        video_info = await loop.run_in_executor(executor, _probe_video_info, video_path, ffprobe_path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    image_width = int(video_info.get("width") or 0)
+    image_height = int(video_info.get("height") or 0)
+    if image_width <= 0 or image_height <= 0:
+        raise HTTPException(status_code=500, detail="Video metadata does not include valid frame dimensions")
+
+    duration_seconds = max(0.0, float(video_info.get("duration") or 0.0))
+    time_seconds = max(0.0, float(data.time_seconds or 0.0))
+    if duration_seconds > 0:
+        time_seconds = min(time_seconds, duration_seconds)
+
+    if data.frame_index is None:
+        fps = max(0.0, float(video_info.get("fps") or 0.0))
+        requested_frame_index = max(0, int((time_seconds * fps) + 1e-6)) if fps > 0 else 0
+    else:
+        requested_frame_index = max(0, int(data.frame_index or 0))
+
+    output_path = _get_next_extracted_video_frame_path(video_path)
+    created_paths: list[Path] = []
+    try:
+        frame_bytes = await loop.run_in_executor(
+            executor,
+            _extract_video_frame,
+            video_path,
+            time_seconds,
+            image_width,
+            image_height,
+            ffmpeg_path,
+            ffmpeg_threads,
+            ffmpeg_hwaccel,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if not frame_bytes:
+        raise HTTPException(status_code=500, detail="ffmpeg returned an empty frame")
+
+    try:
+        output_path.write_bytes(frame_bytes)
+        created_paths.append(output_path)
+        sidecar_info = _copy_video_frame_sidecars(
+            video_path,
+            str(output_path),
+            requested_frame_index,
+            image_width,
+            image_height,
+        )
+        if sidecar_info.get("caption_copied"):
+            created_paths.append(_get_caption_path(str(output_path)))
+        if sidecar_info.get("metadata_copied"):
+            created_paths.append(_get_metadata_path(str(output_path)))
+        if sidecar_info.get("mask_copied"):
+            created_paths.append(_get_image_mask_path(str(output_path)))
+    except OSError as exc:
+        for created_path in reversed(created_paths):
+            created_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save extracted frame: {exc}") from exc
+
+    _clear_thumbnail_cache_for_path(str(output_path))
+    return {
+        "ok": True,
+        "video_path": video_path,
+        "image_path": str(output_path),
+        "name": output_path.name,
+        "time_seconds": time_seconds,
+        "requested_frame_index": requested_frame_index,
+        **sidecar_info,
+    }
+
+
 class VideoClipJobRequest(BaseModel):
     video_path: str
     start_seconds: float
@@ -1954,6 +2050,12 @@ class CloneFolderRequest(BaseModel):
     image_paths: list[str] = []
 
 
+class MoveSelectedMediaRequest(BaseModel):
+    source_folder: str
+    target_folder: str
+    image_paths: list[str] = []
+
+
 def _event_bytes(event: dict) -> bytes:
     return (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
 
@@ -2078,6 +2180,85 @@ def _get_unique_upload_path(folder_path: Path, file_name: str) -> Path:
         counter += 1
 
 
+def _get_next_extracted_video_frame_path(video_path: str, output_suffix: str = ".jpg") -> Path:
+    """Return the next available extracted-frame image path beside a source video."""
+    video_file = Path(video_path)
+    folder_path = video_file.parent
+    stem = video_file.stem or "video"
+    normalized_suffix = str(output_suffix or ".jpg").strip() or ".jpg"
+    if not normalized_suffix.startswith("."):
+        normalized_suffix = f".{normalized_suffix}"
+
+    pattern = re.compile(
+        rf"^{re.escape(stem)}-frame_(?P<index>\d{{4}}){re.escape(normalized_suffix)}$",
+        re.IGNORECASE,
+    )
+    highest_index = 0
+    for candidate in folder_path.glob(f"{stem}-frame_*{normalized_suffix}"):
+        if not candidate.is_file():
+            continue
+        match = pattern.match(candidate.name)
+        if not match:
+            continue
+        try:
+            highest_index = max(highest_index, int(match.group("index") or 0))
+        except (TypeError, ValueError):
+            continue
+
+    next_index = highest_index + 1
+    while True:
+        candidate = folder_path / f"{stem}-frame_{next_index:04d}{normalized_suffix}"
+        if not candidate.exists():
+            return candidate
+        next_index += 1
+
+
+def _copy_video_frame_sidecars(
+    video_path: str,
+    image_path: str,
+    requested_frame_index: int | None,
+    image_width: int,
+    image_height: int,
+) -> dict:
+    """Copy caption, metadata, and the resolved key-frame mask onto an extracted frame image."""
+    source_caption_path = _get_caption_path(video_path)
+    target_caption_path = _get_caption_path(image_path)
+    caption_copied = False
+    if source_caption_path.exists():
+        shutil.copy2(source_caption_path, target_caption_path)
+        caption_copied = True
+
+    source_metadata_path = _get_metadata_path(video_path)
+    target_metadata_path = _get_metadata_path(image_path)
+    metadata_copied = False
+    if source_metadata_path.exists():
+        shutil.copy2(source_metadata_path, target_metadata_path)
+        metadata_copied = True
+
+    mask_copied = False
+    mask_source_frame_index = None
+    if requested_frame_index is not None:
+        mask_info = _get_video_mask_frame_info(
+            video_path,
+            requested_frame_index,
+            image_width,
+            image_height,
+            create_new=False,
+        )
+        source_mask_path = Path(str(mask_info.get("path") or ""))
+        if mask_info.get("exists") and source_mask_path.is_file():
+            shutil.copy2(source_mask_path, _get_image_mask_path(image_path))
+            mask_copied = True
+            mask_source_frame_index = int(mask_info.get("frame_index") or 0)
+
+    return {
+        "caption_copied": caption_copied,
+        "metadata_copied": metadata_copied,
+        "mask_copied": mask_copied,
+        "mask_source_frame_index": mask_source_frame_index,
+    }
+
+
 def _normalize_duplicate_image_name(image_path: str, requested_name: str) -> str:
     normalized_name = _sanitize_upload_filename(requested_name)
     source_suffix = Path(image_path).suffix
@@ -2164,6 +2345,519 @@ def _copy_folder_config_for_clone(source_folder: str, target_folder: str):
         sections = _get_folder_sections(cfg, source_folder)
         _set_folder_sections(cfg, target_folder, sections)
     _save_config(cfg)
+
+
+def _normalize_section_merge_name(value: str | None) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _section_names_match(left: str | None, right: str | None) -> bool:
+    if _is_general_section_name(left) and _is_general_section_name(right):
+        return True
+    return _normalize_section_merge_name(left) == _normalize_section_merge_name(right)
+
+
+def _make_empty_section(name: str | None = "") -> dict:
+    return {
+        "name": str(name or "").strip(),
+        "captions": [],
+        "sentences": [],
+        "groups": [],
+        "item_order": [],
+    }
+
+
+def _normalize_section_snapshot(sections: list[dict]) -> list[dict]:
+    temp_folder = os.path.normpath("__move_merge__")
+    return _get_folder_sections({"folders": {temp_folder: {"sections": sections}}}, temp_folder)
+
+
+def _find_section_index_for_merge(sections: list[dict], section_name: str | None) -> int | None:
+    for index, section in enumerate(sections):
+        if _section_names_match(section.get("name", ""), section_name):
+            return index
+    return None
+
+
+def _append_caption_to_section(section: dict, caption: str):
+    normalized_caption = str(caption or "").strip()
+    if not normalized_caption:
+        return
+
+    captions = list(section.get("captions") or section.get("sentences") or [])
+    if normalized_caption not in captions:
+        captions.append(normalized_caption)
+    section["captions"] = captions
+    section["sentences"] = list(captions)
+
+    item_order = [item for item in (section.get("item_order") or []) if isinstance(item, dict)]
+    exists_in_order = any(
+        str(item.get("type") or "").strip().lower() in {"sentence", "caption"}
+        and str(item.get("sentence") or item.get("caption") or "").strip() == normalized_caption
+        for item in item_order
+    )
+    if not exists_in_order:
+        item_order.append({"type": "sentence", "sentence": normalized_caption})
+    section["item_order"] = item_order
+
+
+def _remove_simple_caption_from_sections(sections: list[dict], caption_to_remove: str) -> bool:
+    normalized_caption = str(caption_to_remove or "").strip()
+    if not normalized_caption:
+        return False
+
+    removed = False
+    for section in sections:
+        section_captions = list(section.get("captions") or section.get("sentences") or [])
+        if normalized_caption in section_captions:
+            removed = True
+        filtered_captions = [caption for caption in section_captions if caption != normalized_caption]
+        section["captions"] = filtered_captions
+        section["sentences"] = list(filtered_captions)
+        section["item_order"] = [
+            {
+                "type": "sentence",
+                "sentence": str(item.get("sentence") or item.get("caption") or "").strip(),
+            }
+            if str(item.get("type") or "").strip().lower() in {"sentence", "caption"}
+            else {
+                "type": "group",
+                "group_id": str(item.get("group_id") or "").strip(),
+            }
+            for item in (section.get("item_order") or [])
+            if isinstance(item, dict)
+            and not (
+                str(item.get("type") or "").strip().lower() in {"sentence", "caption"}
+                and str(item.get("sentence") or item.get("caption") or "").strip() == normalized_caption
+            )
+        ]
+    return removed
+
+
+def _iter_group_locations(sections: list[dict]):
+    for section_index, section in enumerate(sections):
+        for group_index, group in enumerate(section.get("groups", []) or []):
+            yield {
+                "section_index": section_index,
+                "group_index": group_index,
+                "section_name": str(section.get("name") or "").strip(),
+                "group_name": str(group.get("name") or "").strip(),
+                "captions": _caption_values(group),
+            }
+
+
+def _collect_caption_locations(sections: list[dict]) -> dict[str, list[dict]]:
+    locations: dict[str, list[dict]] = {}
+    for section_index, section in enumerate(sections):
+        for caption in _caption_values(section):
+            locations.setdefault(caption, []).append({
+                "kind": "simple",
+                "section_index": section_index,
+                "section_name": str(section.get("name") or "").strip(),
+            })
+        for group_location in _iter_group_locations([section]):
+            actual_group_index = group_location["group_index"]
+            captions = group_location["captions"]
+            for caption in captions:
+                locations.setdefault(caption, []).append({
+                    "kind": "group",
+                    "section_index": section_index,
+                    "group_index": actual_group_index,
+                    "section_name": str(section.get("name") or "").strip(),
+                    "group_name": group_location["group_name"],
+                })
+    return locations
+
+
+def _resolve_target_group_merge_location(
+    target_sections: list[dict],
+    source_section_name: str | None,
+    source_group_name: str | None,
+    source_group_captions: list[str],
+) -> dict | None:
+    source_caption_set = {caption for caption in source_group_captions if caption}
+    group_name_key = _normalize_section_merge_name(source_group_name)
+    all_groups = list(_iter_group_locations(target_sections))
+    groups_by_key = {
+        (item["section_index"], item["group_index"]): item
+        for item in all_groups
+    }
+
+    overlap_keys: list[tuple[int, int]] = []
+    exact_name_keys: list[tuple[int, int]] = []
+    same_name_keys: list[tuple[int, int]] = []
+    for item in all_groups:
+        key = (item["section_index"], item["group_index"])
+        if source_caption_set.intersection(item["captions"]):
+            overlap_keys.append(key)
+        if group_name_key and _normalize_section_merge_name(item["group_name"]) == group_name_key:
+            same_name_keys.append(key)
+            if _section_names_match(item["section_name"], source_section_name):
+                exact_name_keys.append(key)
+
+    overlap_keys = list(dict.fromkeys(overlap_keys))
+    exact_name_keys = list(dict.fromkeys(exact_name_keys))
+    same_name_keys = list(dict.fromkeys(same_name_keys))
+
+    if len(overlap_keys) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Cannot merge source group "{source_group_name or "(unnamed group)"}" because its captions already belong to multiple groups in the target folder',
+        )
+
+    if overlap_keys:
+        overlap_key = overlap_keys[0]
+        if exact_name_keys and exact_name_keys[0] != overlap_key:
+            raise HTTPException(
+                status_code=400,
+                detail=f'Cannot merge source group "{source_group_name or "(unnamed group)"}" because the target folder has conflicting group matches',
+            )
+        return groups_by_key[overlap_key]
+
+    if len(exact_name_keys) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Cannot merge source group "{source_group_name or "(unnamed group)"}" because the target folder has multiple matching groups with the same name',
+        )
+    if exact_name_keys:
+        return groups_by_key[exact_name_keys[0]]
+
+    if len(same_name_keys) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Cannot merge source group "{source_group_name or "(unnamed group)"}" because the target folder has multiple groups with that name',
+        )
+    if same_name_keys:
+        return groups_by_key[same_name_keys[0]]
+
+    return None
+
+
+def _merge_source_caption_into_target_sections(target_sections: list[dict], source_section_name: str | None, caption: str):
+    normalized_caption = str(caption or "").strip()
+    if not normalized_caption:
+        return
+
+    locations = _collect_caption_locations(target_sections).get(normalized_caption, [])
+    group_keys = list(dict.fromkeys(
+        (item["section_index"], item["group_index"])
+        for item in locations
+        if item.get("kind") == "group"
+    ))
+    simple_sections = list(dict.fromkeys(
+        item["section_index"]
+        for item in locations
+        if item.get("kind") == "simple"
+    ))
+
+    if len(group_keys) > 1 or len(simple_sections) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Cannot move captions because "{normalized_caption}" already exists in multiple places in the target folder',
+        )
+
+    if group_keys:
+        if simple_sections:
+            _remove_simple_caption_from_sections(target_sections, normalized_caption)
+        return
+    if simple_sections:
+        return
+
+    section_index = _find_section_index_for_merge(target_sections, source_section_name)
+    if section_index is None:
+        target_sections.append(_make_empty_section(source_section_name))
+        section_index = len(target_sections) - 1
+    _append_caption_to_section(target_sections[section_index], normalized_caption)
+
+
+def _merge_source_group_into_target_sections(target_sections: list[dict], source_section_name: str | None, source_group: dict):
+    source_group_name = str(source_group.get("name") or "").strip()
+    source_group_captions = _caption_values(source_group)
+    if not source_group_captions:
+        return
+
+    target_location = _resolve_target_group_merge_location(
+        target_sections,
+        source_section_name,
+        source_group_name,
+        source_group_captions,
+    )
+
+    for caption in source_group_captions:
+        _remove_simple_caption_from_sections(target_sections, caption)
+
+    if target_location is None:
+        section_index = _find_section_index_for_merge(target_sections, source_section_name)
+        if section_index is None:
+            target_sections.append(_make_empty_section(source_section_name))
+            section_index = len(target_sections) - 1
+        target_sections[section_index].setdefault("groups", []).append({
+            "id": str(source_group.get("id") or "") or f"move-group-{uuid4().hex[:8]}",
+            "name": source_group_name,
+            "captions": list(source_group_captions),
+            "sentences": list(source_group_captions),
+            "hidden_captions": [caption for caption in _group_hidden_captions(source_group) if caption in source_group_captions],
+            "hidden_sentences": [caption for caption in _group_hidden_captions(source_group) if caption in source_group_captions],
+        })
+        return
+
+    group = target_sections[target_location["section_index"]].get("groups", [])[target_location["group_index"]]
+    existing_captions = _caption_values(group)
+    existing_caption_set = set(existing_captions)
+    newly_added: list[str] = []
+    for caption in source_group_captions:
+        if caption in existing_caption_set:
+            continue
+        existing_captions.append(caption)
+        existing_caption_set.add(caption)
+        newly_added.append(caption)
+    group["captions"] = list(existing_captions)
+    group["sentences"] = list(existing_captions)
+    if not str(group.get("name") or "").strip() and source_group_name:
+        group["name"] = source_group_name
+
+    existing_hidden = list(group.get("hidden_captions") or group.get("hidden_sentences") or [])
+    for caption in _group_hidden_captions(source_group):
+        if caption in newly_added and caption not in existing_hidden and caption in existing_caption_set:
+            existing_hidden.append(caption)
+    group["hidden_captions"] = [caption for caption in existing_hidden if caption in existing_caption_set]
+    group["hidden_sentences"] = list(group["hidden_captions"])
+
+
+def _merge_move_captions_into_target_sections(
+    source_sections: list[dict],
+    target_sections: list[dict],
+    used_captions: set[str],
+) -> list[dict]:
+    updated_sections = copy.deepcopy(target_sections)
+    processed_captions: set[str] = set()
+    processed_groups: set[tuple[int | None, int | None]] = set()
+
+    for target in _iter_caption_targets_with_indices(source_sections):
+        if target["type"] == "group":
+            section_index = target.get("section_index")
+            group_index = target.get("group_index")
+            group_key = (section_index, group_index)
+            group_captions = [caption for caption in (target.get("captions") or []) if caption]
+            if not group_captions or not any(caption in used_captions for caption in group_captions):
+                continue
+            if group_key in processed_groups or section_index is None or group_index is None:
+                continue
+            source_group = source_sections[section_index].get("groups", [])[group_index]
+            _merge_source_group_into_target_sections(updated_sections, target.get("section_name", ""), source_group)
+            processed_groups.add(group_key)
+            processed_captions.update(group_captions)
+            continue
+
+        caption = str(target.get("caption") or target.get("sentence") or "").strip()
+        if not caption or caption not in used_captions or caption in processed_captions:
+            continue
+        _merge_source_caption_into_target_sections(updated_sections, target.get("section_name", ""), caption)
+        processed_captions.add(caption)
+
+    return _normalize_section_snapshot(updated_sections)
+
+
+def _rewrite_caption_files_for_section_change(
+    folder: str,
+    sections_before: list[dict],
+    sections_after: list[dict],
+    *,
+    exclude_media_paths: set[str] | None = None,
+) -> list[tuple[Path, str | None]]:
+    excluded = {
+        os.path.normcase(os.path.abspath(os.path.normpath(path)))
+        for path in (exclude_media_paths or set())
+        if path
+    }
+    backups: list[tuple[Path, str | None]] = []
+    all_captions_before = _all_captions_from_sections(sections_before)
+    headers_before = _all_headers_from_sections(sections_before)
+
+    for entry in _iter_folder_image_entries(folder):
+        normalized_entry = os.path.normcase(os.path.abspath(os.path.normpath(str(entry))))
+        if normalized_entry in excluded:
+            continue
+        caption_path = entry.with_suffix(".txt")
+        if not caption_path.exists():
+            continue
+        backups.append((caption_path, caption_path.read_text(encoding="utf-8")))
+        data = _read_caption_file(str(entry), all_captions_before, headers_before)
+        enabled = _normalize_enabled_captions(_read_enabled_captions(data), sections_after)
+        free_text = str(data.get("free_text", "") or "")
+        _write_caption_file(str(entry), enabled, free_text, sections_after)
+
+    return backups
+
+
+def _restore_caption_file_backups(backups: list[tuple[Path, str | None]]):
+    for path_obj, content in reversed(backups):
+        try:
+            if content is None:
+                path_obj.unlink(missing_ok=True)
+            else:
+                path_obj.parent.mkdir(parents=True, exist_ok=True)
+                path_obj.write_text(content, encoding="utf-8")
+        except OSError:
+            continue
+
+
+def _build_move_artifacts_for_media(source_path: Path, target_path: Path, image_crops: dict | None) -> tuple[list[dict], dict | None]:
+    artifacts: list[dict] = [{
+        "source": source_path,
+        "target": target_path,
+        "kind": "media",
+        "allow_replace": False,
+    }]
+
+    caption_path = _get_caption_path(str(source_path))
+    if caption_path.exists():
+        artifacts.append({
+            "source": caption_path,
+            "target": target_path.with_suffix(".txt"),
+            "kind": "caption",
+            "allow_replace": False,
+        })
+
+    metadata_path = _get_metadata_path(str(source_path))
+    if metadata_path.exists():
+        artifacts.append({
+            "source": metadata_path,
+            "target": _get_metadata_path(str(target_path)),
+            "kind": "metadata",
+            "allow_replace": False,
+        })
+
+    crop_state = None
+    if _is_image_path(str(source_path)):
+        mask_path = _get_image_mask_path(str(source_path))
+        if mask_path.exists():
+            artifacts.append({
+                "source": mask_path,
+                "target": _get_image_mask_path(str(target_path)),
+                "kind": "mask",
+                "allow_replace": False,
+            })
+
+        crop_backup_path = Path(_get_crop_backup_path(str(source_path)))
+        if crop_backup_path.exists():
+            artifacts.append({
+                "source": crop_backup_path,
+                "target": Path(_get_crop_backup_path(str(target_path))),
+                "kind": "crop-backup",
+                "allow_replace": True,
+            })
+
+        crop_mask_backup_path = Path(_get_crop_mask_backup_path(str(source_path)))
+        if crop_mask_backup_path.exists():
+            artifacts.append({
+                "source": crop_mask_backup_path,
+                "target": Path(_get_crop_mask_backup_path(str(target_path))),
+                "kind": "crop-mask-backup",
+                "allow_replace": True,
+            })
+
+        if isinstance(image_crops, dict):
+            crop_state = copy.deepcopy(image_crops.get(_normalize_image_key(str(source_path))))
+    elif _is_video_path(str(source_path)):
+        for mask_path in _list_video_mask_paths(str(source_path)):
+            artifacts.append({
+                "source": mask_path,
+                "target": target_path.parent / mask_path.name.replace(source_path.name, target_path.name, 1),
+                "kind": "video-mask",
+                "allow_replace": False,
+            })
+
+    return artifacts, crop_state
+
+
+def _prepare_move_plan(source_folder: str, target_folder: str, image_paths: list[str], cfg: dict) -> dict:
+    source_path = _resolve_folder_path(source_folder, detail="Source folder is not a valid directory")
+    target_path = _resolve_folder_path(target_folder, detail="Target folder is not a valid directory")
+    if os.path.normcase(str(source_path)) == os.path.normcase(str(target_path)):
+        raise HTTPException(status_code=400, detail="Target folder must be different from the current folder")
+
+    normalized_source = os.path.normcase(str(source_path))
+    normalized_selected: list[Path] = []
+    for raw_path in image_paths or []:
+        candidate = Path(str(raw_path or "")).resolve()
+        if not candidate.is_file():
+            raise HTTPException(status_code=400, detail=f"Image not found: {candidate}")
+        if os.path.normcase(str(candidate.parent)) != normalized_source:
+            raise HTTPException(status_code=400, detail="Selected images must belong to the current folder")
+        if candidate.suffix.lower() not in MEDIA_EXTENSIONS:
+            raise HTTPException(status_code=400, detail=f"Unsupported media file: {candidate.name}")
+        if candidate not in normalized_selected:
+            normalized_selected.append(candidate)
+
+    if not normalized_selected:
+        raise HTTPException(status_code=400, detail="Select at least one media file to move")
+
+    image_crops = cfg.get("image_crops") if isinstance(cfg.get("image_crops"), dict) else {}
+    source_sections = _get_folder_sections(cfg, str(source_path))
+    source_all_captions = _all_captions_from_sections(source_sections)
+    source_headers = _all_headers_from_sections(source_sections)
+
+    planned_target_paths: set[str] = set()
+    conflicts: list[str] = []
+    media_entries: list[dict] = []
+    used_captions: set[str] = set()
+
+    for media_path in normalized_selected:
+        destination_path = target_path / media_path.name
+        artifacts, crop_state = _build_move_artifacts_for_media(media_path, destination_path, image_crops)
+        for artifact in artifacts:
+            target_artifact = artifact["target"]
+            target_key = os.path.normcase(os.path.abspath(os.path.normpath(str(target_artifact))))
+            if not artifact.get("allow_replace"):
+                if target_key in planned_target_paths:
+                    conflicts.append(f"Multiple selected files would overwrite {target_artifact.name} in the target folder")
+                elif target_artifact.exists():
+                    conflicts.append(f"Target already contains {target_artifact.name}")
+                planned_target_paths.add(target_key)
+
+        caption_path = _get_caption_path(str(media_path))
+        if caption_path.exists():
+            original_caption_text = caption_path.read_text(encoding="utf-8")
+            caption_data = _read_caption_file(str(media_path), source_all_captions, source_headers)
+        else:
+            original_caption_text = None
+            caption_data = {"enabled_captions": [], "free_text": ""}
+
+        enabled_captions = _read_enabled_captions(caption_data)
+        used_captions.update(enabled_captions)
+        media_entries.append({
+            "source_path": media_path,
+            "target_path": destination_path,
+            "artifacts": artifacts,
+            "crop_state": crop_state,
+            "caption_snapshot": {
+                "had_caption_file": caption_path.exists(),
+                "enabled_captions": enabled_captions,
+                "free_text": str(caption_data.get("free_text", "") or ""),
+                "original_text": original_caption_text,
+            },
+        })
+
+    if conflicts:
+        conflict_preview = "\n".join(f"- {message}" for message in conflicts[:8])
+        if len(conflicts) > 8:
+            conflict_preview += f"\n- ...and {len(conflicts) - 8} more conflict(s)"
+        raise HTTPException(status_code=400, detail=f"Move blocked by existing target files:\n{conflict_preview}")
+
+    target_sections_before = _get_folder_sections(cfg, str(target_path))
+    target_sections_after = _merge_move_captions_into_target_sections(source_sections, target_sections_before, used_captions)
+
+    return {
+        "source_path": source_path,
+        "target_path": target_path,
+        "source_sections": source_sections,
+        "target_sections_before": target_sections_before,
+        "target_sections_after": target_sections_after,
+        "sections_changed": target_sections_after != target_sections_before,
+        "media_entries": media_entries,
+        "used_captions": used_captions,
+    }
 
 
 def _iter_folder_image_entries(folder: str):
@@ -2600,6 +3294,122 @@ async def clone_folder_stream(data: CloneFolderRequest):
             raise
         except Exception as exc:
             shutil.rmtree(target_path, ignore_errors=True)
+            yield _event_bytes({"type": "error", "message": str(exc)})
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@app.post("/api/media/move/stream")
+async def move_selected_media_stream(data: MoveSelectedMediaRequest):
+    """Move selected media into another folder while merging caption presets and sidecars."""
+    cfg = _load_config()
+    cfg_before = copy.deepcopy(cfg)
+    plan = _prepare_move_plan(data.source_folder, data.target_folder, data.image_paths or [], cfg)
+    source_path: Path = plan["source_path"]
+    target_path: Path = plan["target_path"]
+    source_sections: list[dict] = plan["source_sections"]
+    target_sections_before: list[dict] = plan["target_sections_before"]
+    target_sections_after: list[dict] = plan["target_sections_after"]
+    sections_changed = bool(plan["sections_changed"])
+    media_entries: list[dict] = plan["media_entries"]
+
+    async def event_stream():
+        moved_artifacts: list[tuple[Path, Path]] = []
+        caption_backups: list[tuple[Path, str | None]] = []
+        try:
+            yield _event_bytes({
+                "type": "start",
+                "mode": "selected",
+                "source_folder": str(source_path),
+                "target_folder": str(target_path),
+                "total": len(media_entries),
+                "sections_changed": sections_changed,
+            })
+
+            for index, media_entry in enumerate(media_entries, start=1):
+                source_media_path: Path = media_entry["source_path"]
+                target_media_path: Path = media_entry["target_path"]
+                for artifact in media_entry["artifacts"]:
+                    source_artifact: Path = artifact["source"]
+                    target_artifact: Path = artifact["target"]
+                    if artifact.get("allow_replace") and target_artifact.exists():
+                        target_artifact.unlink(missing_ok=True)
+                    target_artifact.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(source_artifact), str(target_artifact))
+                    moved_artifacts.append((target_artifact, source_artifact))
+
+                _clear_thumbnail_cache_for_path(str(source_media_path))
+                _clear_thumbnail_cache_for_path(str(target_media_path))
+                yield _event_bytes({
+                    "type": "progress",
+                    "index": index,
+                    "total": len(media_entries),
+                    "source_path": str(source_media_path),
+                    "target_path": str(target_media_path),
+                    "name": target_media_path.name,
+                })
+
+            folders_cfg = cfg.setdefault("folders", {})
+            image_crops = cfg.setdefault("image_crops", {}) if isinstance(cfg.get("image_crops"), dict) else {}
+            if sections_changed or os.path.normpath(str(target_path)) in folders_cfg:
+                _set_folder_sections(cfg, str(target_path), target_sections_after)
+
+            moved_target_paths = {str(item["target_path"]) for item in media_entries}
+            if sections_changed:
+                caption_backups.extend(
+                    _rewrite_caption_files_for_section_change(
+                        str(target_path),
+                        target_sections_before,
+                        target_sections_after,
+                        exclude_media_paths=moved_target_paths,
+                    )
+                )
+
+            for media_entry in media_entries:
+                source_media_path: Path = media_entry["source_path"]
+                target_media_path: Path = media_entry["target_path"]
+                if media_entry.get("crop_state") is not None:
+                    image_crops.pop(_normalize_image_key(str(source_media_path)), None)
+                    image_crops[_normalize_image_key(str(target_media_path))] = media_entry["crop_state"]
+
+                caption_snapshot = media_entry["caption_snapshot"]
+                if not caption_snapshot.get("had_caption_file"):
+                    continue
+                target_caption_path = _get_caption_path(str(target_media_path))
+                caption_backups.append((target_caption_path, caption_snapshot.get("original_text")))
+                _write_caption_file(
+                    str(target_media_path),
+                    list(caption_snapshot.get("enabled_captions") or []),
+                    str(caption_snapshot.get("free_text") or ""),
+                    target_sections_after,
+                )
+
+            _save_config(cfg)
+            yield _event_bytes({
+                "type": "config-updated",
+                "target_folder": str(target_path),
+                "sections_changed": sections_changed,
+            })
+            yield _event_bytes({
+                "type": "done",
+                "source_folder": str(source_path),
+                "target_folder": str(target_path),
+                "total": len(media_entries),
+                "moved": len(media_entries),
+            })
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _restore_caption_file_backups(caption_backups)
+            for target_artifact, source_artifact in reversed(moved_artifacts):
+                try:
+                    if not target_artifact.exists():
+                        continue
+                    source_artifact.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(target_artifact), str(source_artifact))
+                except OSError:
+                    continue
+            _save_config(cfg_before)
             yield _event_bytes({"type": "error", "message": str(exc)})
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")

@@ -857,13 +857,19 @@ function updateActionButtons() {
   const selectionSupportsVision = hasSelection;
   const canRunStructured = selectionSupportsVision && hasCaptions && !!state.ollamaModel.trim();
   const canRunFreeTextOnly = selectionSupportsVision && !!state.ollamaModel.trim();
-  cloneFolderBtn.disabled = !state.folder || state.autoCaptioning || state.cloning || state.uploading;
+  const hasBlockingWorkspaceAction = !!(state.cloning || state.moving || state.extractingFrame || state.uploading);
+  cloneFolderBtn.disabled = !state.folder || state.autoCaptioning || hasBlockingWorkspaceAction;
   cloneFolderBtn.textContent = state.cloning ? "Cloning..." : "Clone";
   cloneFolderBtn.title = state.selectedPaths.size > 1
     ? "Clone the selected media files into a new sibling folder"
     : "Clone the whole current folder into a new sibling folder";
-  autoCaptionBtn.disabled = state.uploading || (!state.autoCaptioning && !canRunStructured);
-  addFreeTextNowBtn.disabled = state.uploading || (!state.autoCaptioning && !canRunFreeTextOnly);
+  moveSelectedBtn.disabled = !state.folder || !hasSelection || state.autoCaptioning || hasBlockingWorkspaceAction;
+  moveSelectedBtn.textContent = state.moving ? "Moving..." : "Move";
+  moveSelectedBtn.title = hasSelection
+    ? `Move ${state.selectedPaths.size} selected media file${state.selectedPaths.size === 1 ? "" : "s"} into another folder`
+    : "Select one or more media files to move them into another folder";
+  autoCaptionBtn.disabled = hasBlockingWorkspaceAction || (!state.autoCaptioning && !canRunStructured);
+  addFreeTextNowBtn.disabled = hasBlockingWorkspaceAction || (!state.autoCaptioning && !canRunFreeTextOnly);
   autoCaptionBtn.classList.toggle("running", state.autoCaptioning);
   addFreeTextNowBtn.classList.toggle("running", state.autoCaptioning && state.autoCaptionMode === "free-text-only");
   setGenerateButtonContent(autoCaptionBtn, state.autoCaptioning && state.autoCaptionMode === "full" ? "Stop Auto Caption" : "Auto Caption");
@@ -883,6 +889,9 @@ function updateActionButtons() {
   renderCreatePromptPreviewButton();
   renderPreviewActionBar();
   renderVideoEditPanel();
+  if (typeof renderMaskEditorUi === "function") {
+    renderMaskEditorUi();
+  }
 }
 
 function resetAutoCaptionProgress() {

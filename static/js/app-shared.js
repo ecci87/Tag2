@@ -137,7 +137,20 @@ const state = {
   modelLogLines: [],
   modelLogOpen: false,
   cloning: false,
+  moving: false,
+  extractingFrame: false,
   duplicatingImage: false,
+  moveDialog: {
+    lastTargetFolder: "",
+    autocomplete: {
+      items: [],
+      highlightedIndex: -1,
+      visible: false,
+      debounceTimer: 0,
+      requestSeq: 0,
+      abortController: null,
+    },
+  },
   promptPreview: {
     sourcePath: "",
     jobs: [],
@@ -234,6 +247,7 @@ const folderInputWrap = $("#folder-input-wrap");
 const folderSuggestionsList = $("#folder-suggestions");
 const loadBtn = $("#load-btn");
 const cloneFolderBtn = $("#clone-folder-btn");
+const moveSelectedBtn = $("#move-selected-btn");
 const settingsBtn = $("#settings-btn");
 const thumbSlider = $("#thumb-size-slider");
 const statusBar = $("#status-bar");
@@ -330,6 +344,7 @@ const videoMuteBtn = $("#video-mute-btn");
 const videoVolumeSlider = $("#video-volume-slider");
 const videoPlaybackLabel = $("#video-playback-label");
 const videoClipBtn = $("#video-clip-btn");
+const videoExtractFrameBtn = $("#video-extract-frame-btn");
 const videoDownloadBtn = $("#video-download-btn");
 const videoTimelineViewport = $("#video-timeline-viewport");
 const videoTimeRangeLabel = $("#video-time-range-label");
@@ -386,6 +401,17 @@ const errorToast = $("#error-toast");
 const errorToastMessage = $("#error-toast-message");
 const errorToastClose = $("#error-toast-close");
 const settingsModal = $("#settings-modal");
+const moveSelectedModal = $("#move-selected-modal");
+const moveSelectedDialog = $("#move-selected-dialog");
+const moveSelectedForm = $("#move-selected-form");
+const moveSelectedCloseBtn = $("#move-selected-close-btn");
+const moveSelectedCancelBtn = $("#move-selected-cancel-btn");
+const moveSelectedConfirmBtn = $("#move-selected-confirm-btn");
+const moveSelectedSummary = $("#move-selected-summary");
+const moveSelectedStatus = $("#move-selected-status");
+const moveTargetFolderInputWrap = $("#move-target-folder-input-wrap");
+const moveTargetFolderInput = $("#move-target-folder-input");
+const moveTargetFolderSuggestions = $("#move-target-folder-suggestions");
 const settingsForm = $("#settings-form");
 const settingsCloseBtn = $("#settings-close-btn");
 const settingsCancelBtn = $("#settings-cancel-btn");

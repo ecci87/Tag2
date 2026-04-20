@@ -1053,19 +1053,21 @@ function renderPreviewActionBar() {
   const active = isMaskEditorVisible();
   const imageAvailable = isImageEditAvailable();
   const maskAvailable = isMaskEditAvailable();
+  const videoKeyAddVisible = !active && isVideoMaskEditAvailable();
   duplicateImageBtn.classList.toggle("visible", imageAvailable && !active);
   imageEditBtn.classList.toggle("visible", imageAvailable && !active);
   renderPromptPreviewButton();
   maskEditBtn.classList.toggle("visible", maskAvailable && !active);
-  duplicateImageBtn.disabled = !imageAvailable || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading;
-  imageEditBtn.disabled = !imageAvailable || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading;
-  maskEditBtn.disabled = !maskAvailable || state.duplicatingImage || state.autoCaptioning || state.cloning || state.uploading;
+  duplicateImageBtn.disabled = !imageAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
+  imageEditBtn.disabled = !imageAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
+  maskEditBtn.disabled = !maskAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
   duplicateImageBtn.textContent = state.duplicatingImage ? "Duplicating..." : "Duplicate";
   duplicateImageBtn.title = "Duplicate this image with its caption and mask sidecars";
   imageEditBtn.title = "Paint a color overlay that preserves the image detail and shading";
   renderGifConvertButton();
   const visible = !active && [duplicateImageBtn, imageEditBtn, promptPreviewBtn, maskEditBtn, gifConvertBtn].some((button) => button.classList.contains("visible"));
   previewActionBar.classList.toggle("visible", visible);
+  previewActionBar.classList.toggle("with-video-key-add", visible && videoKeyAddVisible);
 }
 
 function syncMaskPreviewLayerVisibility() {

@@ -73,10 +73,18 @@ setupVerticalResize(rightHorizontalResize, captionsSection, freeTextSection, cap
 // ===== EVENT LISTENERS =====
 loadBtn.addEventListener("click", loadFolder);
 cloneFolderBtn.addEventListener("click", cloneCurrentFolder);
+moveSelectedBtn.addEventListener("click", openMoveSelectedDialog);
 folderInput.addEventListener("input", handleFolderInputInput);
 folderInput.addEventListener("focus", handleFolderInputFocus);
 folderInput.addEventListener("blur", handleFolderInputBlur);
 folderInput.addEventListener("keydown", handleFolderInputKeydown);
+moveSelectedForm.addEventListener("submit", submitMoveSelectedDialog);
+moveSelectedCloseBtn.addEventListener("click", closeMoveSelectedDialog);
+moveSelectedCancelBtn.addEventListener("click", closeMoveSelectedDialog);
+moveTargetFolderInput.addEventListener("input", handleMoveTargetFolderInput);
+moveTargetFolderInput.addEventListener("focus", handleMoveTargetFolderFocus);
+moveTargetFolderInput.addEventListener("blur", handleMoveTargetFolderBlur);
+moveTargetFolderInput.addEventListener("keydown", handleMoveTargetFolderKeydown);
 settingsBtn.addEventListener("click", openSettingsModal);
 settingsRefreshModelsBtn.addEventListener("click", refreshOllamaModelOptions);
 clearFiltersBtn.addEventListener("click", clearSentenceFilters);
@@ -101,6 +109,7 @@ addSafeClickListener(autoCaptionBtn, "autoCaptionSelected");
 addSafeClickListener(addFreeTextNowBtn, "addFreeTextNow");
 addSafeClickListener(metadataSaveBtn, "saveMetadataForSelection");
 addSafeClickListener(videoClipBtn, "queueCurrentVideoClip");
+addSafeClickListener(videoExtractFrameBtn, "extractCurrentVideoFrame");
 addSafeClickListener(gifConvertBtn, "queueCurrentGifConversion");
 addSafeClickListener(videoDownloadBtn, "downloadCurrentVideo");
 hideAddButtonsCheckbox.addEventListener("change", () => {
@@ -191,12 +200,57 @@ modelLogOverlay.addEventListener("click", (e) => {
 settingsModal.addEventListener("click", (e) => {
   if (e.target === settingsModal) closeSettingsModal();
 });
+moveSelectedModal.addEventListener("click", (e) => {
+  if (e.target === moveSelectedModal) closeMoveSelectedDialog();
+});
 document.addEventListener("mousedown", (e) => {
   if (folderInputWrap?.contains(e.target)) return;
+  if (moveTargetFolderInputWrap?.contains(e.target)) return;
   hideFolderAutocomplete();
+  hideMoveFolderAutocomplete();
 });
 renderAddButtonsVisibility();
 initializeFilterButtons();
+
+function scrollPreviewSelectionIntoView(path) {
+  if (!path) return;
+  const cell = fileGrid.querySelector(`.thumb-cell[data-path="${CSS.escape(path)}"]`)
+    || fileGrid.querySelector(`[data-path="${CSS.escape(path)}"]`);
+  if (cell) {
+    cell.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+}
+
+async function navigateVisiblePreviewSelection(direction, options = {}) {
+  const { imagesOnly = false } = options;
+  const step = direction > 0 ? 1 : -1;
+  const visibleEntries = getVisibleImageEntries().filter(({ img }) => !imagesOnly || img.media_type === "image");
+  if (!visibleEntries.length) {
+    return false;
+  }
+
+  const anchorPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
+  const currentIndex = anchorPath
+    ? visibleEntries.findIndex(({ img }) => img.path === anchorPath)
+    : -1;
+  let nextIndex = currentIndex + step;
+  if (currentIndex < 0) {
+    nextIndex = step > 0 ? 0 : visibleEntries.length - 1;
+  }
+  nextIndex = Math.max(0, Math.min(visibleEntries.length - 1, nextIndex));
+  if (nextIndex === currentIndex) {
+    return false;
+  }
+
+  const nextPath = visibleEntries[nextIndex]?.img?.path;
+  if (!nextPath) {
+    return false;
+  }
+
+  await selectUploadedImages([nextPath]);
+  scrollPreviewSelectionIntoView(nextPath);
+  return true;
+}
 
 // Keyboard shortcuts
 document.addEventListener("keydown", (e) => {
@@ -222,6 +276,10 @@ document.addEventListener("keydown", (e) => {
     closeSettingsModal();
     return;
   }
+  if (e.key === "Escape" && moveSelectedModal.classList.contains("open")) {
+    closeMoveSelectedDialog();
+    return;
+  }
   if (e.key === "Escape" && state.maskEditor.active) {
     e.preventDefault();
     cancelMaskEdit();
@@ -232,7 +290,7 @@ document.addEventListener("keydown", (e) => {
     cancelCropEdit();
     return;
   }
-  if (settingsModal.classList.contains("open")) return;
+  if (settingsModal.classList.contains("open") || moveSelectedModal.classList.contains("open")) return;
   if (e.key === " " && !isEditableElement(document.activeElement) && state.previewMediaType === "video" && state.previewPath) {
     e.preventDefault();
     togglePreviewVideoPlayback();
@@ -276,8 +334,25 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "ArrowRight" || e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "ArrowDown") {
     const activeEl = document.activeElement;
     if (activeEl === freeText || activeEl === folderInput || isEditableElement(activeEl)) return;
-    e.preventDefault();
     const dir = (e.key === "ArrowRight" || e.key === "ArrowDown") ? 1 : -1;
+
+    if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && state.previewMediaType === "video" && state.previewPath) {
+      e.preventDefault();
+      stepPreviewVideoFrames(dir).catch((err) => {
+        showErrorToast(err?.message || "Failed to step video frame");
+      });
+      return;
+    }
+
+    if (state.previewMediaType === "image" && state.previewPath) {
+      e.preventDefault();
+      navigateVisiblePreviewSelection(dir, { imagesOnly: true }).catch((err) => {
+        showErrorToast(err?.message || "Failed to change preview");
+      });
+      return;
+    }
+
+    e.preventDefault();
     const visibleEntries = getVisibleImageEntries();
     if (visibleEntries.length === 0) return;
     let currentIdx = getVisibleImageIndexByPath(state.lastClickedPath);

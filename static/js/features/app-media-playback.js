@@ -245,6 +245,41 @@ function seekPreviewVideoTo(timeSeconds) {
   syncPreviewVideoPlaybackState();
 }
 
+async function stepPreviewVideoFrames(frameDelta) {
+  if (state.previewMediaType !== "video" || !state.previewPath || previewVideo.readyState < 1) {
+    return false;
+  }
+
+  const step = Math.sign(Number(frameDelta || 0));
+  if (!step) {
+    return false;
+  }
+
+  const path = state.previewPath;
+  let meta = getCurrentVideoMeta(path);
+  if (!meta) {
+    try {
+      meta = await ensureVideoMetaLoaded(path);
+    } catch {
+      meta = null;
+    }
+  }
+
+  const fps = Math.max(1, Number(meta?.fps || getEffectiveVideoMaskFps(path) || 0));
+  const duration = Math.max(0, Number(meta?.duration || previewVideo.duration || 0));
+  const currentFrameIndex = Math.max(0, Math.floor((Math.max(0, Number(previewVideo.currentTime || 0)) * fps) + 1e-6));
+  const maxFrameIndex = duration > 0
+    ? Math.max(0, Math.floor((Math.max(0, duration - (1 / fps)) * fps) + 1e-6))
+    : Math.max(0, currentFrameIndex + step);
+  const nextFrameIndex = Math.max(0, Math.min(maxFrameIndex, currentFrameIndex + step));
+
+  if (!previewVideo.paused) {
+    previewVideo.pause();
+  }
+  seekPreviewVideoTo(nextFrameIndex / fps);
+  return true;
+}
+
 function formatDurationSeconds(totalSeconds) {
   const seconds = Math.max(0, Number(totalSeconds || 0));
   const hours = Math.floor(seconds / 3600);
@@ -621,16 +656,36 @@ function getVideoTimelineFractionFromClientX(clientX, path = state.previewPath) 
 function syncVideoTimelineState(path = state.previewPath) {
   updateVideoTimeRangeLabel(path);
   renderVideoTimelineOverlay(path);
-  const hasPreviewSize = !!(imgNatW && imgNatH);
   const hasDuration = getEffectiveVideoDuration(path) > 0;
-  const draft = getVideoClipDraft(path);
-  const clipValid = draft.endFraction > draft.startFraction;
-  videoClipBtn.disabled = false;
+  updateVideoActionButtons(path, { hasDuration });
   videoTimelineStartHandle.disabled = !hasDuration;
   videoTimelineEndHandle.disabled = !hasDuration;
   videoTimelinePlayhead.disabled = !hasDuration;
   videoTimelineViewport.classList.toggle("disabled", !hasDuration);
   renderVideoTrainingSummary();
+}
+
+function updateVideoActionButtons(path = state.previewPath, options = {}) {
+  const { hasDuration: hasDurationOption = null } = options;
+  const videoVisible = state.previewMediaType === "video" && !!state.previewPath && state.selectedPaths.size === 1 && !!path;
+  const hasDuration = hasDurationOption == null ? getEffectiveVideoDuration(path) > 0 : !!hasDurationOption;
+  const hasBlockingAction = !!(
+    state.duplicatingImage
+    || state.extractingFrame
+    || state.autoCaptioning
+    || state.cloning
+    || state.moving
+    || state.uploading
+  );
+  const maskEditing = !!state.maskEditor.active;
+
+  videoClipBtn.disabled = !videoVisible || !hasDuration || hasBlockingAction || maskEditing;
+  videoDownloadBtn.disabled = !videoVisible || state.extractingFrame;
+  videoExtractFrameBtn.disabled = !videoVisible || hasBlockingAction || maskEditing;
+  videoExtractFrameBtn.textContent = state.extractingFrame ? "Extracting..." : "Extract Frame";
+  videoExtractFrameBtn.title = maskEditing
+    ? "Finish mask editing before extracting a frame"
+    : "Save the current video frame as a JPG beside the video and copy caption, metadata, and the active key-frame mask when available";
 }
 
 function setVideoClipFractions(path, startFraction, endFraction, seekFraction = null) {
@@ -719,12 +774,10 @@ function renderVideoEditPanel() {
   videoEditPanel.classList.toggle("crop-mode", false);
   renderVideoTrainingSummary();
   if (!visible) {
-    videoDownloadBtn.disabled = true;
+    updateVideoActionButtons(null, { hasDuration: false });
     syncPreviewVideoPlaybackState();
     return;
   }
-  videoClipBtn.disabled = false;
-  videoDownloadBtn.disabled = false;
   renderVideoTimelineStrip(state.previewPath);
   syncVideoTimelineState(state.previewPath);
   syncPreviewVideoPlaybackState();
@@ -740,6 +793,75 @@ function downloadCurrentVideo() {
   link.click();
   link.remove();
   statusBar.textContent = `Downloading ${getFileLabel(path)}...`;
+}
+
+async function extractCurrentVideoFrame() {
+  if (!state.previewPath || !isVideoMediaPath(state.previewPath) || state.selectedPaths.size !== 1) {
+    showErrorToast("Select a single video first.");
+    return;
+  }
+  if (state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading || state.maskEditor.active) {
+    showErrorToast("Finish the current operation before extracting a frame.");
+    return;
+  }
+
+  const sourcePath = state.previewPath;
+  const timeSeconds = Math.max(0, Number(previewVideo.currentTime || 0));
+  let frameIndex = typeof getCurrentVideoMaskFrameIndex === "function"
+    ? getCurrentVideoMaskFrameIndex(sourcePath)
+    : 0;
+  try {
+    await ensureVideoMetaLoaded(sourcePath);
+  } catch {
+    // Frame extraction still works without video metadata; this only affects mask resolution.
+  }
+  if (typeof getResolvedVideoMaskKeyframeForFrame === "function") {
+    const resolvedMaskFrameIndex = getResolvedVideoMaskKeyframeForFrame(sourcePath, frameIndex, { fallbackToCurrent: false });
+    if (resolvedMaskFrameIndex != null) {
+      frameIndex = resolvedMaskFrameIndex;
+    }
+  }
+
+  state.extractingFrame = true;
+  updateActionButtons();
+  statusBar.textContent = `Extracting frame from ${getFileLabel(sourcePath)}...`;
+  try {
+    const resp = await fetch("/api/video/extract-frame", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        video_path: sourcePath,
+        time_seconds: timeSeconds,
+        frame_index: frameIndex,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to extract video frame");
+    }
+    if (!data.image_path) {
+      throw new Error("Frame extraction finished without an output image path");
+    }
+
+    const preserveScrollTop = fileGridContainer.scrollTop;
+    await loadFolder({ preserveScrollTop });
+    await selectUploadedImages([data.image_path]);
+
+    const copiedParts = [];
+    if (data.caption_copied) copiedParts.push("caption");
+    if (data.metadata_copied) copiedParts.push("metadata");
+    if (data.mask_copied) copiedParts.push("mask");
+    statusBar.textContent = copiedParts.length > 0
+      ? `Extracted ${getFileLabel(data.image_path)} at ${formatDurationSeconds(data.time_seconds || timeSeconds)} with ${copiedParts.join(", ")}`
+      : `Extracted ${getFileLabel(data.image_path)} at ${formatDurationSeconds(data.time_seconds || timeSeconds)}`;
+  } catch (err) {
+    const message = err?.message || "Failed to extract video frame";
+    statusBar.textContent = `Frame extract error: ${message}`;
+    showErrorToast(`Frame extract error: ${message}`);
+  } finally {
+    state.extractingFrame = false;
+    updateActionButtons();
+  }
 }
 
 async function queueCurrentVideoClip() {
@@ -1060,6 +1182,10 @@ function getNextSelectionPathAfterDelete(paths) {
 
 async function deleteSelectedImages() {
   if (state.selectedPaths.size === 0) return;
+  if (state.autoCaptioning || state.cloning || state.moving || state.extractingFrame || state.uploading) {
+    showErrorToast("Finish the current operation before deleting media.");
+    return;
+  }
 
   const selectedPaths = [...state.selectedPaths];
   const count = selectedPaths.length;

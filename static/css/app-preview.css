@@ -413,6 +413,10 @@
 #preview-action-bar.visible {
   display: flex;
 }
+#preview-action-bar.with-video-key-add {
+  right: 64px;
+  max-width: calc(100% - 82px);
+}
 #duplicate-image-btn,
 #image-edit-btn,
 #prompt-preview-btn,
@@ -650,6 +654,7 @@
 #video-play-toggle-btn,
 #video-mute-btn,
 #video-clip-btn,
+#video-extract-frame-btn,
 #video-download-btn {
   min-width: 74px;
   padding: 5px 14px;
@@ -669,6 +674,7 @@
 #video-play-toggle-btn:hover,
 #video-mute-btn:hover,
 #video-clip-btn:hover,
+#video-extract-frame-btn:hover,
 #video-download-btn:hover {
   border-color: var(--accent);
   color: var(--accent);
@@ -676,6 +682,7 @@
 #video-play-toggle-btn:disabled,
 #video-mute-btn:disabled,
 #video-clip-btn:disabled,
+#video-extract-frame-btn:disabled,
 #video-download-btn:disabled,
 #video-range-sliders input[type="range"]:disabled {
   opacity: 0.5;

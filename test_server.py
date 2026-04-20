@@ -674,6 +674,86 @@ class TestVideoAPI:
         assert resp.content == b"jpeg-bytes"
         assert resp.headers["content-type"].startswith("image/jpeg")
 
+    def test_extract_video_frame_creates_image_and_copies_sidecars(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        (img_dir / "clip.txt").write_text("## Scene\nbright\n", encoding="utf-8")
+        server._write_metadata_file(str(video_path), {"seed": 11, "sampling_frequency": 0.5})
+        mask_source_path = _get_video_mask_path(str(video_path), 48)
+        Image.new("L", (320, 180), color=180).save(mask_source_path)
+
+        def fake_extract(*args, **kwargs):
+            buffer = BytesIO()
+            Image.new("RGB", (320, 180), color="gold").save(buffer, format="JPEG")
+            return buffer.getvalue()
+
+        monkeypatch.setattr(server, "_resolve_ffmpeg_binaries", lambda cfg: ("ffmpeg", "ffprobe"))
+        monkeypatch.setattr(server, "_probe_video_info", lambda path, ffprobe_path="ffprobe": {
+            "width": 320,
+            "height": 180,
+            "duration": 5.0,
+            "fps": 24.0,
+        })
+        monkeypatch.setattr(server, "_extract_video_frame", fake_extract)
+
+        resp = client.post("/api/video/extract-frame", json={
+            "video_path": str(video_path),
+            "time_seconds": 2.0,
+            "frame_index": 48,
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        output_path = Path(data["image_path"])
+        assert data["ok"] is True
+        assert output_path.name == "clip-frame_0001.jpg"
+        assert output_path.exists()
+        assert (img_dir / "clip-frame_0001.txt").read_text(encoding="utf-8") == "## Scene\nbright\n"
+        assert server._read_metadata_file(str(output_path)) == {"seed": 11, "sampling_frequency": 0.5}
+        output_mask_path = server._get_image_mask_path(str(output_path))
+        assert output_mask_path.exists()
+        assert output_mask_path.read_bytes() == mask_source_path.read_bytes()
+        assert data["caption_copied"] is True
+        assert data["metadata_copied"] is True
+        assert data["mask_copied"] is True
+        assert data["mask_source_frame_index"] == 48
+
+    def test_extract_video_frame_increments_name_and_uses_previous_keyframe_mask(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        (img_dir / "clip-frame_0001.jpg").write_bytes(b"existing-frame")
+        previous_keyframe_mask = _get_video_mask_path(str(video_path), 24)
+        Image.new("L", (320, 180), color=120).save(previous_keyframe_mask)
+
+        def fake_extract(*args, **kwargs):
+            buffer = BytesIO()
+            Image.new("RGB", (320, 180), color="orange").save(buffer, format="JPEG")
+            return buffer.getvalue()
+
+        monkeypatch.setattr(server, "_resolve_ffmpeg_binaries", lambda cfg: ("ffmpeg", "ffprobe"))
+        monkeypatch.setattr(server, "_probe_video_info", lambda path, ffprobe_path="ffprobe": {
+            "width": 320,
+            "height": 180,
+            "duration": 5.0,
+            "fps": 24.0,
+        })
+        monkeypatch.setattr(server, "_extract_video_frame", fake_extract)
+
+        resp = client.post("/api/video/extract-frame", json={
+            "video_path": str(video_path),
+            "time_seconds": 2.0,
+            "frame_index": 36,
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        output_path = Path(data["image_path"])
+        assert output_path.name == "clip-frame_0002.jpg"
+        assert output_path.exists()
+        assert data["mask_copied"] is True
+        assert data["mask_source_frame_index"] == 24
+        assert server._get_image_mask_path(str(output_path)).exists()
+
     def test_enqueue_video_crop_job(self, client, img_dir, monkeypatch):
         video_path = img_dir / "clip.mp4"
         video_path.write_bytes(b"fake-video-bytes")
@@ -988,6 +1068,182 @@ class TestCloneFolder:
         assert (target_folder / server._get_metadata_path(str(video_path)).name).exists()
         assert (target_folder / mask_a.name).exists()
         assert (target_folder / mask_b.name).exists()
+
+
+class TestMoveSelectedMedia:
+    def test_move_selected_media_moves_sidecars_and_merges_captions(self, client, img_dir, tmp_path):
+        source_folder = str(img_dir)
+        target_dir = tmp_path / "target"
+        target_dir.mkdir()
+
+        moved_path = str(img_dir / "photo1.jpg")
+        untouched_path = img_dir / "photo2.png"
+        source_sections = [{"name": "Scene", "sentences": ["bright"], "groups": []}]
+        client.post("/api/settings", json={
+            "folder": source_folder,
+            "sections": source_sections,
+        })
+        server._write_caption_file(moved_path, ["bright"], "kept free text", source_sections)
+        server._write_metadata_file(moved_path, {"seed": 123, "sampling_frequency": 0.5})
+        server._write_default_image_mask(moved_path)
+
+        with client.stream(
+            "POST",
+            "/api/media/move/stream",
+            json={
+                "source_folder": source_folder,
+                "target_folder": str(target_dir),
+                "image_paths": [moved_path],
+            },
+        ) as response:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        done = next(event for event in events if event.get("type") == "done")
+        target_path = target_dir / "photo1.jpg"
+        assert done["target_folder"] == str(target_dir)
+        assert target_path.exists()
+        assert not Path(moved_path).exists()
+        assert untouched_path.exists()
+        assert not (img_dir / "photo1.txt").exists()
+        assert (target_dir / "photo1.txt").exists()
+        assert not (img_dir / "photo1.jpg.meta.json").exists()
+        assert (target_dir / "photo1.jpg.meta.json").exists()
+        assert not (img_dir / "photo1.jpg.mask.png").exists()
+        assert (target_dir / "photo1.jpg.mask.png").exists()
+
+        target_settings = client.get("/api/settings", params={"folder": str(target_dir)}).json()
+        assert target_settings["sections"][0]["name"] == "Scene"
+        assert target_settings["sections"][0]["sentences"] == ["bright"]
+
+        parsed = server._read_caption_file(
+            str(target_path),
+            server._all_captions_from_sections(target_settings["sections"]),
+            server._all_headers_from_sections(target_settings["sections"]),
+        )
+        assert parsed["enabled_sentences"] == ["bright"]
+        assert parsed["free_text"] == "kept free text"
+
+    def test_move_selected_media_promotes_simple_target_caption_into_group(self, client, img_dir, tmp_path):
+        source_folder = str(img_dir)
+        target_dir = tmp_path / "target-group"
+        target_dir.mkdir()
+
+        source_path = str(img_dir / "photo1.jpg")
+        target_existing_path = target_dir / "target-existing.jpg"
+        Image.new("RGB", (100, 100), color="blue").save(target_existing_path)
+
+        source_sections = [{
+            "name": "## Cars",
+            "sentences": [],
+            "groups": [{"name": "Car", "sentences": ["Red Car", "Blue Car"]}],
+        }]
+        target_sections_before = [{
+            "name": "## Vehicle",
+            "sentences": ["Red Car"],
+            "groups": [],
+        }]
+        client.post("/api/settings", json={"folder": source_folder, "sections": source_sections})
+        client.post("/api/settings", json={"folder": str(target_dir), "sections": target_sections_before})
+
+        server._write_caption_file(source_path, ["Red Car"], "", source_sections)
+        server._write_caption_file(str(target_existing_path), ["Red Car"], "", target_sections_before)
+
+        with client.stream(
+            "POST",
+            "/api/media/move/stream",
+            json={
+                "source_folder": source_folder,
+                "target_folder": str(target_dir),
+                "image_paths": [source_path],
+            },
+        ) as response:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        assert any(event.get("type") == "config-updated" for event in events)
+
+        target_settings = client.get("/api/settings", params={"folder": str(target_dir)}).json()
+        vehicle_section = next(section for section in target_settings["sections"] if section["name"] == "## Vehicle")
+        cars_section = next(section for section in target_settings["sections"] if section["name"] == "## Cars")
+        assert vehicle_section["sentences"] == []
+        assert cars_section["groups"][0]["name"] == "Car"
+        assert cars_section["groups"][0]["sentences"] == ["Red Car", "Blue Car"]
+        assert all("Red Car" not in section["sentences"] for section in target_settings["sections"])
+
+        moved_caption_text = (target_dir / "photo1.txt").read_text(encoding="utf-8")
+        existing_caption_text = (target_dir / "target-existing.txt").read_text(encoding="utf-8")
+        assert "## Cars" in moved_caption_text
+        assert "## Cars" in existing_caption_text
+        assert "## Vehicle" not in existing_caption_text
+
+        all_captions = server._all_captions_from_sections(target_settings["sections"])
+        headers = server._all_headers_from_sections(target_settings["sections"])
+        moved_parsed = server._read_caption_file(str(target_dir / "photo1.jpg"), all_captions, headers)
+        existing_parsed = server._read_caption_file(str(target_existing_path), all_captions, headers)
+        assert moved_parsed["enabled_sentences"] == ["Red Car"]
+        assert existing_parsed["enabled_sentences"] == ["Red Car"]
+
+    def test_move_selected_media_rejects_target_name_conflicts(self, client, img_dir, tmp_path):
+        target_dir = tmp_path / "target-conflict"
+        target_dir.mkdir()
+        Image.new("RGB", (100, 100), color="green").save(target_dir / "photo1.jpg")
+
+        with client.stream(
+            "POST",
+            "/api/media/move/stream",
+            json={
+                "source_folder": str(img_dir),
+                "target_folder": str(target_dir),
+                "image_paths": [str(img_dir / "photo1.jpg")],
+            },
+        ) as response:
+            assert response.status_code == 400
+            data = response.json()
+
+        assert "Target already contains photo1.jpg" in data["detail"]
+        assert (img_dir / "photo1.jpg").exists()
+        assert (target_dir / "photo1.jpg").exists()
+
+    def test_move_selected_media_transfers_crop_state_and_backups(self, client, img_dir, tmp_path):
+        target_dir = tmp_path / "target-crop"
+        target_dir.mkdir()
+        source_path = str(img_dir / "photo1.jpg")
+        target_path = str(target_dir / "photo1.jpg")
+
+        crop_state = {"x": 5, "y": 7, "w": 50, "h": 60, "ratio": 1.25}
+        cfg = server._load_config()
+        cfg["image_crops"] = {server._normalize_image_key(source_path): crop_state}
+        server._save_config(cfg)
+
+        crop_backup_path = Path(server._get_crop_backup_path(source_path))
+        crop_backup_path.parent.mkdir(parents=True, exist_ok=True)
+        crop_backup_path.write_bytes(b"crop-backup")
+        crop_mask_backup_path = Path(server._get_crop_mask_backup_path(source_path))
+        crop_mask_backup_path.write_bytes(b"mask-backup")
+
+        with client.stream(
+            "POST",
+            "/api/media/move/stream",
+            json={
+                "source_folder": str(img_dir),
+                "target_folder": str(target_dir),
+                "image_paths": [source_path],
+            },
+        ) as response:
+            assert response.status_code == 200
+            events = [json.loads(line) for line in response.iter_lines() if line]
+
+        assert any(event.get("type") == "done" for event in events)
+        cfg_after = server._load_config()
+        source_key = server._normalize_image_key(source_path)
+        target_key = server._normalize_image_key(target_path)
+        assert source_key not in cfg_after.get("image_crops", {})
+        assert cfg_after["image_crops"][target_key] == crop_state
+        assert not crop_backup_path.exists()
+        assert not crop_mask_backup_path.exists()
+        assert Path(server._get_crop_backup_path(target_path)).exists()
+        assert Path(server._get_crop_mask_backup_path(target_path)).exists()
 
 
 class TestDuplicateImage:

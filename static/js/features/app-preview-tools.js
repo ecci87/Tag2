@@ -10,7 +10,7 @@ function renderGifConvertButton() {
     && !state.maskEditor.active;
   const hasVideoJobs = !!(state.videoJobs?.activeJob || state.videoJobs?.queuedJobs?.length);
   gifConvertBtn.classList.toggle("visible", visible);
-  gifConvertBtn.disabled = !visible || !!state.cropDraft || state.autoCaptioning || state.cloning || state.uploading || hasVideoJobs;
+  gifConvertBtn.disabled = !visible || !!state.cropDraft || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading || hasVideoJobs;
   gifConvertBtn.title = hasVideoJobs
     ? "Wait for queued video jobs to finish before converting this GIF"
     : "Convert this GIF into an MP4 beside the original GIF";
@@ -200,8 +200,10 @@ function renderCreatePromptPreviewButton() {
   const configError = getPromptPreviewConfigError({ requireWorkflow: true });
   const disabled = !selectionReady
     || state.duplicatingImage
+    || state.extractingFrame
     || state.autoCaptioning
     || state.cloning
+    || state.moving
     || state.uploading
     || state.promptPreview.loading
     || !!configError;
@@ -241,8 +243,10 @@ function renderPromptPreviewButton() {
   const configError = !latestPreviewPath ? getPromptPreviewConfigError({ requireWorkflow: false }) : "";
   const disabled = !visible
     || state.duplicatingImage
+    || state.extractingFrame
     || state.autoCaptioning
     || state.cloning
+    || state.moving
     || state.uploading
     || state.promptPreview.loading
     || (!!configError && !latestPreviewPath);

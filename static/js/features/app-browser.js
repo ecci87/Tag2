@@ -6,17 +6,40 @@ function normalizeFolderPathForCompare(value) {
     .toLowerCase();
 }
 
-function renderFolderAutocomplete() {
-  const autocomplete = state.folderAutocomplete;
+function getFolderAutocompleteBinding(kind = "main") {
+  if (kind === "move-target") {
+    return {
+      autocomplete: state.moveDialog.autocomplete,
+      input: moveTargetFolderInput,
+      list: moveTargetFolderSuggestions,
+      optionIdPrefix: "move-target-folder-option-",
+      onSelectionApplied: () => {
+        if (typeof setMoveDialogStatus === "function") {
+          setMoveDialogStatus("");
+        }
+      },
+    };
+  }
+
+  return {
+    autocomplete: state.folderAutocomplete,
+    input: folderInput,
+    list: folderSuggestionsList,
+    optionIdPrefix: "folder-suggestion-option-",
+  };
+}
+
+function renderFolderAutocompleteFor(kind = "main") {
+  const { autocomplete, input, list, optionIdPrefix } = getFolderAutocompleteBinding(kind);
   const items = Array.isArray(autocomplete.items) ? autocomplete.items : [];
   const visible = autocomplete.visible && items.length > 0;
 
-  folderSuggestionsList.replaceChildren();
+  list.replaceChildren();
 
   if (visible) {
     items.forEach((item, index) => {
       const option = document.createElement("div");
-      option.id = `folder-suggestion-option-${index}`;
+      option.id = `${optionIdPrefix}${index}`;
       option.className = "folder-suggestion";
       if (index === autocomplete.highlightedIndex) {
         option.classList.add("active");
@@ -40,43 +63,44 @@ function renderFolderAutocomplete() {
         event.preventDefault();
       });
       option.addEventListener("mouseenter", () => {
-        if (state.folderAutocomplete.highlightedIndex === index) return;
-        state.folderAutocomplete.highlightedIndex = index;
-        renderFolderAutocomplete();
+        if (autocomplete.highlightedIndex === index) return;
+        autocomplete.highlightedIndex = index;
+        renderFolderAutocompleteFor(kind);
       });
       option.addEventListener("click", () => {
-        applyFolderAutocompleteSelection(index);
+        applyFolderAutocompleteSelectionFor(kind, index);
       });
 
-      folderSuggestionsList.appendChild(option);
+      list.appendChild(option);
     });
   }
 
-  folderSuggestionsList.hidden = !visible;
-  folderSuggestionsList.classList.toggle("open", visible);
-  folderInput.setAttribute("aria-expanded", String(visible));
+  list.hidden = !visible;
+  list.classList.toggle("open", visible);
+  input.setAttribute("aria-expanded", String(visible));
 
   if (!visible || autocomplete.highlightedIndex < 0 || autocomplete.highlightedIndex >= items.length) {
-    folderInput.removeAttribute("aria-activedescendant");
+    input.removeAttribute("aria-activedescendant");
     return;
   }
 
-  const activeOptionId = `folder-suggestion-option-${autocomplete.highlightedIndex}`;
-  folderInput.setAttribute("aria-activedescendant", activeOptionId);
+  const activeOptionId = `${optionIdPrefix}${autocomplete.highlightedIndex}`;
+  input.setAttribute("aria-activedescendant", activeOptionId);
   const activeOption = document.getElementById(activeOptionId);
   if (activeOption) {
     activeOption.scrollIntoView({ block: "nearest" });
   }
 }
 
-function hideFolderAutocomplete() {
-  state.folderAutocomplete.visible = false;
-  renderFolderAutocomplete();
+function hideFolderAutocompleteFor(kind = "main") {
+  const { autocomplete } = getFolderAutocompleteBinding(kind);
+  autocomplete.visible = false;
+  renderFolderAutocompleteFor(kind);
 }
 
-function clearFolderAutocomplete(options = {}) {
+function clearFolderAutocompleteFor(kind = "main", options = {}) {
   const { cancelPending = false } = options;
-  const autocomplete = state.folderAutocomplete;
+  const { autocomplete } = getFolderAutocompleteBinding(kind);
   if (cancelPending) {
     if (autocomplete.debounceTimer) {
       window.clearTimeout(autocomplete.debounceTimer);
@@ -90,22 +114,22 @@ function clearFolderAutocomplete(options = {}) {
   autocomplete.items = [];
   autocomplete.highlightedIndex = -1;
   autocomplete.visible = false;
-  renderFolderAutocomplete();
+  renderFolderAutocompleteFor(kind);
 }
 
-function setFolderAutocompleteItems(items) {
-  const autocomplete = state.folderAutocomplete;
+function setFolderAutocompleteItemsFor(kind = "main", items) {
+  const { autocomplete, input } = getFolderAutocompleteBinding(kind);
   const normalizedItems = Array.isArray(items) ? items.filter(item => item?.path) : [];
-  const normalizedInputValue = normalizeFolderPathForCompare(folderInput.value);
+  const normalizedInputValue = normalizeFolderPathForCompare(input.value);
   const exactIndex = normalizedItems.findIndex((item) => normalizeFolderPathForCompare(item.path) === normalizedInputValue);
   autocomplete.items = normalizedItems;
   autocomplete.highlightedIndex = normalizedItems.length === 0 ? -1 : Math.max(0, exactIndex);
   autocomplete.visible = normalizedItems.length > 0;
-  renderFolderAutocomplete();
+  renderFolderAutocompleteFor(kind);
 }
 
-function moveFolderAutocompleteHighlight(delta) {
-  const autocomplete = state.folderAutocomplete;
+function moveFolderAutocompleteHighlightFor(kind = "main", delta) {
+  const { autocomplete } = getFolderAutocompleteBinding(kind);
   const items = autocomplete.items || [];
   if (!items.length) return false;
 
@@ -118,27 +142,30 @@ function moveFolderAutocompleteHighlight(delta) {
 
   autocomplete.highlightedIndex = nextIndex;
   autocomplete.visible = true;
-  renderFolderAutocomplete();
+  renderFolderAutocompleteFor(kind);
   return true;
 }
 
-function applyFolderAutocompleteSelection(index) {
-  const item = state.folderAutocomplete.items[index];
+function applyFolderAutocompleteSelectionFor(kind = "main", index) {
+  const { autocomplete, input, onSelectionApplied } = getFolderAutocompleteBinding(kind);
+  const item = autocomplete.items[index];
   if (!item?.path) return false;
-  folderInput.value = item.path;
-  hideFolderAutocomplete();
-  folderInput.focus();
+  input.value = item.path;
+  hideFolderAutocompleteFor(kind);
+  input.focus();
+  onSelectionApplied?.(item);
   return true;
 }
 
-async function fetchFolderAutocompleteSuggestions(query) {
-  const trimmedQuery = String(query || "").trim();
+async function fetchFolderAutocompleteSuggestionsFor(kind = "main", query) {
+  const { autocomplete, input } = getFolderAutocompleteBinding(kind);
+  const effectiveQuery = query ?? input.value ?? "";
+  const trimmedQuery = String(effectiveQuery).trim();
   if (!trimmedQuery) {
-    clearFolderAutocomplete({ cancelPending: true });
+    clearFolderAutocompleteFor(kind, { cancelPending: true });
     return;
   }
 
-  const autocomplete = state.folderAutocomplete;
   if (autocomplete.abortController) {
     autocomplete.abortController.abort();
     autocomplete.abortController = null;
@@ -155,14 +182,14 @@ async function fetchFolderAutocompleteSuggestions(query) {
     const data = await resp.json().catch(() => ({}));
     if (requestSeq !== autocomplete.requestSeq) return;
     if (!resp.ok) {
-      clearFolderAutocomplete();
+      clearFolderAutocompleteFor(kind);
       return;
     }
-    setFolderAutocompleteItems(data.suggestions || []);
+    setFolderAutocompleteItemsFor(kind, data.suggestions || []);
   } catch (err) {
     if (err?.name === "AbortError") return;
     if (requestSeq !== autocomplete.requestSeq) return;
-    clearFolderAutocomplete();
+    clearFolderAutocompleteFor(kind);
   } finally {
     if (autocomplete.abortController === controller) {
       autocomplete.abortController = null;
@@ -170,9 +197,9 @@ async function fetchFolderAutocompleteSuggestions(query) {
   }
 }
 
-function scheduleFolderAutocompleteRefresh(options = {}) {
+function scheduleFolderAutocompleteRefreshFor(kind = "main", options = {}) {
   const { immediate = false } = options;
-  const autocomplete = state.folderAutocomplete;
+  const { autocomplete, input } = getFolderAutocompleteBinding(kind);
   if (autocomplete.debounceTimer) {
     window.clearTimeout(autocomplete.debounceTimer);
     autocomplete.debounceTimer = 0;
@@ -180,56 +207,60 @@ function scheduleFolderAutocompleteRefresh(options = {}) {
 
   autocomplete.debounceTimer = window.setTimeout(() => {
     autocomplete.debounceTimer = 0;
-    fetchFolderAutocompleteSuggestions(folderInput.value);
+    fetchFolderAutocompleteSuggestionsFor(kind, input.value);
   }, immediate ? 0 : 120);
 }
 
-function handleFolderInputInput() {
-  scheduleFolderAutocompleteRefresh();
+function handleFolderAutocompleteInputFor(kind = "main") {
+  scheduleFolderAutocompleteRefreshFor(kind);
 }
 
-function handleFolderInputFocus() {
-  if (!folderInput.value.trim()) {
-    clearFolderAutocomplete({ cancelPending: true });
+function handleFolderAutocompleteFocusFor(kind = "main") {
+  const { input } = getFolderAutocompleteBinding(kind);
+  if (!input.value.trim()) {
+    clearFolderAutocompleteFor(kind, { cancelPending: true });
     return;
   }
-  scheduleFolderAutocompleteRefresh({ immediate: true });
+  scheduleFolderAutocompleteRefreshFor(kind, { immediate: true });
 }
 
-function handleFolderInputBlur() {
+function handleFolderAutocompleteBlurFor(kind = "main") {
+  const { input } = getFolderAutocompleteBinding(kind);
   window.setTimeout(() => {
-    if (document.activeElement === folderInput) return;
-    hideFolderAutocomplete();
+    if (document.activeElement === input) return;
+    hideFolderAutocompleteFor(kind);
   }, 120);
 }
 
-function handleFolderInputKeydown(event) {
+function handleFolderAutocompleteKeydownFor(kind = "main", event, onEnter) {
+  const { autocomplete, input } = getFolderAutocompleteBinding(kind);
+
   if (event.key === "ArrowDown") {
-    if (moveFolderAutocompleteHighlight(1)) {
+    if (moveFolderAutocompleteHighlightFor(kind, 1)) {
       event.preventDefault();
     }
     return;
   }
 
   if (event.key === "ArrowUp") {
-    if (moveFolderAutocompleteHighlight(-1)) {
+    if (moveFolderAutocompleteHighlightFor(kind, -1)) {
       event.preventDefault();
     }
     return;
   }
 
   if (event.key === "Escape") {
-    if (state.folderAutocomplete.visible) {
+    if (autocomplete.visible) {
       event.preventDefault();
-      hideFolderAutocomplete();
+      hideFolderAutocompleteFor(kind);
     }
     return;
   }
 
   if (event.key === "Tab") {
-    const highlightedItem = state.folderAutocomplete.items[state.folderAutocomplete.highlightedIndex];
-    if (state.folderAutocomplete.visible && highlightedItem) {
-      applyFolderAutocompleteSelection(state.folderAutocomplete.highlightedIndex);
+    const highlightedItem = autocomplete.items[autocomplete.highlightedIndex];
+    if (autocomplete.visible && highlightedItem) {
+      applyFolderAutocompleteSelectionFor(kind, autocomplete.highlightedIndex);
     }
     return;
   }
@@ -237,18 +268,70 @@ function handleFolderInputKeydown(event) {
   if (event.key !== "Enter") return;
 
   event.preventDefault();
-  const highlightedItem = state.folderAutocomplete.items[state.folderAutocomplete.highlightedIndex];
-  if (state.folderAutocomplete.visible && highlightedItem) {
-    const currentValue = normalizeFolderPathForCompare(folderInput.value);
+  const highlightedItem = autocomplete.items[autocomplete.highlightedIndex];
+  if (autocomplete.visible && highlightedItem) {
+    const currentValue = normalizeFolderPathForCompare(input.value);
     const highlightedValue = normalizeFolderPathForCompare(highlightedItem.path);
     if (currentValue !== highlightedValue) {
-      applyFolderAutocompleteSelection(state.folderAutocomplete.highlightedIndex);
+      applyFolderAutocompleteSelectionFor(kind, autocomplete.highlightedIndex);
       return;
     }
   }
 
-  clearFolderAutocomplete({ cancelPending: true });
-  loadFolder();
+  clearFolderAutocompleteFor(kind, { cancelPending: true });
+  if (typeof onEnter === "function") {
+    onEnter();
+  }
+}
+
+function renderFolderAutocomplete() {
+  renderFolderAutocompleteFor("main");
+}
+
+function hideFolderAutocomplete() {
+  hideFolderAutocompleteFor("main");
+}
+
+function clearFolderAutocomplete(options = {}) {
+  clearFolderAutocompleteFor("main", options);
+}
+
+function setFolderAutocompleteItems(items) {
+  setFolderAutocompleteItemsFor("main", items);
+}
+
+function moveFolderAutocompleteHighlight(delta) {
+  return moveFolderAutocompleteHighlightFor("main", delta);
+}
+
+function applyFolderAutocompleteSelection(index) {
+  return applyFolderAutocompleteSelectionFor("main", index);
+}
+
+async function fetchFolderAutocompleteSuggestions(query) {
+  await fetchFolderAutocompleteSuggestionsFor("main", query);
+}
+
+function scheduleFolderAutocompleteRefresh(options = {}) {
+  scheduleFolderAutocompleteRefreshFor("main", options);
+}
+
+function handleFolderInputInput() {
+  handleFolderAutocompleteInputFor("main");
+}
+
+function handleFolderInputFocus() {
+  handleFolderAutocompleteFocusFor("main");
+}
+
+function handleFolderInputBlur() {
+  handleFolderAutocompleteBlurFor("main");
+}
+
+function handleFolderInputKeydown(event) {
+  handleFolderAutocompleteKeydownFor("main", event, () => {
+    loadFolder();
+  });
 }
 
 // ===== FOLDER LOADING =====
