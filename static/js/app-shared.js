@@ -19,6 +19,7 @@ const state = {
     maskState: "any",
     captionState: "any",
   },
+  mediaSearchQuery: "",
   filterCaptionCacheKey: "",
   filterLoadingPromise: null,
   previewPath: null,
@@ -265,6 +266,7 @@ const filterArBtn = $("#filter-ar-btn");
 const filterMaskBtn = $("#filter-mask-btn");
 const filterTxtBtn = $("#filter-txt-btn");
 const clearFiltersBtn = $("#clear-filters-btn");
+const mediaSearchInput = $("#media-search-input");
 const fileGrid = $("#file-grid");
 const fileGridContainer = $("#file-grid-container");
 const centerPanel = $("#center-panel");
@@ -336,6 +338,8 @@ const maskResetBtn = $("#mask-reset-btn");
 const rotateControls = $("#rotate-controls");
 const rotateLeftBtn = $("#rotate-left-btn");
 const rotateRightBtn = $("#rotate-right-btn");
+const flipHorizontalBtn = $("#flip-horizontal-btn");
+const flipVerticalBtn = $("#flip-vertical-btn");
 const videoEditPanel = $("#video-edit-panel");
 const videoTrainingProfileLabel = $("#video-training-profile-label");
 const videoTrainingGuidanceLabel = $("#video-training-guidance-label");

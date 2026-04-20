@@ -597,6 +597,7 @@
   bottom: 16px;
   display: none;
   gap: 8px;
+  flex-wrap: wrap;
   pointer-events: auto;
   z-index: 5;
 }
@@ -971,6 +972,14 @@
     max-height: calc(100vh - 48px);
     overflow: hidden;
   }
+  .preview-caption-chip {
+    display: inline-flex;
+    align-items: flex-start;
+    gap: 4px;
+    width: 100%;
+    margin: 0 0 2px;
+    break-inside: avoid;
+  }
   .preview-caption-link {
     display: block;
     width: 100%;
@@ -985,7 +994,6 @@
     cursor: pointer;
     text-shadow: 0 1px 3px rgba(0,0,0,0.9);
     transition: color 0.12s ease, opacity 0.12s ease;
-    break-inside: avoid;
   }
   .preview-caption-link:hover {
     color: var(--accent);
@@ -994,6 +1002,30 @@
   .preview-caption-link:focus-visible {
     outline: 2px solid rgba(137,180,250,0.55);
     outline-offset: 2px;
+  }
+  .preview-caption-remove-btn {
+    min-width: 12px;
+    width: 12px;
+    height: 12px;
+    margin-top: 1px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: rgba(255,255,255,0.6);
+    cursor: pointer;
+    font-size: 9px;
+    line-height: 1;
+    font-weight: 700;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    transition: color 0.12s ease, transform 0.12s ease;
+  }
+  .preview-caption-remove-btn:hover {
+    color: #f38ba8;
+    transform: scale(1.06);
+  }
+  .preview-caption-remove-btn:focus-visible {
+    outline: 2px solid rgba(243,139,168,0.5);
+    outline-offset: 1px;
   }
 
 /* RIGHT RESIZE */

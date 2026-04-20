@@ -811,14 +811,36 @@ async function rotatePreviewImage(direction) {
     bumpImageVersion(path);
     invalidateImageCaches(path);
     renderGrid();
-    userHasZoomed = false;
-    zoomLevel = 1;
-    panX = 0;
-    panY = 0;
-    await showPreview(path);
+    await showPreview(path, { preserveView: true });
     statusBar.textContent = direction === "left" ? "Rotated left" : "Rotated right";
   } catch (err) {
     statusBar.textContent = `Rotate error: ${err.message}`;
+  }
+}
+
+async function flipPreviewImage(axis) {
+  if (!state.previewPath) return;
+  const path = state.previewPath;
+  const horizontal = axis === "horizontal";
+  statusBar.textContent = horizontal ? "Flipping horizontally..." : "Flipping vertically...";
+  try {
+    const resp = await fetch("/api/flip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_path: path, axis }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "Failed to flip image");
+    state.imageCrops[path] = data.crop || null;
+    updateImageDimensions(path, data.crop);
+    clearCropDraft();
+    bumpImageVersion(path);
+    invalidateImageCaches(path);
+    renderGrid();
+    await showPreview(path, { preserveView: true });
+    statusBar.textContent = horizontal ? "Flipped horizontally" : "Flipped vertically";
+  } catch (err) {
+    statusBar.textContent = `Flip error: ${err.message}`;
   }
 }
 

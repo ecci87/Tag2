@@ -399,6 +399,7 @@ def _auto_caption_sections(
     image_path: str,
     sections: list[dict],
     *,
+    initial_enabled_captions: list[str] | None = None,
     encode_image_func,
     generate_func,
     prompt_template: str,
@@ -408,12 +409,23 @@ def _auto_caption_sections(
 ) -> tuple[list[str], list[dict]]:
     """Ask Ollama about configured captions, including exclusive groups."""
     image_payload = _normalize_ollama_images(encode_image_func(image_path))
-    enabled: list[str] = []
+    enabled: list[str] = list(initial_enabled_captions or [])
     results: list[dict] = []
 
     for target in _iter_caption_targets(sections):
         if target["type"] == "caption":
             caption = target["caption"]
+            if target.get("skip_auto_caption"):
+                results.append({
+                    "type": "sentence",
+                    "caption": caption,
+                    "sentence": caption,
+                    "enabled": caption in enabled,
+                    "skipped": True,
+                    "skip_reason": target.get("skip_reason", ""),
+                    "answer": "",
+                })
+                continue
             payload = _build_ollama_generate_payload(
                 model,
                 _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), image_path),
@@ -435,6 +447,24 @@ def _auto_caption_sections(
             continue
 
         group_captions = target["captions"]
+        if target.get("skip_auto_caption"):
+            selected_caption = next((caption for caption in group_captions if caption in enabled), None)
+            selected_hidden = bool(selected_caption and _is_hidden_group_caption(sections, selected_caption))
+            results.append({
+                "type": "group",
+                "group_name": target.get("group_name", ""),
+                "captions": group_captions,
+                "sentences": list(group_captions),
+                "selected_caption": selected_caption,
+                "selected_sentence": selected_caption,
+                "selected_hidden": selected_hidden,
+                "selection_index": group_captions.index(selected_caption) + 1 if selected_caption in group_captions else None,
+                "skipped": True,
+                "skip_reason": target.get("skip_reason", ""),
+                "skip_captions": list(target.get("skip_captions") or target.get("skip_sentences") or []),
+                "answer": "",
+            })
+            continue
         payload = _build_ollama_generate_payload(
             model,
             _apply_media_prompt_context(

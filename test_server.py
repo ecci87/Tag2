@@ -120,6 +120,28 @@ class TestGetFolderSections:
         assert len(result) == 1
         assert result[0]["sentences"] == ["old1", "old2"]
 
+    def test_preserves_auto_caption_skip_flags(self):
+        sections = [{
+            "name": "Main",
+            "sentences": ["bright", "dark"],
+            "skip_auto_caption": True,
+            "skip_sentences": ["dark", "missing"],
+            "groups": [{
+                "name": "Car",
+                "sentences": ["red", "blue"],
+                "skip_auto_caption": True,
+                "skip_sentences": ["blue", "ghost"],
+            }],
+        }]
+        cfg = {"folders": {os.path.normpath("/pics"): {"sections": sections}}}
+
+        result = server._get_folder_sections(cfg, "/pics")
+
+        assert result[0]["skip_auto_caption"] is True
+        assert result[0]["skip_sentences"] == ["dark"]
+        assert result[0]["groups"][0]["skip_auto_caption"] is True
+        assert result[0]["groups"][0]["skip_sentences"] == ["blue"]
+
 
 class TestSetFolderSections:
     def test_set_new_folder(self):
@@ -1832,6 +1854,54 @@ class TestSettingsAPI:
         assert data["sections"][0]["sentences"] == ["bright"]
         assert data["sections"][1]["groups"][0]["hidden_sentences"] == ["not visible"]
 
+    def test_save_sections_rewrites_caption_files_for_schema_changes(self, client, tmp_path):
+        folder = tmp_path / "rewrite_sections"
+        folder.mkdir(parents=True, exist_ok=True)
+        image_path = folder / "photo1.jpg"
+        Image.new("RGB", (12, 12), color=(128, 128, 128)).save(image_path)
+
+        sections_before = [{
+            "name": "",
+            "sentences": [],
+            "groups": [
+                {"name": "Color", "sentences": ["Red", "Blue"]},
+                {"name": "Size", "sentences": ["Big", "Small"]},
+            ],
+        }]
+        sections_after = [{
+            "name": "",
+            "sentences": [],
+            "groups": [
+                {"name": "Color", "sentences": ["Blue"]},
+                {"name": "Size", "sentences": ["Big", "Small", "Red"]},
+            ],
+        }]
+
+        client.post("/api/settings", json={
+            "folder": str(folder),
+            "sections": sections_before,
+        })
+        server._write_caption_file(str(image_path), ["Red", "Big"], "", sections_before)
+
+        resp = client.post("/api/settings", json={
+            "folder": str(folder),
+            "sections": sections_after,
+        })
+
+        assert resp.status_code == 200
+        assert resp.json()["sections"][0]["groups"][1]["sentences"] == ["Big", "Small", "Red"]
+
+        caption_text = image_path.with_suffix(".txt").read_text(encoding="utf-8")
+        assert "Big" in caption_text
+        assert "Red" not in caption_text
+
+        parsed = server._read_caption_file(
+            str(image_path),
+            server._all_captions_from_sections(sections_after),
+            server._all_headers_from_sections(sections_after),
+        )
+        assert parsed["enabled_sentences"] == ["Big"]
+
     def test_save_and_load_video_training_presets_and_folder_profile(self, client, tmp_path):
         folder = str(tmp_path / "video_folder")
         os.makedirs(folder, exist_ok=True)
@@ -1967,6 +2037,12 @@ class TestComfyUiPromptPreview:
         files = server._scan_comfyui_preview_files(str(output_dir), str(tmp_path / "ABC.jpg"))
 
         assert [Path(path).name for path in files] == ["ABC_00001_.png"]
+
+    def test_matches_comfyui_preview_filename_requires_numbered_suffix(self):
+        assert server._matches_comfyui_preview_filename("image_00001_", "image") is True
+        assert server._matches_comfyui_preview_filename("image__tag2__123456_00001_", "image__tag2__123456") is True
+        assert server._matches_comfyui_preview_filename("image_something_00001_", "image") is False
+        assert server._matches_comfyui_preview_filename("image_something", "image") is False
 
     def test_scan_comfyui_preview_files_sorts_by_filename_number(self, tmp_path):
         output_dir = tmp_path / "output"
@@ -2319,6 +2395,49 @@ class TestOllamaHelpers:
         assert results[0]["selected_sentence"] == "Chair not in frame"
         assert results[0]["selected_hidden"] is True
 
+    def test_auto_caption_sections_skips_configured_targets(self, single_image, monkeypatch):
+        called_prompts = []
+
+        def fake_generate(host, payload, timeout=120):
+            called_prompts.append(payload["prompt"])
+            return {"response": "NO"}
+
+        monkeypatch.setattr(server, "_encode_media_for_ollama", lambda path, **kwargs: ["image-bytes"])
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+        sections = [{
+            "name": "Main",
+            "sentences": ["Moon"],
+            "skip_sentences": ["Moon"],
+            "groups": [{
+                "name": "Car",
+                "sentences": ["Red Car", "Blue Car"],
+                "skip_auto_caption": True,
+            }],
+        }]
+
+        enabled, results = server._auto_caption_sections(
+            "http://127.0.0.1:11434",
+            "llava",
+            single_image,
+            sections,
+            initial_enabled_captions=["Moon", "Blue Car"],
+            encode_image_func=server._encode_media_for_ollama,
+            generate_func=server._ollama_generate,
+            prompt_template="Caption: {caption}",
+            group_prompt_template="Group: {group_name}\n{options}",
+            timeout=15,
+            max_output_tokens=11,
+        )
+
+        assert called_prompts == []
+        assert enabled == ["Moon", "Blue Car"]
+        assert results[0]["skipped"] is True
+        assert results[0]["enabled"] is True
+        assert results[0]["skip_reason"] == "caption"
+        assert results[1]["skipped"] is True
+        assert results[1]["selected_sentence"] == "Blue Car"
+        assert results[1]["skip_reason"] == "group"
+
     def test_suggest_free_text(self, single_image, monkeypatch):
         def fake_generate(host, payload, timeout=120):
             assert timeout == 9
@@ -2454,6 +2573,20 @@ class TestCropAPI:
 
         with Image.open(image_path) as img:
             assert img.size == (80, 120)
+
+    def test_flip_image_horizontal(self, client, tmp_path):
+        image_path = str(tmp_path / "flip.png")
+        image = Image.new("RGB", (2, 1))
+        image.putpixel((0, 0), (255, 0, 0))
+        image.putpixel((1, 0), (0, 0, 255))
+        image.save(image_path)
+
+        resp = client.post("/api/flip", json={"image_path": image_path, "axis": "horizontal"})
+
+        assert resp.status_code == 200
+        with Image.open(image_path) as flipped:
+            assert flipped.getpixel((0, 0)) == (0, 0, 255)
+            assert flipped.getpixel((1, 0)) == (255, 0, 0)
 
 
 class TestMaskAPI:

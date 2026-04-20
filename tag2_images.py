@@ -718,6 +718,35 @@ def _rotate_mask_file(filepath: str, clockwise: bool):
         normalized_mask.close()
 
 
+def _flip_image_file(filepath: str, horizontal: bool):
+    """Flip an image file while preserving metadata."""
+    image, original_format, exif_bytes, icc_profile = _load_oriented_image(filepath)
+    try:
+        flipped = image.transpose(
+            Image.Transpose.FLIP_LEFT_RIGHT if horizontal else Image.Transpose.FLIP_TOP_BOTTOM
+        )
+        _save_image_file(filepath, flipped, original_format, exif_bytes, icc_profile)
+    finally:
+        image.close()
+
+
+def _flip_mask_file(filepath: str, horizontal: bool):
+    """Flip a grayscale mask file horizontally or vertically."""
+    with Image.open(filepath) as mask_image:
+        normalized_mask = ImageOps.exif_transpose(mask_image).convert("L")
+        normalized_mask.load()
+    try:
+        flipped_mask = normalized_mask.transpose(
+            Image.Transpose.FLIP_LEFT_RIGHT if horizontal else Image.Transpose.FLIP_TOP_BOTTOM
+        )
+        try:
+            flipped_mask.save(filepath, format="PNG")
+        finally:
+            flipped_mask.close()
+    finally:
+        normalized_mask.close()
+
+
 def _rotate_image(image_path: str, direction: str) -> dict:
     """Rotate the actual image file and any active crop backup by 90 degrees."""
     normalized_direction = str(direction or "").strip().lower()
@@ -738,6 +767,31 @@ def _rotate_image(image_path: str, direction: str) -> dict:
     mask_backup_path = _get_crop_mask_backup_path(image_path)
     if os.path.isfile(mask_backup_path):
         _rotate_mask_file(mask_backup_path, clockwise)
+
+    _clear_thumbnail_cache_for_path(image_path)
+    return _get_image_crop(image_path)
+
+
+def _flip_image(image_path: str, axis: str) -> dict:
+    """Flip the actual image file and any active crop backup."""
+    normalized_axis = str(axis or "").strip().lower()
+    if normalized_axis not in {"horizontal", "vertical"}:
+        raise ValueError("axis must be 'horizontal' or 'vertical'")
+
+    horizontal = normalized_axis == "horizontal"
+    _flip_image_file(image_path, horizontal)
+
+    mask_path = _get_image_mask_path(image_path)
+    if mask_path.is_file():
+        _flip_mask_file(str(mask_path), horizontal)
+
+    backup_path = _get_crop_backup_path(image_path)
+    if os.path.isfile(backup_path):
+        _flip_image_file(backup_path, horizontal)
+
+    mask_backup_path = _get_crop_mask_backup_path(image_path)
+    if os.path.isfile(mask_backup_path):
+        _flip_mask_file(mask_backup_path, horizontal)
 
     _clear_thumbnail_cache_for_path(image_path)
     return _get_image_crop(image_path)

@@ -352,6 +352,7 @@ async function loadFolder(options = {}) {
   state.activeMetaFilters.aspectState = "any";
   state.activeMetaFilters.maskState = "any";
   state.activeMetaFilters.captionState = "any";
+  state.mediaSearchQuery = "";
   state.filterCaptionCacheKey = "";
   state.filterLoadingPromise = null;
   state.imageCrops = {};
@@ -377,6 +378,9 @@ async function loadFolder(options = {}) {
       })
     );
     folderInput.value = data.folder;
+    if (mediaSearchInput) {
+      mediaSearchInput.value = "";
+    }
     updateFileCountDisplay();
     statusBar.textContent = `Loaded ${state.images.length} media files`;
 
@@ -1626,6 +1630,12 @@ cropCancelBtn.addEventListener("click", cancelCropEdit);
 cropRemoveBtn.addEventListener("click", removeCrop);
 rotateLeftBtn.addEventListener("click", () => rotatePreviewImage("left"));
 rotateRightBtn.addEventListener("click", () => rotatePreviewImage("right"));
+if (flipHorizontalBtn) {
+  flipHorizontalBtn.addEventListener("click", () => flipPreviewImage("horizontal"));
+}
+if (flipVerticalBtn) {
+  flipVerticalBtn.addEventListener("click", () => flipPreviewImage("vertical"));
+}
 previewVideo.addEventListener("click", (e) => {
   if (state.previewMediaType !== "video" || !state.previewPath) return;
   if (state.ui.suppressVideoClick) {

@@ -176,6 +176,13 @@ function getDragPayload(event, type) {
   }
 }
 
+function clearCaptionDragIndicators() {
+  document.querySelectorAll(".section-sentences li.drag-over").forEach(item => item.classList.remove("drag-over"));
+  document.querySelectorAll(".section-sentences.drag-over-end").forEach(list => list.classList.remove("drag-over-end"));
+  document.querySelectorAll(".group-header.drag-over").forEach(header => header.classList.remove("drag-over"));
+  document.querySelectorAll(".section-sentences > li.group-item-wrap.drag-over").forEach(item => item.classList.remove("drag-over"));
+}
+
 function normalizeGroupIndex(groupIdx) {
   return Number.isInteger(groupIdx) && groupIdx >= 0 ? groupIdx : null;
 }
@@ -204,8 +211,26 @@ function moveSentenceWithinContainer(secIdx, groupIdx, fromIdx, toIdx) {
   renderSentences();
 }
 
-function createTopLevelSentenceDragRef(sentence) {
-  return { type: "sentence", sentence };
+function moveSentenceWithinContainerBefore(secIdx, groupIdx, fromIdx, beforeIdx) {
+  const sentences = getSentenceContainer(secIdx, groupIdx);
+  if (!Array.isArray(sentences) || sentences.length === 0) return;
+  const clampedBeforeIdx = Math.max(0, Math.min(sentences.length, Number.isInteger(beforeIdx) ? beforeIdx : sentences.length));
+  let targetIdx = clampedBeforeIdx;
+  if (fromIdx < targetIdx) {
+    targetIdx -= 1;
+  }
+  targetIdx = Math.max(0, Math.min(sentences.length - 1, targetIdx));
+  if (fromIdx === targetIdx) return;
+  moveSentenceWithinContainer(secIdx, groupIdx, fromIdx, targetIdx);
+}
+
+function createTopLevelSentenceDragRef(sentence, secIdx = null, groupIdx = null) {
+  return {
+    type: "sentence",
+    sentence,
+    sourceSecIdx: Number.isInteger(secIdx) ? secIdx : -1,
+    sourceGroupIdx: Number.isInteger(groupIdx) ? groupIdx : -1,
+  };
 }
 
 function createTopLevelGroupDragRef(groupId) {
@@ -217,6 +242,201 @@ function isValidTopLevelDragRef(ref) {
     (ref.type === "sentence" && !!ref.sentence) ||
     (ref.type === "group" && !!ref.group_id)
   );
+}
+
+function isSentenceSectionItemRef(ref) {
+  return !!ref && typeof ref === "object" && ref.type === "sentence" && !!ref.sentence;
+}
+
+function getSentenceSectionItemSource(ref) {
+  if (!isSentenceSectionItemRef(ref)) return null;
+  const sourceSecIdx = Number.parseInt(ref.sourceSecIdx, 10);
+  if (!Number.isInteger(sourceSecIdx) || sourceSecIdx < 0) return null;
+  const rawGroupIdx = Number.parseInt(ref.sourceGroupIdx, 10);
+  return {
+    secIdx: sourceSecIdx,
+    groupIdx: normalizeGroupIndex(rawGroupIdx),
+    sentence: ref.sentence,
+  };
+}
+
+function isSameSentenceContainer(ref, secIdx, groupIdx) {
+  const source = getSentenceSectionItemSource(ref);
+  if (!source) return false;
+  return source.secIdx === secIdx && source.groupIdx === normalizeGroupIndex(groupIdx);
+}
+
+function isSameSentenceLocation(ref, secIdx, groupIdx, sentence) {
+  const source = getSentenceSectionItemSource(ref);
+  if (!source) return false;
+  return source.secIdx === secIdx && source.groupIdx === normalizeGroupIndex(groupIdx) && source.sentence === sentence;
+}
+
+function removeSentenceOrderItem(section, sentence) {
+  section.item_order = (section.item_order || []).filter((item) => !(
+    item
+    && (item.type === "sentence" || item.type === "caption")
+    && (item.sentence || item.caption) === sentence
+  ));
+}
+
+function insertSentenceOrderItem(section, sentence, beforeRef = null) {
+  const nextOrder = [...(section.item_order || [])];
+  const newItem = createSentenceOrderItem(sentence);
+  const beforeKey = beforeRef ? getSectionOrderItemKey(beforeRef) : "";
+  const insertIndex = beforeKey
+    ? nextOrder.findIndex(item => getSectionOrderItemKey(item) === beforeKey)
+    : -1;
+  if (insertIndex >= 0) {
+    nextOrder.splice(insertIndex, 0, newItem);
+  } else {
+    nextOrder.push(newItem);
+  }
+  section.item_order = nextOrder;
+}
+
+function extractSentenceFromSectionLocation(secIdx, groupIdx, sentence) {
+  const section = state.sections[secIdx];
+  const normalizedGroupIdx = normalizeGroupIndex(groupIdx);
+  const owner = normalizedGroupIdx === null ? section : section?.groups?.[normalizedGroupIdx];
+  const sentences = owner?.sentences || [];
+  const sourceIndex = sentences.indexOf(sentence);
+  if (!section || !owner || sourceIndex < 0) return null;
+
+  const preserveSkip = (owner.skip_sentences || []).includes(sentence);
+  const preserveHidden = normalizedGroupIdx !== null && (owner.hidden_sentences || []).includes(sentence);
+
+  sentences.splice(sourceIndex, 1);
+  owner.skip_sentences = sentences.filter(item => (owner.skip_sentences || []).includes(item));
+
+  if (normalizedGroupIdx === null) {
+    removeSentenceOrderItem(section, sentence);
+  } else {
+    owner.hidden_sentences = sentences.filter(item => (owner.hidden_sentences || []).includes(item));
+  }
+
+  return { preserveSkip, preserveHidden };
+}
+
+function insertSentenceIntoTopLevelSection(secIdx, sentence, beforeRef = null, options = {}) {
+  const { preserveSkip = false } = options;
+  const section = state.sections[secIdx];
+  if (!section) return false;
+  if (!(section.sentences || []).includes(sentence)) {
+    section.sentences.push(sentence);
+  }
+  removeSentenceOrderItem(section, sentence);
+  insertSentenceOrderItem(section, sentence, beforeRef);
+  if (preserveSkip) {
+    const skipped = new Set(section.skip_sentences || []);
+    skipped.add(sentence);
+    section.skip_sentences = (section.sentences || []).filter(item => skipped.has(item));
+  }
+  return true;
+}
+
+function insertSentenceIntoGroup(secIdx, groupIdx, sentence, targetIdx = null, options = {}) {
+  const { preserveSkip = false, preserveHidden = false } = options;
+  const group = state.sections[secIdx]?.groups?.[groupIdx];
+  if (!group) return false;
+  const insertAt = Number.isInteger(targetIdx)
+    ? Math.max(0, Math.min(targetIdx, group.sentences.length))
+    : group.sentences.length;
+  group.sentences.splice(insertAt, 0, sentence);
+
+  const skipped = new Set(group.skip_sentences || []);
+  if (preserveSkip) skipped.add(sentence);
+  group.skip_sentences = group.sentences.filter(item => skipped.has(item));
+
+  const hidden = new Set(group.hidden_sentences || []);
+  if (preserveHidden) hidden.add(sentence);
+  group.hidden_sentences = group.sentences.filter(item => hidden.has(item));
+  return true;
+}
+
+function createTopLevelEntryDragRef(entry, secIdx) {
+  if (!entry || typeof entry !== "object") return null;
+  if (entry.type === "sentence") return createTopLevelSentenceDragRef(entry.sentence, secIdx, null);
+  if (entry.type === "group") return createTopLevelGroupDragRef(entry.group?.id || entry.groupId);
+  return null;
+}
+
+function getFirstTopLevelEntryRef(secIdx, excludedKey = "") {
+  const section = state.sections[secIdx];
+  if (!section) return null;
+  for (const entry of getOrderedSectionEntries(section)) {
+    const ref = createTopLevelEntryDragRef(entry, secIdx);
+    if (!ref) continue;
+    if (excludedKey && getSectionOrderItemKey(ref) === excludedKey) continue;
+    return ref;
+  }
+  return null;
+}
+
+function getGroupInsertIndexFromPointer(listEl, clientY) {
+  const sentenceItems = [...(listEl?.children || [])].filter((item) => item instanceof HTMLElement && item.dataset?.sentence);
+  for (let index = 0; index < sentenceItems.length; index += 1) {
+    const rect = sentenceItems[index].getBoundingClientRect();
+    if (clientY < rect.top + (rect.height / 2)) {
+      return index;
+    }
+  }
+  return sentenceItems.length;
+}
+
+function applyLocalSectionSchemaChange() {
+  state.sections = normalizeSectionsData(state.sections);
+  normalizeCaptionCacheForCurrentSections();
+  state.filterCaptionCacheKey = getActiveSentenceFilterKey();
+  refreshGridForActiveFilters();
+  renderSentences();
+  renderPreviewCaptionOverlay();
+}
+
+function moveSentenceToTopLevelSection(sourceSecIdx, sourceGroupIdx, sentence, targetSecIdx, beforeRef = null) {
+  const extracted = extractSentenceFromSectionLocation(sourceSecIdx, sourceGroupIdx, sentence);
+  if (!extracted) return;
+  if (!insertSentenceIntoTopLevelSection(targetSecIdx, sentence, beforeRef, { preserveSkip: extracted.preserveSkip })) return;
+  saveSectionsToStorage();
+  applyLocalSectionSchemaChange();
+}
+
+function moveSentenceToGroupContainer(sourceSecIdx, sourceGroupIdx, sentence, targetSecIdx, targetGroupIdx, targetIdx = null) {
+  const extracted = extractSentenceFromSectionLocation(sourceSecIdx, sourceGroupIdx, sentence);
+  if (!extracted) return;
+  if (!insertSentenceIntoGroup(targetSecIdx, targetGroupIdx, sentence, targetIdx, extracted)) return;
+  saveSectionsToStorage();
+  applyLocalSectionSchemaChange();
+}
+
+function moveSentenceToSectionHeader(sourceSecIdx, sourceGroupIdx, sentence, targetSecIdx) {
+  const sourceRef = createTopLevelSentenceDragRef(sentence, sourceSecIdx, sourceGroupIdx);
+  const firstRef = getFirstTopLevelEntryRef(
+    targetSecIdx,
+    sourceSecIdx === targetSecIdx && normalizeGroupIndex(sourceGroupIdx) === null
+      ? getSectionOrderItemKey(sourceRef)
+      : ""
+  );
+
+  if (sourceSecIdx === targetSecIdx && normalizeGroupIndex(sourceGroupIdx) === null) {
+    if (!firstRef) return;
+    moveTopLevelSectionItem(targetSecIdx, sourceRef, firstRef);
+    return;
+  }
+
+  moveSentenceToTopLevelSection(sourceSecIdx, sourceGroupIdx, sentence, targetSecIdx, firstRef);
+}
+
+function moveSentenceToGroupHeader(sourceSecIdx, sourceGroupIdx, sentence, targetSecIdx, targetGroupIdx) {
+  if (sourceSecIdx === targetSecIdx && normalizeGroupIndex(sourceGroupIdx) === targetGroupIdx) {
+    const sentences = getSentenceContainer(targetSecIdx, targetGroupIdx) || [];
+    const sourceIndex = sentences.indexOf(sentence);
+    if (sourceIndex <= 0) return;
+    moveSentenceWithinContainer(targetSecIdx, targetGroupIdx, sourceIndex, 0);
+    return;
+  }
+
+  moveSentenceToGroupContainer(sourceSecIdx, sourceGroupIdx, sentence, targetSecIdx, targetGroupIdx, 0);
 }
 
 function moveTopLevelSectionItem(secIdx, fromRef, toRef) {
@@ -250,22 +470,7 @@ function moveTopLevelSectionItemToEnd(secIdx, fromRef) {
 }
 
 function moveTopLevelSentenceIntoGroup(secIdx, sentence, groupIdx, targetIdx = null) {
-  const section = state.sections[secIdx];
-  const group = section?.groups?.[groupIdx];
-  if (!section || !group || !sentence) return;
-  const sourceIdx = (section.sentences || []).indexOf(sentence);
-  if (sourceIdx < 0) return;
-
-  section.sentences.splice(sourceIdx, 1);
-  section.item_order = (section.item_order || []).filter(item => !(item?.type === "sentence" && item.sentence === sentence));
-
-  const insertAt = Number.isInteger(targetIdx)
-    ? Math.max(0, Math.min(targetIdx, group.sentences.length))
-    : group.sentences.length;
-  group.sentences.splice(insertAt, 0, sentence);
-
-  saveSectionsToStorage();
-  renderSentences();
+  moveSentenceToGroupContainer(secIdx, null, sentence, secIdx, groupIdx, targetIdx);
 }
 
 function addSentenceToSection(secIdx, text, groupIdx = null) {
@@ -329,6 +534,69 @@ function toggleSentenceHiddenOnExport(sentence) {
   group.hidden_sentences = (group.sentences || []).filter(item => hidden.has(item));
   saveSectionsToStorage();
   renderSentences();
+}
+
+function toggleSentenceSkipAutoCaption(sentence) {
+  const location = findSentenceLocation(sentence);
+  if (!location) return;
+  const owner = location.group || location.section;
+  if (!owner) return;
+  const skipped = new Set(owner.skip_sentences || []);
+  if (skipped.has(sentence)) {
+    skipped.delete(sentence);
+  } else {
+    skipped.add(sentence);
+  }
+  const sourceSentences = location.group ? (location.group.sentences || []) : (location.section?.sentences || []);
+  owner.skip_sentences = sourceSentences.filter(item => skipped.has(item));
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function toggleGroupSkipAutoCaption(secIdx, groupIdx) {
+  const group = state.sections[secIdx]?.groups?.[groupIdx];
+  if (!group) return;
+  group.skip_auto_caption = !group.skip_auto_caption;
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function toggleSectionSkipAutoCaption(secIdx) {
+  const section = state.sections[secIdx];
+  if (!section) return;
+  section.skip_auto_caption = !section.skip_auto_caption;
+  saveSectionsToStorage();
+  renderSentences();
+}
+
+function createAutoCaptionSkipButton(skipped, activeTitle, inactiveTitle, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `auto-caption-skip-btn${skipped ? " active" : ""}`;
+  button.title = skipped ? activeTitle : inactiveTitle;
+  button.setAttribute("aria-label", skipped ? activeTitle : inactiveTitle);
+  button.setAttribute("aria-pressed", skipped ? "true" : "false");
+
+  const icon = document.createElement("span");
+  icon.className = "auto-caption-skip-icon";
+  icon.setAttribute("aria-hidden", "true");
+
+  const iconText = document.createElement("span");
+  iconText.className = "auto-caption-skip-icon-text";
+  iconText.textContent = "AI";
+
+  const iconBan = document.createElement("span");
+  iconBan.className = "auto-caption-skip-icon-ban";
+
+  icon.appendChild(iconText);
+  icon.appendChild(iconBan);
+  button.appendChild(icon);
+
+  button.addEventListener("click", (e) => {
+    e.stopPropagation();
+    onClick(e);
+  });
+  return button;
 }
 
 async function renameSentence(oldSentence, newSentence) {
@@ -612,9 +880,11 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const groupIdx = normalizeGroupIndex(options.groupIdx);
   const sentenceIdx = Number.isInteger(options.sentenceIdx) ? options.sentenceIdx : -1;
   const topLevelMix = !!options.topLevelMix;
-  const topLevelRef = topLevelMix ? createTopLevelSentenceDragRef(sentence) : null;
+  const sentenceDragRef = createTopLevelSentenceDragRef(sentence, secIdx, groupIdx);
+  const topLevelRef = topLevelMix ? sentenceDragRef : null;
   const canRefreshSentence = groupIdx === null;
   const isGroupSentence = groupIdx !== null;
+  const autoCaptionSkipped = isSentenceSkippedForAutoCaption(sentence);
   const filterMode = getSentenceFilterMode(sentence);
   const isFilterActive = filterMode !== "off";
   const { isChecked, isPartial } = getSentenceSelectionState(sentence, selectedPaths);
@@ -630,6 +900,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   dragHandle.addEventListener("mousedown", (e) => e.stopPropagation());
   dragHandle.addEventListener("dragstart", (e) => {
     e.stopPropagation();
+    setDragPayload(e, SECTION_ITEM_DRAG_TYPE, { secIdx, item: sentenceDragRef });
     if (topLevelMix) {
       setDragPayload(e, SECTION_ITEM_DRAG_TYPE, { secIdx, item: topLevelRef });
     } else {
@@ -643,8 +914,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   });
   dragHandle.addEventListener("dragend", () => {
     li.classList.remove("dragging-item");
-    document.querySelectorAll(".section-sentences li.drag-over").forEach(item => item.classList.remove("drag-over"));
-    document.querySelectorAll(".section-sentences.drag-over-end").forEach(list => list.classList.remove("drag-over-end"));
+    clearCaptionDragIndicators();
   });
   const checkBox = document.createElement("div");
   checkBox.className = `check-box${isExclusive ? " radio" : ""}`;
@@ -654,6 +924,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const textSpan = document.createElement("span");
   textSpan.className = "sentence-text editable";
   if (isPartial) textSpan.classList.add("partial");
+  if (autoCaptionSkipped) textSpan.classList.add("skip-auto-caption");
   if (allowSuppressToggle && isSentenceHiddenOnExport(sentence)) textSpan.classList.add("hidden-export");
   textSpan.textContent = sentence;
   textSpan.title = "Click to rename caption";
@@ -714,6 +985,15 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     await toggleSentenceFilter(sentence);
   });
 
+  const autoCaptionSkipBtn = createAutoCaptionSkipButton(
+    autoCaptionSkipped,
+    "This caption will be skipped during Auto Caption",
+    "Check this caption during Auto Caption",
+    () => {
+      toggleSentenceSkipAutoCaption(sentence);
+    }
+  );
+
   if (allowSuppressToggle) {
     const hiddenOnExport = isSentenceHiddenOnExport(sentence);
     const exportToggleBtn = document.createElement("button");
@@ -733,6 +1013,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     li.appendChild(textSpan);
     if (refreshBtn) li.appendChild(refreshBtn);
     li.appendChild(filterToggleBtn);
+    li.appendChild(autoCaptionSkipBtn);
     li.appendChild(exportToggleBtn);
     li.appendChild(rmBtn);
   } else {
@@ -741,14 +1022,18 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     li.appendChild(textSpan);
     if (refreshBtn) li.appendChild(refreshBtn);
     li.appendChild(filterToggleBtn);
+    li.appendChild(autoCaptionSkipBtn);
     li.appendChild(rmBtn);
   }
   li.addEventListener("dragover", (e) => {
     if (topLevelMix) {
       const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-      if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
-      if (getSectionOrderItemKey(payload.item) === getSectionOrderItemKey(topLevelRef)) return;
+      if (!payload || !isValidTopLevelDragRef(payload.item)) return;
+      if (payload.item.type === "group" && payload.secIdx !== secIdx) return;
+      if (payload.item.type === "group" && getSectionOrderItemKey(payload.item) === getSectionOrderItemKey(topLevelRef)) return;
+      if (isSameSentenceLocation(payload.item, secIdx, null, sentence)) return;
       e.preventDefault();
+      e.stopPropagation();
       e.dataTransfer.dropEffect = "move";
       li.classList.add("drag-over");
       return;
@@ -756,12 +1041,13 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     const topLevelPayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
     if (
       topLevelPayload
-      && topLevelPayload.secIdx === secIdx
-      && topLevelPayload.item?.type === "sentence"
-      && groupIdx !== null
+      && isSentenceSectionItemRef(topLevelPayload.item)
+      && !isSameSentenceContainer(topLevelPayload.item, secIdx, groupIdx)
     ) {
       e.preventDefault();
+      e.stopPropagation();
       e.dataTransfer.dropEffect = "move";
+      li.classList.add("drag-over");
       return;
     }
     const payload = getDragPayload(e, SENTENCE_DRAG_TYPE);
@@ -769,6 +1055,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     if (payload.secIdx !== secIdx || normalizeGroupIndex(payload.groupIdx) !== groupIdx) return;
     if (payload.sentenceIdx === sentenceIdx) return;
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = "move";
     li.classList.add("drag-over");
   });
@@ -778,21 +1065,36 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   li.addEventListener("drop", (e) => {
     if (topLevelMix) {
       const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-      if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
+      if (!payload || !isValidTopLevelDragRef(payload.item)) return;
       e.preventDefault();
+      e.stopPropagation();
       li.classList.remove("drag-over");
-      moveTopLevelSectionItem(secIdx, payload.item, topLevelRef);
+      if (payload.item.type === "group") {
+        if (payload.secIdx !== secIdx) return;
+        moveTopLevelSectionItem(secIdx, payload.item, topLevelRef);
+        return;
+      }
+      const source = getSentenceSectionItemSource(payload.item);
+      if (!source) return;
+      if (source.secIdx === secIdx && source.groupIdx === null) {
+        moveTopLevelSectionItem(secIdx, payload.item, topLevelRef);
+        return;
+      }
+      moveSentenceToTopLevelSection(source.secIdx, source.groupIdx, source.sentence, secIdx, topLevelRef);
       return;
     }
     const topLevelPayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
     if (
       topLevelPayload
-      && topLevelPayload.secIdx === secIdx
-      && topLevelPayload.item?.type === "sentence"
-      && groupIdx !== null
+      && isSentenceSectionItemRef(topLevelPayload.item)
+      && !isSameSentenceContainer(topLevelPayload.item, secIdx, groupIdx)
     ) {
+      const source = getSentenceSectionItemSource(topLevelPayload.item);
+      if (!source) return;
       e.preventDefault();
+      e.stopPropagation();
       li.classList.remove("drag-over");
+      moveSentenceToGroupContainer(source.secIdx, source.groupIdx, source.sentence, secIdx, groupIdx, sentenceIdx);
       return;
     }
     const payload = getDragPayload(e, SENTENCE_DRAG_TYPE);
@@ -800,8 +1102,9 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     const payloadGroupIdx = normalizeGroupIndex(payload.groupIdx);
     if (payload.secIdx !== secIdx || payloadGroupIdx !== groupIdx) return;
     e.preventDefault();
+    e.stopPropagation();
     li.classList.remove("drag-over");
-    moveSentenceWithinContainer(secIdx, groupIdx, payload.sentenceIdx, sentenceIdx);
+    moveSentenceWithinContainerBefore(secIdx, groupIdx, payload.sentenceIdx, sentenceIdx);
   });
   li.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -834,8 +1137,7 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
   });
   groupDragHandle.addEventListener("dragend", () => {
     wrapper.classList.remove("dragging-item");
-    document.querySelectorAll(".section-sentences li.drag-over").forEach(item => item.classList.remove("drag-over"));
-    document.querySelectorAll(".section-sentences.drag-over-end").forEach(list => list.classList.remove("drag-over-end"));
+    clearCaptionDragIndicators();
   });
   groupHeader.appendChild(groupDragHandle);
 
@@ -877,6 +1179,16 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
   });
   groupHeader.appendChild(groupRefreshBtn);
 
+  const groupSkipBtn = createAutoCaptionSkipButton(
+    isGroupSkippedForAutoCaption(group),
+    "This group will be skipped during Auto Caption",
+    "Check this group during Auto Caption",
+    () => {
+      toggleGroupSkipAutoCaption(secIdx, groupIdx);
+    }
+  );
+  groupHeader.appendChild(groupSkipBtn);
+
   const groupRemoveBtn = document.createElement("button");
   groupRemoveBtn.type = "button";
   groupRemoveBtn.className = "group-remove-btn";
@@ -890,7 +1202,9 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
 
   groupHeader.addEventListener("dragover", (e) => {
     const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-    if (!payload || payload.secIdx !== secIdx || payload.item?.type !== "sentence") return;
+    if (!payload || !isSentenceSectionItemRef(payload.item)) return;
+    const source = getSentenceSectionItemSource(payload.item);
+    if (!source) return;
     e.preventDefault();
     e.stopPropagation();
     e.dataTransfer.dropEffect = "move";
@@ -901,11 +1215,13 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
   });
   groupHeader.addEventListener("drop", (e) => {
     const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-    if (!payload || payload.secIdx !== secIdx || payload.item?.type !== "sentence") return;
+    if (!payload || !isSentenceSectionItemRef(payload.item)) return;
+    const source = getSentenceSectionItemSource(payload.item);
+    if (!source) return;
     e.preventDefault();
     e.stopPropagation();
     groupHeader.classList.remove("drag-over");
-    moveTopLevelSentenceIntoGroup(secIdx, payload.item.sentence, groupIdx);
+    moveSentenceToGroupHeader(source.secIdx, source.groupIdx, source.sentence, secIdx, groupIdx);
   });
 
   groupBlock.appendChild(groupHeader);
@@ -916,7 +1232,7 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
   groupSentences.className = "section-sentences group-sentences";
   groupSentences.addEventListener("dragover", (e) => {
     const topLevelPayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-    if (topLevelPayload && topLevelPayload.secIdx === secIdx && topLevelPayload.item?.type === "sentence") {
+    if (topLevelPayload && isSentenceSectionItemRef(topLevelPayload.item) && !isSameSentenceContainer(topLevelPayload.item, secIdx, groupIdx)) {
       e.preventDefault();
       e.stopPropagation();
       e.dataTransfer.dropEffect = "move";
@@ -929,6 +1245,7 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
     if (!payload) return;
     if (payload.secIdx !== secIdx || normalizeGroupIndex(payload.groupIdx) !== groupIdx) return;
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = "move";
     if (e.target === groupSentences) {
       groupSentences.classList.add("drag-over-end");
@@ -941,23 +1258,30 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
   });
   groupSentences.addEventListener("drop", (e) => {
     const topLevelPayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-    if (topLevelPayload && topLevelPayload.secIdx === secIdx && topLevelPayload.item?.type === "sentence") {
-      if (e.target !== groupSentences) return;
+    if (topLevelPayload && isSentenceSectionItemRef(topLevelPayload.item) && !isSameSentenceContainer(topLevelPayload.item, secIdx, groupIdx)) {
+      const source = getSentenceSectionItemSource(topLevelPayload.item);
+      if (!source) return;
       e.preventDefault();
       e.stopPropagation();
       groupSentences.classList.remove("drag-over-end");
-      moveTopLevelSentenceIntoGroup(secIdx, topLevelPayload.item.sentence, groupIdx);
+      moveSentenceToGroupContainer(
+        source.secIdx,
+        source.groupIdx,
+        source.sentence,
+        secIdx,
+        groupIdx,
+        getGroupInsertIndexFromPointer(groupSentences, e.clientY)
+      );
       return;
     }
     const payload = getDragPayload(e, SENTENCE_DRAG_TYPE);
     if (!payload) return;
     if (payload.secIdx !== secIdx || normalizeGroupIndex(payload.groupIdx) !== groupIdx) return;
-    if (e.target !== groupSentences) return;
     e.preventDefault();
+    e.stopPropagation();
     groupSentences.classList.remove("drag-over-end");
-    const sentences = getSentenceContainer(secIdx, groupIdx) || [];
-    const targetIdx = Math.max(0, sentences.length - 1);
-    moveSentenceWithinContainer(secIdx, groupIdx, payload.sentenceIdx, targetIdx);
+    const targetIdx = getGroupInsertIndexFromPointer(groupSentences, e.clientY);
+    moveSentenceWithinContainerBefore(secIdx, groupIdx, payload.sentenceIdx, targetIdx);
   });
   for (const [sentenceIdx, sentence] of (group.sentences || []).entries()) {
     groupSentences.appendChild(createSentenceListItem(sentence, selectedPaths, {
@@ -975,8 +1299,9 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
 
   wrapper.addEventListener("dragover", (e) => {
     const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-    if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
-    if (getSectionOrderItemKey(payload.item) === getSectionOrderItemKey(topLevelRef)) return;
+    if (!payload || !isValidTopLevelDragRef(payload.item)) return;
+    if (payload.item.type === "group" && payload.secIdx !== secIdx) return;
+    if (payload.item.type === "group" && getSectionOrderItemKey(payload.item) === getSectionOrderItemKey(topLevelRef)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     wrapper.classList.add("drag-over");
@@ -986,10 +1311,21 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
   });
   wrapper.addEventListener("drop", (e) => {
     const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-    if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
+    if (!payload || !isValidTopLevelDragRef(payload.item)) return;
     e.preventDefault();
     wrapper.classList.remove("drag-over");
-    moveTopLevelSectionItem(secIdx, payload.item, topLevelRef);
+    if (payload.item.type === "group") {
+      if (payload.secIdx !== secIdx) return;
+      moveTopLevelSectionItem(secIdx, payload.item, topLevelRef);
+      return;
+    }
+    const source = getSentenceSectionItemSource(payload.item);
+    if (!source) return;
+    if (source.secIdx === secIdx && source.groupIdx === null) {
+      moveTopLevelSectionItem(secIdx, payload.item, topLevelRef);
+      return;
+    }
+    moveSentenceToTopLevelSection(source.secIdx, source.groupIdx, source.sentence, secIdx, topLevelRef);
   });
 
   return wrapper;
@@ -1140,6 +1476,16 @@ function renderSentences(options = {}) {
     });
     header.appendChild(sectionRefreshBtn);
 
+    const sectionSkipBtn = createAutoCaptionSkipButton(
+      isSectionSkippedForAutoCaption(section),
+      "This section will be skipped during Auto Caption",
+      "Check this section during Auto Caption",
+      () => {
+        toggleSectionSkipAutoCaption(secIdx);
+      }
+    );
+    header.appendChild(sectionSkipBtn);
+
     const removeBtn = document.createElement("button");
     removeBtn.className = "section-remove-btn";
     removeBtn.textContent = "\u00D7";
@@ -1160,6 +1506,14 @@ function renderSentences(options = {}) {
       document.querySelectorAll(".section-header.drag-over").forEach(h => h.classList.remove("drag-over"));
     });
     header.addEventListener("dragover", (e) => {
+      const sentencePayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+      if (sentencePayload && isSentenceSectionItemRef(sentencePayload.item)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = "move";
+        header.classList.add("drag-over");
+        return;
+      }
       const payload = getDragPayload(e, SECTION_DRAG_TYPE);
       if (!payload) return;
       e.preventDefault();
@@ -1170,6 +1524,16 @@ function renderSentences(options = {}) {
       header.classList.remove("drag-over");
     });
     header.addEventListener("drop", (e) => {
+      const sentencePayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+      if (sentencePayload && isSentenceSectionItemRef(sentencePayload.item)) {
+        const source = getSentenceSectionItemSource(sentencePayload.item);
+        if (!source) return;
+        e.preventDefault();
+        e.stopPropagation();
+        header.classList.remove("drag-over");
+        moveSentenceToSectionHeader(source.secIdx, source.groupIdx, source.sentence, secIdx);
+        return;
+      }
       const payload = getDragPayload(e, SECTION_DRAG_TYPE);
       if (!payload) return;
       e.preventDefault();
@@ -1192,7 +1556,8 @@ function renderSentences(options = {}) {
     sectionSentences.className = "section-sentences section-mixed-list";
     sectionSentences.addEventListener("dragover", (e) => {
       const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-      if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
+      if (!payload || !isValidTopLevelDragRef(payload.item)) return;
+      if (payload.item.type === "group" && payload.secIdx !== secIdx) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       if (e.target === sectionSentences) {
@@ -1206,11 +1571,22 @@ function renderSentences(options = {}) {
     });
     sectionSentences.addEventListener("drop", (e) => {
       const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-      if (!payload || payload.secIdx !== secIdx || !isValidTopLevelDragRef(payload.item)) return;
+      if (!payload || !isValidTopLevelDragRef(payload.item)) return;
       if (e.target !== sectionSentences) return;
       e.preventDefault();
       sectionSentences.classList.remove("drag-over-end");
-      moveTopLevelSectionItemToEnd(secIdx, payload.item);
+      if (payload.item.type === "group") {
+        if (payload.secIdx !== secIdx) return;
+        moveTopLevelSectionItemToEnd(secIdx, payload.item);
+        return;
+      }
+      const source = getSentenceSectionItemSource(payload.item);
+      if (!source) return;
+      if (source.secIdx === secIdx && source.groupIdx === null) {
+        moveTopLevelSectionItemToEnd(secIdx, payload.item);
+        return;
+      }
+      moveSentenceToTopLevelSection(source.secIdx, source.groupIdx, source.sentence, secIdx);
     });
     for (const entry of getOrderedSectionEntries(section)) {
       if (entry.type === "sentence") {
@@ -1445,8 +1821,13 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentStepIndex: event.index || state.aiProgress.currentStepIndex,
           currentStepTotal: Math.max(state.aiProgress.currentStepTotal || 0, (event.total || 0) + (state.aiProgress.enableFreeText ? 1 : 0)),
         });
-        const verdict = event.enabled ? "YES" : "NO";
-        appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${currentCaption} -> ${verdict} | ${event.answer || verdict}${getOllamaAnswerLogSuffix(event)}`, event.enabled ? "log-ok" : "log-dim");
+        if (event.skipped) {
+          const reason = event.skip_reason ? ` (${event.skip_reason})` : "";
+          appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${currentCaption} -> SKIP${reason}`, "log-warn");
+        } else {
+          const verdict = event.enabled ? "YES" : "NO";
+          appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${currentCaption} -> ${verdict} | ${event.answer || verdict}${getOllamaAnswerLogSuffix(event)}`, event.enabled ? "log-ok" : "log-dim");
+        }
         const cache = ensureCaptionCache(event.path);
         cache.enabled_sentences = orderEnabledSentences(event.enabled_captions || event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";
@@ -1464,10 +1845,18 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentStepIndex: event.index || state.aiProgress.currentStepIndex,
           currentStepTotal: Math.max(state.aiProgress.currentStepTotal || 0, (event.total || 0) + (state.aiProgress.enableFreeText ? 1 : 0)),
         });
-        appendModelLog(
-          `[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.group_name || "Group"} -> ${selectedCaption}${event.selected_hidden ? " (ignored in txt)" : ""} | ${event.answer || ""}${getOllamaAnswerLogSuffix(event)}`,
-          (event.selected_caption || event.selected_sentence) ? "log-ok" : "log-warn"
-        );
+        if (event.skipped) {
+          const reason = event.skip_reason ? ` (${event.skip_reason})` : "";
+          appendModelLog(
+            `[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.group_name || "Group"} -> SKIP${reason}`,
+            "log-warn"
+          );
+        } else {
+          appendModelLog(
+            `[${getFileLabel(event.path)}] ${event.index}/${event.total} ${event.group_name || "Group"} -> ${selectedCaption}${event.selected_hidden ? " (ignored in txt)" : ""} | ${event.answer || ""}${getOllamaAnswerLogSuffix(event)}`,
+            (event.selected_caption || event.selected_sentence) ? "log-ok" : "log-warn"
+          );
+        }
         const cache = ensureCaptionCache(event.path);
         cache.enabled_sentences = orderEnabledSentences(event.enabled_captions || event.enabled_sentences || cache.enabled_sentences || []);
         cache.free_text = event.free_text || cache.free_text || "";

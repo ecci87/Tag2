@@ -72,6 +72,9 @@
             <button id="prompt-preview-grid-toggle-btn" class="filter-chip" type="button" title="Show prompt preview thumbnails beside source thumbnails when available" aria-pressed="false">PV</button>
           </div>
           <button id="clear-filters-btn" type="button" title="Clear active filters" aria-label="Clear active filters"></button>
+          <div id="media-search-wrap">
+            <input id="media-search-input" type="search" placeholder="Search media..." spellcheck="false" autocomplete="off" title="Filter media by filename and caption text" aria-label="Search media by filename and caption text">
+          </div>
         </div>
       </div>
       <div id="file-grid-container">
@@ -206,6 +209,8 @@
           <div id="rotate-controls">
             <button id="rotate-left-btn" class="rotate-btn" type="button" title="Rotate left" aria-label="Rotate left">↶</button>
             <button id="rotate-right-btn" class="rotate-btn" type="button" title="Rotate right" aria-label="Rotate right">↷</button>
+            <button id="flip-horizontal-btn" class="rotate-btn" type="button" title="Flip horizontally" aria-label="Flip horizontally">↔</button>
+            <button id="flip-vertical-btn" class="rotate-btn" type="button" title="Flip vertically" aria-label="Flip vertically">↕</button>
           </div>
         </div>
         <div id="preview-placeholder">Select a media file to preview<br>or<br>drop media files here to upload</div>

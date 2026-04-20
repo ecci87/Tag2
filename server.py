@@ -62,6 +62,7 @@ from tag2_images import (
     _crop_video_file,
     _encode_media_for_ollama,
     _extract_video_frame,
+    _flip_image,
     _generate_thumbnail,
     _get_media_type_for_path,
     _get_crop_backup_dir,
@@ -545,10 +546,14 @@ def _matches_comfyui_preview_filename(entry_stem: str, filename_prefix: str) -> 
         return False
     if normalized_stem == normalized_prefix:
         return True
-    if not normalized_stem.startswith(normalized_prefix):
-        return False
-    next_char = normalized_stem[len(normalized_prefix):len(normalized_prefix) + 1]
-    return bool(next_char) and not next_char.isalnum()
+    if re.fullmatch(rf"{re.escape(normalized_prefix)}_\d+(?:_.*)?", normalized_stem):
+        return True
+    return bool(
+        re.fullmatch(
+            rf"{re.escape(normalized_prefix)}__tag2__\d+(?:_\d+(?:_.*)?)?",
+            normalized_stem,
+        )
+    )
 
 
 def _scan_comfyui_preview_files(output_folder: str, source_path: str) -> list[str]:
@@ -1499,6 +1504,50 @@ def _build_ollama_answer_meta(response: dict) -> dict:
     return _ollama_response_meta(response)
 
 
+def _build_skipped_caption_result(target: dict, enabled: list[str]) -> dict:
+    """Return a consistent payload for a skipped caption check."""
+    caption = str(target.get("caption") or target.get("sentence") or "").strip()
+    return {
+        "type": "sentence",
+        "section_index": target.get("section_index"),
+        "group_index": target.get("group_index"),
+        "section_name": target.get("section_name", ""),
+        "caption": caption,
+        "sentence": caption,
+        "enabled": caption in enabled,
+        "skipped": True,
+        "skip_reason": str(target.get("skip_reason") or ""),
+        "answer": "",
+    }
+
+
+def _build_skipped_group_result(target: dict, enabled: list[str], sections: list[dict]) -> dict:
+    """Return a consistent payload for a skipped exclusive-group check."""
+    group_captions = [caption for caption in (target.get("captions") or target.get("sentences") or []) if caption]
+    selected_caption = next((caption for caption in group_captions if caption in enabled), None)
+    selected_hidden = bool(selected_caption and _is_hidden_group_caption(sections, selected_caption))
+    selection_index = group_captions.index(selected_caption) + 1 if selected_caption in group_captions else None
+    skipped_captions = list(target.get("skip_captions") or target.get("skip_sentences") or [])
+    return {
+        "type": "group",
+        "section_index": target.get("section_index"),
+        "group_index": target.get("group_index"),
+        "section_name": target.get("section_name", ""),
+        "group_name": target.get("group_name", ""),
+        "captions": group_captions,
+        "sentences": list(group_captions),
+        "selected_caption": selected_caption,
+        "selected_sentence": selected_caption,
+        "selected_hidden": selected_hidden,
+        "selection_index": selection_index,
+        "skipped": True,
+        "skip_reason": str(target.get("skip_reason") or ""),
+        "skip_captions": skipped_captions,
+        "skip_sentences": list(skipped_captions),
+        "answer": "",
+    }
+
+
 @app.get("/api/list-images")
 async def list_images(folder: str = Query(...)):
     """List all supported media files in the given folder."""
@@ -2033,6 +2082,11 @@ class CropUpdate(BaseModel):
 class RotateUpdate(BaseModel):
     image_path: str
     direction: str
+
+
+class FlipUpdate(BaseModel):
+    image_path: str
+    axis: str
 
 
 class BatchDeleteImagesRequest(BaseModel):
@@ -3130,6 +3184,25 @@ async def rotate_image(data: RotateUpdate):
     }
 
 
+@app.post("/api/flip")
+async def flip_image(data: FlipUpdate):
+    """Flip an image horizontally or vertically."""
+    if not os.path.isfile(data.image_path):
+        raise HTTPException(status_code=404, detail="Image file not found")
+    if not _is_image_path(data.image_path):
+        raise HTTPException(status_code=400, detail="Flip is only available for image files")
+    try:
+        crop_state = _flip_image(data.image_path, data.axis)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid flip: {e}") from e
+    return {
+        "ok": True,
+        "crop": crop_state,
+    }
+
+
 @app.post("/api/images/delete")
 async def delete_images(data: BatchDeleteImagesRequest):
     """Delete supported media files and their local sidecar artifacts."""
@@ -3881,6 +3954,7 @@ async def auto_caption(data: AutoCaptionRequest):
                     model,
                     media_path,
                     sections,
+                    initial_enabled_captions=enabled,
                     encode_image_func=encode_media_call,
                     generate_func=_ollama_generate,
                     prompt_template=prompt_template,
@@ -3900,6 +3974,9 @@ async def auto_caption(data: AutoCaptionRequest):
                 media_payload = await loop.run_in_executor(executor, encode_media_call, media_path)
                 for target in targets or []:
                     if target["type"] == "caption":
+                        if target.get("skip_auto_caption"):
+                            results.append(_build_skipped_caption_result(target, enabled))
+                            continue
                         caption = target["caption"]
                         payload = _build_ollama_generate_payload(
                             model,
@@ -3932,6 +4009,9 @@ async def auto_caption(data: AutoCaptionRequest):
                         continue
 
                     group_captions = target["captions"]
+                    if target.get("skip_auto_caption"):
+                        results.append(_build_skipped_group_result(target, enabled, sections))
+                        continue
                     payload = _build_ollama_generate_payload(
                         model,
                         _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_captions, group_prompt_template), media_path),
@@ -4145,6 +4225,21 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                         if await request.is_disconnected():
                             return
                         if target["type"] == "caption":
+                            if target.get("skip_auto_caption"):
+                                skipped_result = _build_skipped_caption_result(target, enabled)
+                                results.append(skipped_result)
+                                skipped_event = {key: value for key, value in skipped_result.items() if key != "type"}
+                                yield _event_bytes({
+                                    "type": "caption-check",
+                                    "path": media_path,
+                                    "index": index,
+                                    "total": total_targets,
+                                    "enabled_captions": enabled,
+                                    "enabled_sentences": enabled,
+                                    "free_text": free_text,
+                                    **skipped_event,
+                                })
+                                continue
                             caption = target["caption"]
                             payload = _build_ollama_generate_payload(
                                 model,
@@ -4190,6 +4285,21 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             continue
 
                         group_captions = target["captions"]
+                        if target.get("skip_auto_caption"):
+                            skipped_result = _build_skipped_group_result(target, enabled, sections)
+                            results.append(skipped_result)
+                            skipped_event = {key: value for key, value in skipped_result.items() if key != "type"}
+                            yield _event_bytes({
+                                "type": "group-selection",
+                                "path": media_path,
+                                "index": index,
+                                "total": total_targets,
+                                "enabled_captions": enabled,
+                                "enabled_sentences": enabled,
+                                "free_text": free_text,
+                                **skipped_event,
+                            })
+                            continue
                         payload = _build_ollama_generate_payload(
                             model,
                             _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_captions, group_prompt_template), media_path),
@@ -4485,6 +4595,8 @@ async def get_ollama_models(
 async def update_settings(data: SettingsUpdate):
     """Update settings. Saves last_folder and/or per-folder sections."""
     cfg = _load_config()
+    sections_before = None
+    sections_after = None
     if data.last_folder is not None:
         cfg["last_folder"] = data.last_folder
     if data.video_training_presets is not None:
@@ -4549,9 +4661,17 @@ async def update_settings(data: SettingsUpdate):
         presets = _get_video_training_presets(cfg)
         _set_folder_video_training_profile_key(cfg, data.folder, data.video_training_profile_key, presets)
     if data.sections is not None and data.folder:
+        sections_before = _get_folder_sections(cfg, data.folder)
         _set_folder_sections(cfg, data.folder, data.sections)
+        sections_after = _get_folder_sections(cfg, data.folder)
     _save_config(cfg)
-    return {"ok": True}
+    if sections_before is not None and sections_after is not None:
+        _rewrite_caption_files_for_section_change(data.folder, sections_before, sections_after)
+    response = {"ok": True}
+    if sections_after is not None and data.folder:
+        response["folder"] = os.path.normpath(data.folder)
+        response["sections"] = sections_after
+    return response
 
 
 @app.get("/api/comfyui/prompt-preview/status")

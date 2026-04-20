@@ -29,6 +29,13 @@ def _hidden_caption_values(group: dict | None) -> list[str]:
     )
 
 
+def _skipped_caption_values(container: dict | None) -> list[str]:
+    container = dict(container or {})
+    return _normalize_caption_entries(
+        container.get("skip_captions", container.get("skip_sentences", []))
+    )
+
+
 def _normalize_item_type(raw_item: dict | None) -> str:
     item_type = str((raw_item or {}).get("type") or "").strip().lower()
     return "caption" if item_type == "sentence" else item_type
@@ -50,6 +57,11 @@ def _get_folder_sections(cfg: dict, folder: str) -> list[dict]:
             for caption in _hidden_caption_values(group)
             if caption in captions
         ]
+        skipped_captions = [
+            caption
+            for caption in _skipped_caption_values(group)
+            if caption in captions
+        ]
         return {
             "id": str(group.get("id") or "").strip(),
             "name": str(group.get("name") or "").strip(),
@@ -57,6 +69,9 @@ def _get_folder_sections(cfg: dict, folder: str) -> list[dict]:
             "sentences": list(captions),
             "hidden_captions": hidden_captions,
             "hidden_sentences": list(hidden_captions),
+            "skip_auto_caption": bool(group.get("skip_auto_caption")),
+            "skip_captions": skipped_captions,
+            "skip_sentences": list(skipped_captions),
         }
 
     def _normalize_section(section: dict | None) -> dict:
@@ -78,6 +93,11 @@ def _get_folder_sections(cfg: dict, folder: str) -> list[dict]:
 
         captions = _caption_values(section)
         caption_set = set(captions)
+        skipped_captions = [
+            caption
+            for caption in _skipped_caption_values(section)
+            if caption in caption_set
+        ]
         group_ids = {group["id"] for group in groups}
         item_order: list[dict] = []
         seen_captions: set[str] = set()
@@ -109,6 +129,9 @@ def _get_folder_sections(cfg: dict, folder: str) -> list[dict]:
             "sentences": list(captions),
             "groups": groups,
             "item_order": item_order,
+            "skip_auto_caption": bool(section.get("skip_auto_caption")),
+            "skip_captions": skipped_captions,
+            "skip_sentences": list(skipped_captions),
         }
 
     folder_key = os.path.normpath(folder)
@@ -247,11 +270,15 @@ def _iter_caption_targets(sections: list[dict]):
     for section in sections:
         for item in _iter_section_items(section):
             if item["type"] == "caption":
+                caption = item["caption"]
+                skip_reason = "section" if bool(section.get("skip_auto_caption")) else "caption" if caption in _skipped_caption_values(section) else ""
                 yield {
                     "type": "caption",
                     "section_name": section.get("name", ""),
-                    "caption": item["caption"],
-                    "sentence": item["caption"],
+                    "caption": caption,
+                    "sentence": caption,
+                    "skip_auto_caption": bool(skip_reason),
+                    "skip_reason": skip_reason,
                 }
                 continue
 
@@ -259,6 +286,12 @@ def _iter_caption_targets(sections: list[dict]):
             group_captions = _caption_values(group)
             if not group_captions:
                 continue
+            skipped_group_captions = [
+                caption
+                for caption in _skipped_caption_values(group)
+                if caption in group_captions
+            ]
+            skip_reason = "section" if bool(section.get("skip_auto_caption")) else "group" if bool(group.get("skip_auto_caption")) else "caption" if skipped_group_captions else ""
             yield {
                 "type": "group",
                 "section_index": None,
@@ -267,6 +300,10 @@ def _iter_caption_targets(sections: list[dict]):
                 "group_name": group.get("name", ""),
                 "captions": group_captions,
                 "sentences": list(group_captions),
+                "skip_auto_caption": bool(skip_reason),
+                "skip_reason": skip_reason,
+                "skip_captions": skipped_group_captions,
+                "skip_sentences": list(skipped_group_captions),
             }
 
 
@@ -291,13 +328,17 @@ def _iter_caption_targets_with_indices(sections: list[dict]):
         }
         for item in _iter_section_items(section):
             if item["type"] == "caption":
+                caption = item["caption"]
+                skip_reason = "section" if bool(section.get("skip_auto_caption")) else "caption" if caption in _skipped_caption_values(section) else ""
                 yield {
                     "type": "caption",
                     "section_index": section_index,
                     "group_index": None,
                     "section_name": section.get("name", ""),
-                    "caption": item["caption"],
-                    "sentence": item["caption"],
+                    "caption": caption,
+                    "sentence": caption,
+                    "skip_auto_caption": bool(skip_reason),
+                    "skip_reason": skip_reason,
                 }
                 continue
 
@@ -307,6 +348,12 @@ def _iter_caption_targets_with_indices(sections: list[dict]):
             group_index = group_index_by_id.get(group_id)
             if not group_captions or group_index is None:
                 continue
+            skipped_group_captions = [
+                caption
+                for caption in _skipped_caption_values(group)
+                if caption in group_captions
+            ]
+            skip_reason = "section" if bool(section.get("skip_auto_caption")) else "group" if bool(group.get("skip_auto_caption")) else "caption" if skipped_group_captions else ""
             yield {
                 "type": "group",
                 "section_index": section_index,
@@ -315,6 +362,10 @@ def _iter_caption_targets_with_indices(sections: list[dict]):
                 "group_name": group.get("name", ""),
                 "captions": group_captions,
                 "sentences": list(group_captions),
+                "skip_auto_caption": bool(skip_reason),
+                "skip_reason": skip_reason,
+                "skip_captions": skipped_group_captions,
+                "skip_sentences": list(skipped_group_captions),
             }
 
 
@@ -331,6 +382,12 @@ def _get_group_target(sections: list[dict], section_index: int | None, group_ind
     group_captions = _caption_values(group)
     if not group_captions:
         return None
+    skipped_group_captions = [
+        caption
+        for caption in _skipped_caption_values(group)
+        if caption in group_captions
+    ]
+    skip_reason = "section" if bool(sections[section_index].get("skip_auto_caption")) else "group" if bool(group.get("skip_auto_caption")) else "caption" if skipped_group_captions else ""
     return {
         "type": "group",
         "section_index": section_index,
@@ -339,6 +396,10 @@ def _get_group_target(sections: list[dict], section_index: int | None, group_ind
         "group_name": group.get("name", ""),
         "captions": group_captions,
         "sentences": list(group_captions),
+        "skip_auto_caption": bool(skip_reason),
+        "skip_reason": skip_reason,
+        "skip_captions": skipped_group_captions,
+        "skip_sentences": list(skipped_group_captions),
     }
 
 
@@ -404,6 +465,7 @@ def _rename_caption_in_sections(sections: list[dict], old_caption: str, new_capt
             section["item_order"] = section_item_order
 
         section_captions = _caption_values(section)
+        section_skip_captions = _skipped_caption_values(section)
         if old_caption in section_captions:
             renamed = True
         section["captions"] = [
@@ -411,10 +473,17 @@ def _rename_caption_in_sections(sections: list[dict], old_caption: str, new_capt
             for caption in section_captions
         ]
         section["sentences"] = list(section["captions"])
+        section["skip_captions"] = [
+            new_caption if caption == old_caption else caption
+            for caption in section_skip_captions
+            if (new_caption if caption == old_caption else caption) in section["captions"]
+        ]
+        section["skip_sentences"] = list(section["skip_captions"])
 
         for group in section.get("groups", []) or []:
             group_hidden_captions = _hidden_caption_values(group)
             group_captions = _caption_values(group)
+            group_skip_captions = _skipped_caption_values(group)
             if old_caption in group_captions:
                 renamed = True
             group["captions"] = [
@@ -428,6 +497,12 @@ def _rename_caption_in_sections(sections: list[dict], old_caption: str, new_capt
                 if (new_caption if caption == old_caption else caption) in group["captions"]
             ]
             group["hidden_sentences"] = list(group["hidden_captions"])
+            group["skip_captions"] = [
+                new_caption if caption == old_caption else caption
+                for caption in group_skip_captions
+                if (new_caption if caption == old_caption else caption) in group["captions"]
+            ]
+            group["skip_sentences"] = list(group["skip_captions"])
     return renamed
 
 
@@ -436,10 +511,17 @@ def _remove_caption_from_sections(sections: list[dict], caption_to_remove: str) 
     removed = False
     for section in sections:
         section_captions = _caption_values(section)
+        section_skip_captions = _skipped_caption_values(section)
         if caption_to_remove in section_captions:
             removed = True
         section["captions"] = [caption for caption in section_captions if caption != caption_to_remove]
         section["sentences"] = list(section["captions"])
+        section["skip_captions"] = [
+            caption
+            for caption in section_skip_captions
+            if caption != caption_to_remove and caption in section["captions"]
+        ]
+        section["skip_sentences"] = list(section["skip_captions"])
         section["item_order"] = [
             {
                 "type": "sentence",
@@ -460,6 +542,7 @@ def _remove_caption_from_sections(sections: list[dict], caption_to_remove: str) 
         for group in section.get("groups", []) or []:
             group_hidden_captions = _hidden_caption_values(group)
             group_captions = _caption_values(group)
+            group_skip_captions = _skipped_caption_values(group)
             if caption_to_remove in group_captions:
                 removed = True
             group["captions"] = [caption for caption in group_captions if caption != caption_to_remove]
@@ -470,6 +553,12 @@ def _remove_caption_from_sections(sections: list[dict], caption_to_remove: str) 
                 if caption != caption_to_remove and caption in group["captions"]
             ]
             group["hidden_sentences"] = list(group["hidden_captions"])
+            group["skip_captions"] = [
+                caption
+                for caption in group_skip_captions
+                if caption != caption_to_remove and caption in group["captions"]
+            ]
+            group["skip_sentences"] = list(group["skip_captions"])
     return removed
 
 

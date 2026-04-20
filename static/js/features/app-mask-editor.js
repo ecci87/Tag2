@@ -2066,18 +2066,77 @@ function toggleMaskLatentPreview() {
   renderMaskEditorUi();
 }
 
+async function removePreviewCaption(sentence) {
+  const path = state.previewPath;
+  if (!path || !sentence) return;
+  statusBar.textContent = "Removing caption...";
+  try {
+    const resp = await fetch("/api/caption/batch-toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_paths: [path],
+        caption: sentence,
+        enabled: false,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to remove caption");
+    }
+    const cache = ensureCaptionCache(path);
+    cache.enabled_sentences = applySentenceSelectionToList(cache.enabled_sentences, sentence, false);
+    refreshGridForActiveFilters();
+    renderSentences();
+    renderPreviewCaptionOverlay();
+    markCaptionIndicator(path, hasEffectiveCaptionContent(cache));
+    statusBar.textContent = `Removed \"${sentence}\"`;
+  } catch (err) {
+    statusBar.textContent = `Remove caption error: ${err.message}`;
+  }
+}
+
+function updatePreviewCaptionItem(item, sentence) {
+  if (!item) return;
+  item.dataset.sentence = sentence;
+  const jumpButton = item.querySelector(".preview-caption-link");
+  if (jumpButton) {
+    jumpButton.dataset.sentence = sentence;
+    jumpButton.textContent = sentence;
+    jumpButton.setAttribute("aria-label", `Jump to caption: ${sentence}`);
+  }
+  const removeButton = item.querySelector(".preview-caption-remove-btn");
+  if (removeButton) {
+    removeButton.setAttribute("aria-label", `Remove caption: ${sentence}`);
+    removeButton.title = `Remove \"${sentence}\" from this image`;
+  }
+}
+
 function createPreviewCaptionButton(sentence) {
+  const item = document.createElement("div");
+  item.className = "preview-caption-chip";
+
   const button = document.createElement("button");
   button.type = "button";
   button.className = "preview-caption-link";
-  button.dataset.sentence = sentence;
-  button.textContent = sentence;
-  button.setAttribute("aria-label", `Jump to caption: ${sentence}`);
   button.addEventListener("click", (e) => {
     e.stopPropagation();
     jumpToSentenceInList(sentence);
   });
-  return button;
+
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.className = "preview-caption-remove-btn";
+  removeButton.textContent = "x";
+  removeButton.addEventListener("click", (e) => {
+    e.stopPropagation();
+    removePreviewCaption(sentence);
+  });
+
+  item.appendChild(button);
+  item.appendChild(removeButton);
+  updatePreviewCaptionItem(item, sentence);
+  return item;
 }
 
 function renderPreviewCaptionOverlay() {
@@ -2101,14 +2160,12 @@ function renderPreviewCaptionOverlay() {
 
   if (!state.previewCaptionOverlayCollapsed) {
     const existingButtons = new Map(
-      [...previewCaptionList.querySelectorAll(".preview-caption-link")].map((button) => [button.dataset.sentence || button.textContent || "", button])
+      [...previewCaptionList.querySelectorAll(".preview-caption-chip")].map((item) => [item.dataset.sentence || "", item])
     );
     const nextButtons = sentences.map((sentence) => {
       const existingButton = existingButtons.get(sentence);
       if (existingButton) {
-        existingButton.textContent = sentence;
-        existingButton.dataset.sentence = sentence;
-        existingButton.setAttribute("aria-label", `Jump to caption: ${sentence}`);
+        updatePreviewCaptionItem(existingButton, sentence);
         return existingButton;
       }
       return createPreviewCaptionButton(sentence);

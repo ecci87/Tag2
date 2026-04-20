@@ -4,6 +4,30 @@ function getPreviewEnabledSentences(path = state.previewPath) {
   return orderEnabledSentences(enabledSentences);
 }
 
+function normalizeMediaSearchQuery(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function hasActiveSearchQuery() {
+  return !!normalizeMediaSearchQuery(state.mediaSearchQuery);
+}
+
+function getCaptionSearchableText(path) {
+  const caption = state.captionCache[path];
+  if (!caption) return "";
+  const enabledSentences = Array.isArray(caption.enabled_sentences) ? caption.enabled_sentences : [];
+  const freeText = String(caption.free_text || "");
+  return `${enabledSentences.join("\n")}\n${freeText}`.toLowerCase();
+}
+
+function imageMatchesSearchQuery(image) {
+  const query = normalizeMediaSearchQuery(state.mediaSearchQuery);
+  if (!query) return true;
+  const fileName = String(image?.name || "").trim().toLowerCase();
+  if (fileName.includes(query)) return true;
+  return getCaptionSearchableText(image?.path).includes(query);
+}
+
 function getActiveSentenceFilters() {
   return [...state.activeSentenceFilters.keys()].filter(Boolean);
 }
@@ -63,6 +87,7 @@ function buildActiveFilterSummary() {
   const captionClauses = getActiveSentenceFilterClauses();
   const hasClauses = captionClauses.filter(clause => clause.type === "group" || clause.mode !== "missing");
   const missingClauses = captionClauses.filter(clause => clause.type !== "group" && clause.mode === "missing");
+  const searchQuery = String(state.mediaSearchQuery || "").trim();
 
   if (hasClauses.length > 0) {
     lines.push("Has:");
@@ -120,6 +145,11 @@ function buildActiveFilterSummary() {
     });
   }
 
+  if (searchQuery) {
+    if (lines.length > 0) lines.push("");
+    lines.push(`Search: \"${searchQuery}\"`);
+  }
+
   return lines.join("\n").trim();
 }
 
@@ -132,7 +162,7 @@ function getActiveMetaFilterCount() {
 }
 
 function getActiveFilterCount() {
-  return getActiveSentenceFilterEntries().length + getActiveMetaFilterCount();
+  return getActiveSentenceFilterEntries().length + getActiveMetaFilterCount() + (hasActiveSearchQuery() ? 1 : 0);
 }
 
 function hasAnyActiveFilters() {
@@ -185,17 +215,20 @@ function imageMatchesMetaFilters(image) {
 function imageMatchesActiveFilters(image) {
   const filters = getActiveSentenceFilterEntries();
   if (!imageMatchesMetaFilters(image)) return false;
-  if (filters.length === 0 || !canApplyActiveSentenceFilters()) return true;
-  const clauses = getActiveSentenceFilterClauses(filters);
-  const enabled = new Set(getEnabledSentencesForPath(image?.path));
-  return clauses.every((clause) => {
-    if (clause.type === "group") {
-      return clause.sentences.some(sentence => enabled.has(sentence));
-    }
-    return clause.mode === "missing"
-      ? !enabled.has(clause.sentence)
-      : enabled.has(clause.sentence);
-  });
+  if (filters.length > 0 && canApplyActiveSentenceFilters()) {
+    const clauses = getActiveSentenceFilterClauses(filters);
+    const enabled = new Set(getEnabledSentencesForPath(image?.path));
+    const matchesSentenceFilters = clauses.every((clause) => {
+      if (clause.type === "group") {
+        return clause.sentences.some(sentence => enabled.has(sentence));
+      }
+      return clause.mode === "missing"
+        ? !enabled.has(clause.sentence)
+        : enabled.has(clause.sentence);
+    });
+    if (!matchesSentenceFilters) return false;
+  }
+  return imageMatchesSearchQuery(image);
 }
 
 function getVisibleImageEntries() {
@@ -242,10 +275,11 @@ async function fetchMetadataBulk(paths) {
 
 async function ensureCaptionCacheLoadedForFiltering() {
   const filters = getActiveSentenceFilters();
-  if (filters.length === 0 || state.images.length === 0) return;
+  const searchActive = hasActiveSearchQuery();
+  if ((filters.length === 0 && !searchActive) || state.images.length === 0) return;
 
   const filterKey = getActiveSentenceFilterKey();
-  const needsReload = state.filterCaptionCacheKey !== filterKey || state.images.some(img => !state.captionCache[img.path]);
+  const needsReload = (filters.length > 0 && state.filterCaptionCacheKey !== filterKey) || state.images.some(img => !state.captionCache[img.path]);
   if (!needsReload) return;
   if (state.filterLoadingPromise) return state.filterLoadingPromise;
 
@@ -254,7 +288,9 @@ async function ensureCaptionCacheLoadedForFiltering() {
     for (const [path, caption] of Object.entries(data || {})) {
       state.captionCache[path] = normalizeCaptionCacheEntry(caption);
     }
-    state.filterCaptionCacheKey = filterKey;
+    if (filters.length > 0) {
+      state.filterCaptionCacheKey = filterKey;
+    }
   })().finally(() => {
     state.filterLoadingPromise = null;
   });
@@ -299,6 +335,13 @@ function renderFilterActions() {
     ? `Clear ${filterCount} active filter${filterCount === 1 ? "" : "s"}. ${filterSummary.replace(/\s+/g, " ").trim()}`
     : "No active filters"
   );
+  if (mediaSearchInput) {
+    const searchQuery = String(state.mediaSearchQuery || "").trim();
+    mediaSearchInput.classList.toggle("active", !!searchQuery);
+    mediaSearchInput.title = searchQuery
+      ? `Searching filenames and caption text for \"${searchQuery}\"`
+      : "Search filenames and caption text";
+  }
 }
 
 function clearSentenceFilters() {
@@ -309,10 +352,53 @@ function clearSentenceFilters() {
   state.activeMetaFilters.aspectState = "any";
   state.activeMetaFilters.maskState = "any";
   state.activeMetaFilters.captionState = "any";
+  state.mediaSearchQuery = "";
+  if (mediaSearchInput) {
+    mediaSearchInput.value = "";
+  }
   state.filterCaptionCacheKey = "";
   renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
   renderSentences();
   statusBar.textContent = "Filters cleared";
+}
+
+async function updateMediaSearchQuery(value) {
+  const nextQuery = String(value || "");
+  if (nextQuery === state.mediaSearchQuery) return;
+  state.mediaSearchQuery = nextQuery;
+
+  const preferredPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
+  const previousScrollTop = fileGridContainer.scrollTop;
+  renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
+  renderSentences();
+
+  const normalizedQuery = normalizeMediaSearchQuery(nextQuery);
+  if (!normalizedQuery) {
+    const count = getActiveFilterCount();
+    statusBar.textContent = count > 0
+      ? `Filtered by ${count} filter${count === 1 ? "" : "s"}`
+      : "Search cleared";
+    return;
+  }
+
+  statusBar.textContent = `Searching ${state.images.length} media file${state.images.length === 1 ? "" : "s"}...`;
+  try {
+    await ensureCaptionCacheLoadedForFiltering();
+    if (normalizeMediaSearchQuery(state.mediaSearchQuery) !== normalizedQuery) return;
+    renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
+    renderSentences();
+    const visibleCount = getVisibleImageEntries().length;
+    statusBar.textContent = `Search matched ${visibleCount} media file${visibleCount === 1 ? "" : "s"}`;
+  } catch (err) {
+    if (normalizeMediaSearchQuery(state.mediaSearchQuery) !== normalizedQuery) return;
+    statusBar.textContent = `Search error: ${err.message}`;
+  }
+}
+
+function handleMediaSearchInput(event) {
+  updateMediaSearchQuery(event?.target?.value || "").catch((err) => {
+    statusBar.textContent = `Search error: ${err.message}`;
+  });
 }
 
 function getNextTriStateFilterValue(currentValue) {

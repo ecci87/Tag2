@@ -1,10 +1,10 @@
 function createEmptyGroup(name = "") {
   const id = makeUiId("group");
-  return { id, name, sentences: [], hidden_sentences: [], _uiId: id };
+  return { id, name, sentences: [], hidden_sentences: [], skip_sentences: [], skip_auto_caption: false, _uiId: id };
 }
 
 function createEmptySection(name = "") {
-  return { name, sentences: [], groups: [], item_order: [], _uiId: makeUiId("section") };
+  return { name, sentences: [], groups: [], item_order: [], skip_sentences: [], skip_auto_caption: false, _uiId: makeUiId("section") };
 }
 
 function createSentenceOrderItem(sentence) {
@@ -113,11 +113,24 @@ function normalizeGroupData(group) {
     hiddenSeen.add(text);
     hiddenSentences.push(text);
   }
+  const skippedSentences = [];
+  const skippedSeen = new Set();
+  const sourceSkippedSentences = Array.isArray(group?.skip_captions)
+    ? group.skip_captions
+    : (Array.isArray(group?.skip_sentences) ? group.skip_sentences : []);
+  for (const raw of sourceSkippedSentences) {
+    const text = String(raw || "").trim();
+    if (!text || skippedSeen.has(text) || !sentences.includes(text)) continue;
+    skippedSeen.add(text);
+    skippedSentences.push(text);
+  }
   return {
     id: String(group?.id || group?._uiId || makeUiId("group")).trim(),
     name: String(group?.name || "").trim(),
     sentences,
     hidden_sentences: hiddenSentences,
+    skip_sentences: skippedSentences,
+    skip_auto_caption: !!group?.skip_auto_caption,
     _uiId: group?._uiId || makeUiId("group"),
   };
 }
@@ -132,12 +145,25 @@ function normalizeSectionData(section) {
     seen.add(text);
     sentences.push(text);
   }
+  const skippedSentences = [];
+  const skippedSeen = new Set();
+  const sourceSkippedSentences = Array.isArray(section?.skip_captions)
+    ? section.skip_captions
+    : (Array.isArray(section?.skip_sentences) ? section.skip_sentences : []);
+  for (const raw of sourceSkippedSentences) {
+    const text = String(raw || "").trim();
+    if (!text || skippedSeen.has(text) || !sentences.includes(text)) continue;
+    skippedSeen.add(text);
+    skippedSentences.push(text);
+  }
   const groups = (Array.isArray(section?.groups) ? section.groups : []).map(normalizeGroupData);
   return {
     name: String(section?.name || "").trim(),
     sentences,
     groups,
     item_order: getNormalizedSectionItemOrder(section, sentences, groups),
+    skip_sentences: skippedSentences,
+    skip_auto_caption: !!section?.skip_auto_caption,
     _uiId: section?._uiId || makeUiId("section"),
   };
 }
@@ -151,11 +177,15 @@ function serializeSectionsForSave() {
   return normalizeSectionsData(state.sections).map(section => ({
     name: section.name,
     captions: [...section.sentences],
+    skip_auto_caption: !!section.skip_auto_caption,
+    skip_captions: [...(section.skip_sentences || [])],
     groups: section.groups.map(group => ({
       id: group.id,
       name: group.name,
       captions: [...group.sentences],
       hidden_captions: [...(group.hidden_sentences || [])],
+      skip_auto_caption: !!group.skip_auto_caption,
+      skip_captions: [...(group.skip_sentences || [])],
     })),
     item_order: (section.item_order || []).map(item => (item.type === "sentence" || item.type === "caption")
       ? { type: "caption", caption: item.sentence || item.caption }
@@ -196,6 +226,23 @@ function findGroupSentencesForSentence(sentence) {
 function isSentenceHiddenOnExport(sentence) {
   const group = findGroupForSentence(sentence);
   return !!group && (group.hidden_sentences || []).includes(sentence);
+}
+
+function isSectionSkippedForAutoCaption(section) {
+  return !!section?.skip_auto_caption;
+}
+
+function isGroupSkippedForAutoCaption(group) {
+  return !!group?.skip_auto_caption;
+}
+
+function isSentenceSkippedForAutoCaption(sentence) {
+  const location = findSentenceLocation(sentence);
+  if (!location) return false;
+  if (!location.group) {
+    return (location.section?.skip_sentences || []).includes(sentence);
+  }
+  return (location.group?.skip_sentences || []).includes(sentence);
 }
 
 function getConfiguredSentenceOrder() {
@@ -298,6 +345,26 @@ function applySentenceSelectionToList(enabledSentences, sentence, shouldEnable) 
     next.push(sentence);
   }
   return orderEnabledSentences(next);
+}
+
+function normalizeEnabledSentencesForSections(enabledSentences) {
+  const knownSentences = new Set(getAllConfiguredSentences());
+  let normalized = [];
+  for (const rawSentence of Array.isArray(enabledSentences) ? enabledSentences : []) {
+    const sentence = String(rawSentence || "").trim();
+    if (!sentence || !knownSentences.has(sentence)) continue;
+    normalized = applySentenceSelectionToList(normalized, sentence, true);
+  }
+  return orderEnabledSentences(normalized);
+}
+
+function normalizeCaptionCacheForCurrentSections(paths = null) {
+  const targetPaths = Array.isArray(paths) ? paths : Object.keys(state.captionCache || {});
+  for (const path of targetPaths) {
+    const caption = state.captionCache[path];
+    if (!caption) continue;
+    caption.enabled_sentences = normalizeEnabledSentencesForSections(caption.enabled_sentences);
+  }
 }
 
 function ensureCaptionCache(path) {

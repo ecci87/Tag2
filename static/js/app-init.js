@@ -91,6 +91,10 @@ clearFiltersBtn.addEventListener("click", clearSentenceFilters);
 filterArBtn.addEventListener("click", toggleAspectFilter);
 filterMaskBtn.addEventListener("click", toggleMaskPresenceFilter);
 filterTxtBtn.addEventListener("click", toggleCaptionPresenceFilter);
+if (mediaSearchInput) {
+  mediaSearchInput.addEventListener("input", handleMediaSearchInput);
+  mediaSearchInput.addEventListener("search", handleMediaSearchInput);
+}
 if (promptPreviewGridToggleBtn) {
   promptPreviewGridToggleBtn.addEventListener("click", () => {
     state.showPromptPreviewThumbnails = !state.showPromptPreviewThumbnails;

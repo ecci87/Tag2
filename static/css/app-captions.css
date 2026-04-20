@@ -270,6 +270,9 @@
 .section-sentences li .check-box.radio.partial::after { content: "◐"; font-size: 9px; }
 .section-sentences li .sentence-text { flex: 1; }
 .section-sentences li .sentence-text.partial { color: var(--fg-dim); font-style: italic; }
+.section-sentences li .sentence-text.skip-auto-caption {
+  color: var(--accent-warn);
+}
 .section-sentences li .sentence-text.hidden-export::after {
   content: " not in txt";
   margin-left: 6px;
@@ -359,6 +362,80 @@
   border-color: rgba(243,139,168,0.42);
   background: rgba(243,139,168,0.12);
   color: #f38ba8;
+}
+.section-sentences li .auto-caption-skip-btn,
+.section-header .auto-caption-skip-btn,
+.group-header .auto-caption-skip-btn {
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.section-sentences li .auto-caption-skip-btn {
+  min-width: 20px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.section-header .auto-caption-skip-btn,
+.group-header .auto-caption-skip-btn {
+  min-width: 20px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.auto-caption-skip-icon {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+.auto-caption-skip-icon-text {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.auto-caption-skip-icon-ban {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+.auto-caption-skip-icon-ban::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 5px;
+  height: 1.5px;
+  background: currentColor;
+  transform: rotate(-45deg);
+  transform-origin: center;
+  border-radius: 999px;
+}
+.section-sentences li .auto-caption-skip-btn:hover,
+.section-header .auto-caption-skip-btn:hover,
+.group-header .auto-caption-skip-btn:hover {
+  border-color: rgba(249,226,175,0.5);
+  color: var(--accent-warn);
+}
+.section-sentences li .auto-caption-skip-btn.active,
+.section-header .auto-caption-skip-btn.active,
+.group-header .auto-caption-skip-btn.active {
+  border-color: rgba(249,226,175,0.5);
+  background: rgba(249,226,175,0.14);
+  color: var(--accent-warn);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 0 0 1px rgba(249,226,175,0.08);
 }
 .section-sentences li .remove-btn:focus-visible {
   outline: 2px solid rgba(243,139,168,0.45);
