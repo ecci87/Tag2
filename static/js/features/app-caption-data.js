@@ -302,6 +302,8 @@ function createEmptyMetadataCacheEntry() {
     min_t: null,
     max_t: null,
     sampling_frequency: null,
+    caption_dropout_enabled: false,
+    caption_dropout_caption: null,
   };
 }
 
@@ -319,12 +321,36 @@ function normalizeFloatMetadataValue(value) {
   return parsed;
 }
 
+function normalizeBooleanMetadataValue(value) {
+  return value === true;
+}
+
+function normalizeMetadataCaptionDropoutValue(value) {
+  if (Array.isArray(value)) {
+    for (const rawItem of value) {
+      const text = String(rawItem || "").trim();
+      if (text) return text;
+    }
+    return null;
+  }
+  const text = String(value || "").trim();
+  return text || null;
+}
+
+function formatMetadataCaptionDropoutValue(caption) {
+  return normalizeMetadataCaptionDropoutValue(caption) || "";
+}
+
 function normalizeMetadataCacheEntry(metadata) {
   const normalized = createEmptyMetadataCacheEntry();
   const seed = normalizeIntegerMetadataValue(metadata?.seed);
   const minT = normalizeIntegerMetadataValue(metadata?.min_t);
   const maxT = normalizeIntegerMetadataValue(metadata?.max_t);
   const samplingFrequency = normalizeFloatMetadataValue(metadata?.sampling_frequency);
+  const captionDropoutEnabled = normalizeBooleanMetadataValue(metadata?.caption_dropout_enabled);
+  const captionDropoutCaption = normalizeMetadataCaptionDropoutValue(
+    metadata?.caption_dropout_caption ?? metadata?.caption_dropout_captions
+  );
 
   if (seed !== null) normalized.seed = seed;
   if (minT !== null) normalized.min_t = minT;
@@ -332,6 +358,8 @@ function normalizeMetadataCacheEntry(metadata) {
   if (samplingFrequency !== null && samplingFrequency >= 0) {
     normalized.sampling_frequency = samplingFrequency;
   }
+  normalized.caption_dropout_enabled = captionDropoutEnabled;
+  normalized.caption_dropout_caption = captionDropoutCaption;
   return normalized;
 }
 
@@ -406,6 +434,18 @@ function getMetadataFieldDefinitions() {
   ];
 }
 
+function getMetadataCheckboxState() {
+  return {
+    checked: !!metadataCaptionDropoutEnabledInput.checked,
+    indeterminate: !!metadataCaptionDropoutEnabledInput.indeterminate,
+  };
+}
+
+function setMetadataCheckboxState(checked, indeterminate = false) {
+  metadataCaptionDropoutEnabledInput.indeterminate = !!indeterminate;
+  metadataCaptionDropoutEnabledInput.checked = !!checked && !indeterminate;
+}
+
 function formatMetadataFieldValue(fieldName, value) {
   if (value === null || value === undefined || value === "") return "";
   return fieldName === "sampling_frequency" ? `${value}` : `${Math.trunc(value)}`;
@@ -434,6 +474,12 @@ function parseFloatMetadataInput(inputEl, label) {
   return parsed;
 }
 
+function parseMetadataCaptionDropoutInput(rawValue = null) {
+  return normalizeMetadataCaptionDropoutValue(
+    rawValue === null ? metadataCaptionDropoutInput?.value : rawValue
+  );
+}
+
 function validateMetadataRange(metadata) {
   const minT = metadata?.min_t;
   const maxT = metadata?.max_t;
@@ -447,10 +493,71 @@ function setMetadataFieldState(field, value, placeholder = "Not set") {
   field.input.placeholder = placeholder;
 }
 
+function setMetadataCaptionDropoutFieldState(caption, placeholder = "Not set") {
+  metadataCaptionDropoutInput.value = formatMetadataCaptionDropoutValue(caption);
+  metadataCaptionDropoutInput.placeholder = placeholder;
+}
+
+function captureMetadataEditorUiState() {
+  const values = {};
+  for (const field of getMetadataFieldDefinitions()) {
+    values[field.key] = String(field.input.value || "").trim();
+  }
+  values.caption_dropout_caption = formatMetadataCaptionDropoutValue(parseMetadataCaptionDropoutInput());
+  values.caption_dropout_enabled = getMetadataCheckboxState();
+  return values;
+}
+
+function areMetadataEditorUiStatesEqual(left, right) {
+  if (!left || !right) return false;
+  for (const field of getMetadataFieldDefinitions()) {
+    if (String(left[field.key] || "") !== String(right[field.key] || "")) {
+      return false;
+    }
+  }
+  if (String(left.caption_dropout_caption || "") !== String(right.caption_dropout_caption || "")) {
+    return false;
+  }
+  return !!left.caption_dropout_enabled?.checked === !!right.caption_dropout_enabled?.checked
+    && !!left.caption_dropout_enabled?.indeterminate === !!right.caption_dropout_enabled?.indeterminate;
+}
+
+function resetMetadataEditorTracking() {
+  state.metadataEditorBaseline = null;
+  state.metadataEditorDirty = false;
+}
+
+function updateMetadataCancelButtonState() {
+  const disabled = state.selectedPaths.size === 0 || state.metadataSaving || !state.metadataEditorDirty;
+  metadataCancelBtn.disabled = disabled;
+}
+
+function initializeMetadataEditorTracking() {
+  state.metadataEditorBaseline = captureMetadataEditorUiState();
+  state.metadataEditorDirty = false;
+  updateMetadataCancelButtonState();
+}
+
+function updateMetadataEditorDirtyState() {
+  if (!state.metadataEditorBaseline || state.selectedPaths.size === 0) {
+    state.metadataEditorDirty = false;
+    updateMetadataCancelButtonState();
+    return false;
+  }
+  state.metadataEditorDirty = !areMetadataEditorUiStatesEqual(
+    captureMetadataEditorUiState(),
+    state.metadataEditorBaseline
+  );
+  updateMetadataCancelButtonState();
+  return state.metadataEditorDirty;
+}
+
 function setMetadataInputsDisabled(disabled) {
   for (const field of getMetadataFieldDefinitions()) {
     field.input.disabled = disabled;
   }
+  metadataCaptionDropoutInput.disabled = disabled;
+  metadataCaptionDropoutEnabledInput.disabled = disabled;
 }
 
 function renderMetadataEditor(options = {}) {
@@ -461,10 +568,7 @@ function renderMetadataEditor(options = {}) {
   const disabled = selectedPaths.length === 0 || state.metadataSaving;
 
   setMetadataInputsDisabled(disabled);
-  metadataSaveBtn.disabled = disabled;
-  metadataSaveBtn.textContent = state.metadataSaving
-    ? (isMulti ? "Applying..." : "Saving...")
-    : (isMulti ? `Apply to ${selectedPaths.length} Files` : "Save Metadata");
+  updateMetadataCancelButtonState();
 
   if (!selectedPaths.length) {
     metadataEditorSummary.textContent = "No media selected";
@@ -472,26 +576,35 @@ function renderMetadataEditor(options = {}) {
     for (const field of getMetadataFieldDefinitions()) {
       setMetadataFieldState(field, null, "Not set");
     }
+    setMetadataCaptionDropoutFieldState(null, "Not set");
+    setMetadataCheckboxState(false, false);
+    resetMetadataEditorTracking();
+    updateMetadataCancelButtonState();
     return;
   }
 
   if (isSingle) {
     const path = selectedPaths[0];
     metadataEditorSummary.textContent = getFileLabel(path);
-    metadataEditorNote.textContent = "Blank fields remove those keys from this file's .meta.json sidecar.";
+    metadataEditorNote.textContent = "Blank fields remove those keys from this file's .meta.json sidecar. Leave Caption Dropout unchecked to disable it for this sample.";
     if (preserveInputs) {
+      updateMetadataEditorDirtyState();
       return;
     }
     const metadata = ensureMetadataCache(path);
     for (const field of getMetadataFieldDefinitions()) {
       setMetadataFieldState(field, metadata[field.key], "Not set");
     }
+    setMetadataCaptionDropoutFieldState(metadata.caption_dropout_caption, "Not set");
+    setMetadataCheckboxState(metadata.caption_dropout_enabled, false);
+    initializeMetadataEditorTracking();
     return;
   }
 
   metadataEditorSummary.textContent = `${selectedPaths.length} media files selected`;
-  metadataEditorNote.textContent = "Filled fields are applied to all selected files. Blank fields leave existing values unchanged.";
+  metadataEditorNote.textContent = "Filled fields are applied to all selected files. Blank fields leave existing values unchanged. Mixed checkbox state leaves existing caption-dropout enable flags unchanged.";
   if (preserveInputs) {
+    updateMetadataEditorDirtyState();
     return;
   }
   for (const field of getMetadataFieldDefinitions()) {
@@ -504,6 +617,29 @@ function renderMetadataEditor(options = {}) {
       field.input.placeholder = "Mixed values";
     }
   }
+
+  const captionValues = selectedPaths.map((path) => {
+    const value = ensureMetadataCache(path).caption_dropout_caption;
+    return value === null ? "__empty__" : String(value);
+  });
+  const uniqueCaptionValues = [...new Set(captionValues)];
+  if (uniqueCaptionValues.length === 1) {
+    const value = uniqueCaptionValues[0] === "__empty__" ? null : uniqueCaptionValues[0];
+    setMetadataCaptionDropoutFieldState(value, uniqueCaptionValues[0] === "__empty__" ? "Not set" : "");
+  } else {
+    metadataCaptionDropoutInput.value = "";
+    metadataCaptionDropoutInput.placeholder = "Mixed values";
+  }
+
+  const enabledValues = selectedPaths.map((path) => ensureMetadataCache(path).caption_dropout_enabled === true);
+  const uniqueEnabledValues = [...new Set(enabledValues.map((value) => (value ? "true" : "false")))];
+  if (uniqueEnabledValues.length === 1) {
+    setMetadataCheckboxState(uniqueEnabledValues[0] === "true", false);
+  } else {
+    setMetadataCheckboxState(false, true);
+  }
+
+  initializeMetadataEditorTracking();
 }
 
 function buildSingleMetadataPayload() {
@@ -511,6 +647,8 @@ function buildSingleMetadataPayload() {
   for (const field of getMetadataFieldDefinitions()) {
     metadata[field.key] = field.parse();
   }
+  metadata.caption_dropout_enabled = !!metadataCaptionDropoutEnabledInput.checked;
+  metadata.caption_dropout_caption = parseMetadataCaptionDropoutInput();
   validateMetadataRange(metadata);
   return metadata;
 }
@@ -521,8 +659,22 @@ function buildBatchMetadataChanges() {
     if (!String(field.input.value || "").trim()) continue;
     changes[field.key] = field.parse();
   }
+  const captionDropoutCaption = parseMetadataCaptionDropoutInput();
+  if (captionDropoutCaption !== null) {
+    changes.caption_dropout_caption = captionDropoutCaption;
+  }
+  const checkboxState = getMetadataCheckboxState();
+  if (!checkboxState.indeterminate) {
+    changes.caption_dropout_enabled = checkboxState.checked;
+  }
   validateMetadataRange(changes);
   return changes;
+}
+
+function cancelMetadataChanges() {
+  if (state.selectedPaths.size === 0 || state.metadataSaving || !state.metadataEditorDirty) return;
+  renderMetadataEditor();
+  statusBar.textContent = "Metadata changes discarded";
 }
 
 function setActiveRightPanelTab(tabName) {

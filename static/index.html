@@ -312,15 +312,25 @@
               <span>Max t</span>
               <input id="metadata-max-t-input" type="number" step="1" placeholder="Not set" inputmode="numeric" disabled>
             </label>
+            <label class="metadata-field metadata-field-wide">
+              <span>Dropout Caption</span>
+              <textarea id="metadata-caption-dropout-input" rows="4" placeholder="Not set" disabled></textarea>
+              <span class="metadata-field-help">Enter the plain-text caption ai-toolkit should use when caption dropout triggers for this sample. Leave this blank to allow a truly empty dropout caption.</span>
+            </label>
+            <label class="metadata-checkbox-field">
+              <input id="metadata-caption-dropout-enabled-input" type="checkbox" disabled>
+              <span>Enable Caption Dropout</span>
+            </label>
           </div>
           <div class="metadata-editor-guidance" role="note" aria-label="Metadata usage hints">
             <p><strong>Reminder:</strong> <code>Min t</code> and <code>Max t</code> limit which timesteps a sample can use. Keep <code>Min t</code> less than or equal to <code>Max t</code>.</p>
             <p><strong>Lower Max t</strong> when the image has a hard-to-reproduce composition, pose, framing, or scene layout. This keeps the model from learning to invent that exact structure and shifts the learning signal more toward the details the sample provides.</p>
             <p><strong>Raise Min t</strong> for low-quality samples, such as blurry, noisy, compressed, or artifact-heavy images, so the model is less likely to absorb that degradation as part of the concept.</p>
             <p><strong>Sampling Frequency:</strong> <code>1.0</code> is normal. Lower it for groups that share very similar features, pose, framing, or background. Raise it for rare but important examples that need extra coverage.</p>
+            <p><strong>Caption Dropout:</strong> disabled by default. ai-toolkit only applies caption dropout to samples with this checkbox enabled. When dropout fires, the normal caption is replaced with this stored dropout caption for that sample, or with an empty caption if this field is left blank.</p>
           </div>
           <div class="metadata-editor-actions">
-            <button id="metadata-save-btn" type="button" disabled>Save Metadata</button>
+            <button id="metadata-cancel-btn" type="button" disabled>Cancel</button>
           </div>
         </div>
       </div>

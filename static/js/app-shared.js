@@ -12,7 +12,10 @@ const state = {
   // Per-image caption cache: path -> {enabled_captions: [...], free_text: ""}
   captionCache: {},
   captionDraftPaths: new Set(),
-  metadataCache: {},     // path -> {seed, min_t, max_t, sampling_frequency}
+  metadataCache: {},     // path -> {seed, min_t, max_t, sampling_frequency, caption_dropout_enabled, caption_dropout_caption}
+  metadataEditorBaseline: null,
+  metadataEditorDirty: false,
+  metadataSavePromise: null,
   activeSentenceFilters: new Map(),
   activeMetaFilters: {
     aspectState: "any",
@@ -387,7 +390,9 @@ const metadataSeedInput = $("#metadata-seed-input");
 const metadataSamplingFrequencyInput = $("#metadata-sampling-frequency-input");
 const metadataMinTInput = $("#metadata-min-t-input");
 const metadataMaxTInput = $("#metadata-max-t-input");
-const metadataSaveBtn = $("#metadata-save-btn");
+const metadataCaptionDropoutInput = $("#metadata-caption-dropout-input");
+const metadataCaptionDropoutEnabledInput = $("#metadata-caption-dropout-enabled-input");
+const metadataCancelBtn = $("#metadata-cancel-btn");
 const multiInfo = $("#multi-info");
 const aiProgressPanel = $("#ai-progress-panel");
 const aiProgressSummary = $("#ai-progress-summary");

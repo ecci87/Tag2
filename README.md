@@ -37,7 +37,7 @@ Built with **FastAPI** and a single-page HTML frontend.
 - Double-click the `TXT` badge to open the caption sidecar directly in the default OS application.
 - Double-click the preview panel to reset zoom.
 - Video masking is key-frame based. The `+` button in the video toolbar adds a new key-frame mask at the current frame.
-- The metadata panel supports `seed`, `min_t`, `max_t`, and `sampling_frequency` fields, which is useful for more complex training schedules stored in `.meta.json` sidecars.
+- The metadata panel supports `seed`, `min_t`, `max_t`, `sampling_frequency`, `caption_dropout_enabled`, and `caption_dropout_caption` fields, which is useful for per-sample training schedules and sample-specific caption dropout stored in `.meta.json` sidecars.
 - Video training presets are edited as JSON in Settings and then selected per folder. The active profile drives the clip hints shown beside each video preview.
 
 ## Ollama Notes

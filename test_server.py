@@ -1540,6 +1540,8 @@ class TestMetadataAPI:
             "min_t": 200,
             "max_t": 800,
             "sampling_frequency": 0.5,
+            "caption_dropout_enabled": True,
+            "caption_dropout_caption": "portrait of [trigger]",
         })
 
         metadata_path = server._get_metadata_path(single_image)
@@ -1549,6 +1551,8 @@ class TestMetadataAPI:
             "min_t": 200,
             "max_t": 800,
             "sampling_frequency": 0.5,
+            "caption_dropout_enabled": True,
+            "caption_dropout_caption": "portrait of [trigger]",
         }
 
     def test_save_and_get_metadata(self, client, single_image):
@@ -1559,6 +1563,8 @@ class TestMetadataAPI:
                 "min_t": 120,
                 "max_t": 720,
                 "sampling_frequency": 1.25,
+                "caption_dropout_enabled": True,
+                "caption_dropout_caption": "concept portrait of [trigger]",
             },
         })
         assert resp.status_code == 200
@@ -1567,6 +1573,8 @@ class TestMetadataAPI:
             "min_t": 120,
             "max_t": 720,
             "sampling_frequency": 1.25,
+            "caption_dropout_enabled": True,
+            "caption_dropout_caption": "concept portrait of [trigger]",
         }
 
         resp = client.get("/api/media/meta", params={"path": single_image})
@@ -1576,6 +1584,8 @@ class TestMetadataAPI:
             "min_t": 120,
             "max_t": 720,
             "sampling_frequency": 1.25,
+            "caption_dropout_enabled": True,
+            "caption_dropout_caption": "concept portrait of [trigger]",
         }
 
     def test_apply_metadata_preserves_existing_fields(self, client, img_dir):
@@ -1603,6 +1613,36 @@ class TestMetadataAPI:
             "min_t": 200,
             "max_t": 900,
             "sampling_frequency": 0.5,
+        }
+
+    def test_apply_metadata_can_disable_caption_dropout_without_removing_captions(self, client, single_image):
+        server._write_metadata_file(single_image, {
+            "caption_dropout_enabled": True,
+            "caption_dropout_caption": "concept portrait of [trigger]",
+        })
+
+        resp = client.post("/api/media/meta/apply", json={
+            "paths": [single_image],
+            "changes": {
+                "caption_dropout_enabled": False,
+            },
+        })
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert server._read_metadata_file(single_image) == {
+            "caption_dropout_caption": "concept portrait of [trigger]",
+        }
+
+    def test_read_metadata_accepts_legacy_dropout_caption_list(self, single_image):
+        metadata_path = server._get_metadata_path(single_image)
+        metadata_path.write_text(
+            '{\n  "caption_dropout_captions": ["[trigger]", "concept portrait of [trigger]"]\n}\n',
+            encoding="utf-8",
+        )
+
+        assert server._read_metadata_file(single_image) == {
+            "caption_dropout_caption": "[trigger]",
         }
 
     def test_apply_metadata_rejects_invalid_range(self, client, single_image):

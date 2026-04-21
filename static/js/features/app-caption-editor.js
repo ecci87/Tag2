@@ -96,13 +96,22 @@ function updateMultiInfo() {
   if (state.selectedPaths.size > 1) {
     multiInfo.style.display = "block";
     if (state.ui.activeRightPanelTab === "metadata") {
-      multiInfo.textContent = `${state.selectedPaths.size} media files selected - Apply updates the filled metadata fields on all selected files`;
+      multiInfo.textContent = `${state.selectedPaths.size} media files selected - filled metadata fields and changed checkbox state apply to all`;
     } else {
       multiInfo.textContent = `${state.selectedPaths.size} media files selected - toggling captions applies to all`;
     }
   } else {
     multiInfo.style.display = "none";
   }
+}
+
+function hasPendingMetadataChanges() {
+  return !!state.metadataEditorDirty;
+}
+
+async function savePendingMetadataChangesBeforeContextChange() {
+  if (!hasPendingMetadataChanges()) return true;
+  return saveMetadataForSelection({ quietNoChanges: true });
 }
 
 // ===== SENTENCES =====
@@ -2057,90 +2066,113 @@ async function toggleSentence(sentence, wasChecked, wasPartial) {
   }
 }
 
-async function saveMetadataForSelection() {
-  const selectedPaths = [...state.selectedPaths];
-  if (!selectedPaths.length || state.metadataSaving) return;
-
-  let singlePath = null;
-  let singleMetadata = null;
-  let batchChanges = null;
-
-  try {
-    if (selectedPaths.length === 1) {
-      singlePath = selectedPaths[0];
-      singleMetadata = buildSingleMetadataPayload();
-    } else {
-      batchChanges = buildBatchMetadataChanges();
-      if (Object.keys(batchChanges).length === 0) {
-        throw new Error("Enter at least one metadata value to apply");
-      }
-    }
-  } catch (err) {
-    const message = err?.message || "Failed to save metadata";
-    statusBar.textContent = `Metadata error: ${message}`;
-    showErrorToast(`Metadata error: ${message}`);
-    return;
+async function saveMetadataForSelection(options = {}) {
+  const { quietNoChanges = false } = options;
+  if (state.metadataSavePromise) {
+    return state.metadataSavePromise;
   }
 
-  state.metadataSaving = true;
-  renderMetadataEditor({ preserveInputs: true });
-  statusBar.textContent = selectedPaths.length === 1
-    ? "Saving metadata..."
-    : `Applying metadata to ${selectedPaths.length} media files...`;
+  const selectedPaths = [...state.selectedPaths];
+  if (!selectedPaths.length) return true;
 
-  try {
-    if (selectedPaths.length === 1) {
-      const resp = await fetch("/api/media/meta/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: singlePath, metadata: singleMetadata }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        throw new Error(data.detail || "Failed to save metadata");
-      }
-      state.metadataCache[singlePath] = normalizeMetadataCacheEntry(data.metadata);
-      statusBar.textContent = "Metadata saved";
-    } else {
-      const resp = await fetch("/api/media/meta/apply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths: selectedPaths, changes: batchChanges }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        throw new Error(data.detail || "Failed to apply metadata");
-      }
+  const runSave = async () => {
+    let singlePath = null;
+    let singleMetadata = null;
+    let batchChanges = null;
 
-      let updatedCount = 0;
-      const errors = [];
-      for (const result of (data.results || [])) {
-        if (result?.ok) {
-          state.metadataCache[result.path] = normalizeMetadataCacheEntry(result.metadata);
-          updatedCount += 1;
-        } else if (result?.path || result?.error) {
-          errors.push(result);
-        }
-      }
-
-      if (errors.length > 0) {
-        const summary = errors.length === 1
-          ? `${updatedCount} updated, 1 failed: ${errors[0].error || "Unknown error"}`
-          : `${updatedCount} updated, ${errors.length} failed`;
-        statusBar.textContent = summary;
-        showErrorToast(summary);
+    try {
+      if (selectedPaths.length === 1) {
+        singlePath = selectedPaths[0];
+        singleMetadata = buildSingleMetadataPayload();
       } else {
-        statusBar.textContent = `Applied metadata to ${updatedCount} media file${updatedCount === 1 ? "" : "s"}`;
+        batchChanges = buildBatchMetadataChanges();
       }
+    } catch (err) {
+      const message = err?.message || "Failed to save metadata";
+      statusBar.textContent = `Metadata error: ${message}`;
+      showErrorToast(`Metadata error: ${message}`);
+      return false;
     }
-  } catch (err) {
-    const message = err?.message || "Failed to save metadata";
-    statusBar.textContent = `Metadata error: ${message}`;
-    showErrorToast(`Metadata error: ${message}`);
+
+    if (selectedPaths.length > 1 && Object.keys(batchChanges || {}).length === 0) {
+      renderMetadataEditor();
+      if (!quietNoChanges) {
+        statusBar.textContent = "Metadata unchanged";
+      }
+      return true;
+    }
+
+    state.metadataSaving = true;
+    renderMetadataEditor({ preserveInputs: true });
+    statusBar.textContent = selectedPaths.length === 1
+      ? "Saving metadata..."
+      : `Applying metadata to ${selectedPaths.length} media files...`;
+
+    try {
+      if (selectedPaths.length === 1) {
+        const resp = await fetch("/api/media/meta/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: singlePath, metadata: singleMetadata }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          throw new Error(data.detail || "Failed to save metadata");
+        }
+        state.metadataCache[singlePath] = normalizeMetadataCacheEntry(data.metadata);
+        statusBar.textContent = "Metadata saved";
+        return true;
+      } else {
+        const resp = await fetch("/api/media/meta/apply", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paths: selectedPaths, changes: batchChanges }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          throw new Error(data.detail || "Failed to apply metadata");
+        }
+
+        let updatedCount = 0;
+        const errors = [];
+        for (const result of (data.results || [])) {
+          if (result?.ok) {
+            state.metadataCache[result.path] = normalizeMetadataCacheEntry(result.metadata);
+            updatedCount += 1;
+          } else if (result?.path || result?.error) {
+            errors.push(result);
+          }
+        }
+
+        if (errors.length > 0) {
+          const summary = errors.length === 1
+            ? `${updatedCount} updated, 1 failed: ${errors[0].error || "Unknown error"}`
+            : `${updatedCount} updated, ${errors.length} failed`;
+          statusBar.textContent = summary;
+          showErrorToast(summary);
+          return false;
+        }
+
+        statusBar.textContent = `Applied metadata to ${updatedCount} media file${updatedCount === 1 ? "" : "s"}`;
+        return true;
+      }
+    } catch (err) {
+      const message = err?.message || "Failed to save metadata";
+      statusBar.textContent = `Metadata error: ${message}`;
+      showErrorToast(`Metadata error: ${message}`);
+      return false;
+    } finally {
+      state.metadataSaving = false;
+      renderMetadataEditor();
+      updateMultiInfo();
+    }
+  };
+
+  state.metadataSavePromise = runSave();
+  try {
+    return await state.metadataSavePromise;
   } finally {
-    state.metadataSaving = false;
-    renderMetadataEditor();
-    updateMultiInfo();
+    state.metadataSavePromise = null;
   }
 }
 

@@ -8,7 +8,11 @@ from pathlib import Path
 from uuid import uuid4
 
 
-METADATA_FIELD_NAMES = ("seed", "min_t", "max_t", "sampling_frequency")
+METADATA_NUMERIC_FIELD_NAMES = ("seed", "min_t", "max_t", "sampling_frequency")
+METADATA_FIELD_NAMES = METADATA_NUMERIC_FIELD_NAMES + (
+    "caption_dropout_enabled",
+    "caption_dropout_caption",
+)
 
 
 def _get_metadata_path(media_path: str) -> Path:
@@ -63,6 +67,37 @@ def _parse_float_field(field_name: str, value: object) -> float:
     return parsed
 
 
+def _parse_bool_field(field_name: str, value: object) -> bool:
+    """Parse a boolean metadata field from JSON-compatible input."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        numeric_value = float(value)
+        if numeric_value in {0.0, 1.0}:
+            return bool(int(numeric_value))
+        raise ValueError(f"{field_name} must be a boolean")
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1", "yes", "on"}:
+            return True
+        if text in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"{field_name} must be a boolean")
+
+
+def _parse_caption_text_field(field_name: str, value: object) -> str:
+    """Parse a caption-dropout replacement caption from JSON-compatible input."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        for raw_item in value:
+            text = str(raw_item or "").strip()
+            if text:
+                return text
+        return ""
+    raise ValueError(f"{field_name} must be a string or list of strings")
+
+
 def _normalize_metadata_dict(metadata: object) -> dict:
     """Normalize sparse metadata fields and validate cross-field constraints."""
     if metadata is None:
@@ -70,8 +105,8 @@ def _normalize_metadata_dict(metadata: object) -> dict:
     if not isinstance(metadata, dict):
         raise ValueError("Metadata must be a JSON object")
 
-    normalized: dict[str, int | float] = {}
-    for field_name in METADATA_FIELD_NAMES:
+    normalized: dict[str, object] = {}
+    for field_name in METADATA_NUMERIC_FIELD_NAMES:
         if field_name not in metadata:
             continue
         value = metadata.get(field_name)
@@ -84,6 +119,21 @@ def _normalize_metadata_dict(metadata: object) -> dict:
             normalized[field_name] = parsed
         else:
             normalized[field_name] = _parse_int_field(field_name, value)
+
+    if "caption_dropout_enabled" in metadata:
+        enabled = _parse_bool_field("caption_dropout_enabled", metadata.get("caption_dropout_enabled"))
+        if enabled:
+            normalized["caption_dropout_enabled"] = True
+
+    caption_dropout_source = None
+    if "caption_dropout_caption" in metadata:
+        caption_dropout_source = metadata.get("caption_dropout_caption")
+    elif "caption_dropout_captions" in metadata:
+        caption_dropout_source = metadata.get("caption_dropout_captions")
+    if caption_dropout_source is not None:
+        caption = _parse_caption_text_field("caption_dropout_caption", caption_dropout_source)
+        if caption:
+            normalized["caption_dropout_caption"] = caption
 
     min_t = normalized.get("min_t")
     max_t = normalized.get("max_t")

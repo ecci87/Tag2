@@ -2018,6 +2018,8 @@ class MediaMetadataFields(BaseModel):
     min_t: int | None = None
     max_t: int | None = None
     sampling_frequency: float | None = None
+    caption_dropout_enabled: bool | None = None
+    caption_dropout_caption: str | None = None
 
 
 class SaveMediaMetadataRequest(BaseModel):

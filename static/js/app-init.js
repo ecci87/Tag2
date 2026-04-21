@@ -66,6 +66,18 @@ function addSafeClickListener(element, functionName) {
   });
 }
 
+function handleMetadataEditorInputChange() {
+  if (typeof updateMetadataEditorDirtyState === "function") {
+    updateMetadataEditorDirtyState();
+  }
+}
+
+function handleMetadataEditorFieldKeydown(event) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  invokeGlobalFunction("saveMetadataForSelection");
+}
+
 setupResize($("#left-resize"), $("#left-panel"), "left");
 setupResize($("#right-resize"), $("#right-panel"), "right");
 setupVerticalResize(rightHorizontalResize, captionsSection, freeTextSection, captionsEditorPanel);
@@ -111,11 +123,29 @@ if (promptPreviewGridToggleBtn) {
 }
 addSafeClickListener(autoCaptionBtn, "autoCaptionSelected");
 addSafeClickListener(addFreeTextNowBtn, "addFreeTextNow");
-addSafeClickListener(metadataSaveBtn, "saveMetadataForSelection");
+addSafeClickListener(metadataCancelBtn, "cancelMetadataChanges");
 addSafeClickListener(videoClipBtn, "queueCurrentVideoClip");
 addSafeClickListener(videoExtractFrameBtn, "extractCurrentVideoFrame");
 addSafeClickListener(gifConvertBtn, "queueCurrentGifConversion");
 addSafeClickListener(videoDownloadBtn, "downloadCurrentVideo");
+[metadataSeedInput, metadataSamplingFrequencyInput, metadataMinTInput, metadataMaxTInput].forEach((inputEl) => {
+  if (!inputEl) return;
+  inputEl.addEventListener("input", handleMetadataEditorInputChange);
+  inputEl.addEventListener("change", handleMetadataEditorInputChange);
+  inputEl.addEventListener("keydown", handleMetadataEditorFieldKeydown);
+});
+if (metadataCaptionDropoutInput) {
+  metadataCaptionDropoutInput.addEventListener("input", handleMetadataEditorInputChange);
+  metadataCaptionDropoutInput.addEventListener("change", handleMetadataEditorInputChange);
+  metadataCaptionDropoutInput.addEventListener("keydown", (event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.key !== "Enter") return;
+    event.preventDefault();
+    invokeGlobalFunction("saveMetadataForSelection");
+  });
+}
+if (metadataCaptionDropoutEnabledInput) {
+  metadataCaptionDropoutEnabledInput.addEventListener("change", handleMetadataEditorInputChange);
+}
 hideAddButtonsCheckbox.addEventListener("change", () => {
   state.hideAddButtons = hideAddButtonsCheckbox.checked;
   renderSentences();
@@ -308,30 +338,14 @@ document.addEventListener("keydown", (e) => {
   // Ctrl+A to select all (when not in text input)
   if ((e.ctrlKey || e.metaKey) && e.key === "a" && !isEditableElement(document.activeElement)) {
     e.preventDefault();
-    state.selectedPaths.clear();
     const visibleEntries = getVisibleImageEntries();
-    visibleEntries.forEach(({ img }) => state.selectedPaths.add(img.path));
-    updateGridSelection();
-    if (state.selectedPaths.size === 1) {
-      const path = visibleEntries[0]?.img?.path;
-      if (path) {
-        showPreview(path);
-        if (typeof loadCaptionData === "function") loadCaptionData(path);
-        if (typeof loadMetadataData === "function") loadMetadataData(path);
-        loadCropData(path);
-      }
-      freeText.disabled = false;
-      freeText.value = "";
-    } else {
-      freeText.disabled = true;
-      freeText.value = state.selectedPaths.size > 1 ? "(Multiple media files selected)" : "";
-      if (state.selectedPaths.size > 1) {
-        if (typeof loadMultiCaptionState === "function") loadMultiCaptionState();
-        if (typeof loadMultiMetadataState === "function") loadMultiMetadataState();
-      }
+    const nextPaths = visibleEntries.map(({ img }) => img.path).filter(Boolean);
+    if (nextPaths.length > 0) {
+      selectUploadedImages(nextPaths).catch((err) => {
+        showErrorToast(err?.message || "Failed to select visible media");
+      });
     }
-    renderMetadataEditor();
-    if (typeof updateMultiInfo === "function") updateMultiInfo();
+    return;
   }
 
   // Arrow keys for navigation

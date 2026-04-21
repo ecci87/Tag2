@@ -339,6 +339,10 @@ async function loadFolder(options = {}) {
   const { preserveScrollTop = null } = options;
   const folder = folderInput.value.trim();
   if (!folder) return;
+  if (typeof savePendingMetadataChangesBeforeContextChange === "function") {
+    const didSaveMetadata = await savePendingMetadataChangesBeforeContextChange();
+    if (!didSaveMetadata) return;
+  }
   clearFolderAutocomplete({ cancelPending: true });
   state.folder = folder;
   state.selectedPaths.clear();
@@ -360,6 +364,8 @@ async function loadFolder(options = {}) {
   state.imageMaskVersions = {};
   state.thumbnailDimensions = {};
   state.metadataSaving = false;
+  state.metadataEditorBaseline = null;
+  state.metadataEditorDirty = false;
   statusBar.textContent = "Loading...";
 
   try {
@@ -573,6 +579,11 @@ async function selectUploadedImages(paths) {
   const uploadedPaths = Array.from(new Set((paths || []).filter(Boolean)));
   if (!uploadedPaths.length) {
     return;
+  }
+
+  if (typeof savePendingMetadataChangesBeforeContextChange === "function") {
+    const didSaveMetadata = await savePendingMetadataChangesBeforeContextChange();
+    if (!didSaveMetadata) return;
   }
 
   const availablePaths = uploadedPaths.filter(path => state.images.some(img => img.path === path));
@@ -1016,8 +1027,8 @@ function refreshVisibleThumbnail(path) {
   });
 }
 
-function handlePromptPreviewThumbClick(index, sourcePath, previewPath, event) {
-  handleThumbClick(index, event);
+async function handlePromptPreviewThumbClick(index, sourcePath, previewPath, event) {
+  await handleThumbClick(index, event);
   if (event.ctrlKey || event.metaKey || event.shiftKey) return;
   if (!previewPath) return;
   if (state.selectedPaths.size !== 1 || !state.selectedPaths.has(sourcePath)) return;
@@ -1027,9 +1038,13 @@ function handlePromptPreviewThumbClick(index, sourcePath, previewPath, event) {
 }
 
 // ===== SELECTION HANDLING =====
-function handleThumbClick(index, event) {
+async function handleThumbClick(index, event) {
   const img = state.images[index];
   if (!img) return;
+  if (typeof savePendingMetadataChangesBeforeContextChange === "function") {
+    const didSaveMetadata = await savePendingMetadataChangesBeforeContextChange();
+    if (!didSaveMetadata) return;
+  }
   const visibleEntries = getVisibleImageEntries();
   const currentVisibleIndex = visibleEntries.findIndex(entry => entry.img.path === img.path);
   const lastVisibleIndex = visibleEntries.findIndex(entry => entry.img.path === state.lastClickedPath);
@@ -1076,18 +1091,22 @@ function handleThumbClick(index, event) {
       invalidateImageCaches(path);
       refreshVisibleThumbnail(path);
     }
-    showPreview(path, { preserveView: isPlainReselect });
-    loadCaptionData(path);
-    loadMetadataData(path);
-    loadCropData(path);
+    await showPreview(path, { preserveView: isPlainReselect });
+    await Promise.all([
+      loadCaptionData(path),
+      loadMetadataData(path),
+      loadCropData(path),
+    ]);
     freeText.disabled = false;
   } else if (state.selectedPaths.size > 1) {
     // Show preview of clicked image
-    showPreview(img.path);
+    await showPreview(img.path);
     freeText.disabled = true;
     freeText.value = "(Multiple media files selected)";
-    loadMultiCaptionState();
-    loadMultiMetadataState();
+    await Promise.all([
+      loadMultiCaptionState(),
+      loadMultiMetadataState(),
+    ]);
     clearCropDraft();
   } else {
     hidePreview();
