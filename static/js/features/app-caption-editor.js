@@ -663,7 +663,13 @@ async function renameSentence(oldSentence, newSentence) {
     } else {
       renderSentences();
     }
-    statusBar.textContent = "Caption renamed";
+    const touchedCaptionFiles = Number(data.touched_caption_files);
+    if (Number.isFinite(touchedCaptionFiles) && touchedCaptionFiles >= 0) {
+      const fileLabel = touchedCaptionFiles === 1 ? "image caption file" : "image caption files";
+      statusBar.textContent = `Caption renamed, updated ${touchedCaptionFiles} ${fileLabel}`;
+    } else {
+      statusBar.textContent = "Caption renamed";
+    }
   } catch (err) {
     statusBar.textContent = `Rename error: ${err.message}`;
     renderSentences();
@@ -2462,7 +2468,9 @@ thumbSlider.addEventListener("input", () => {
   // Re-render with new size
   const cells = fileGrid.querySelectorAll(".thumb-cell");
   cells.forEach(cell => {
-    cell.style.width = state.thumbSize + "px";
+    cell.style.width = cell.classList.contains("thumb-cell-double")
+      ? `${(state.thumbSize * 2) + 8}px`
+      : state.thumbSize + "px";
     cell.style.height = state.thumbSize + "px";
   });
 });

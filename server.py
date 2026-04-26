@@ -3789,7 +3789,7 @@ async def rename_caption_preset(update: RenameCaptionPresetUpdate):
         raise HTTPException(status_code=400, detail="Both old and new caption text are required")
     if old_caption == new_caption:
         cfg = _load_config()
-        return {"ok": True, "sections": _get_folder_sections(cfg, folder)}
+        return {"ok": True, "sections": _get_folder_sections(cfg, folder), "touched_caption_files": 0}
 
     cfg = _load_config()
     sections = _get_folder_sections(cfg, folder)
@@ -3808,6 +3808,7 @@ async def rename_caption_preset(update: RenameCaptionPresetUpdate):
 
     headers = _all_headers_from_sections(sections)
     folder_path = Path(folder)
+    touched_caption_files = 0
     for entry in folder_path.iterdir():
         if not entry.is_file() or entry.suffix.lower() not in MEDIA_EXTENSIONS:
             continue
@@ -3815,12 +3816,17 @@ async def rename_caption_preset(update: RenameCaptionPresetUpdate):
         if not caption_path.exists():
             continue
         data = _read_caption_file(str(entry), all_captions_before, headers)
-        enabled = [new_caption if caption == old_caption else caption for caption in _read_enabled_captions(data)]
+        enabled_before = _read_enabled_captions(data)
+        free_text_before = str(data.get("free_text", "") or "")
+        if old_caption not in enabled_before and old_caption not in free_text_before:
+            continue
+        enabled = [new_caption if caption == old_caption else caption for caption in enabled_before]
         enabled = _normalize_enabled_captions(enabled, sections)
-        free_text = str(data.get("free_text", "") or "").replace(old_caption, new_caption)
+        free_text = free_text_before.replace(old_caption, new_caption)
         _write_caption_file(str(entry), enabled, free_text, sections)
+        touched_caption_files += 1
 
-    return {"ok": True, "sections": sections}
+    return {"ok": True, "sections": sections, "touched_caption_files": touched_caption_files}
 
 
 @app.post("/api/section/rename")

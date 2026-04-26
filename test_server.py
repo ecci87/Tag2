@@ -1476,6 +1476,7 @@ class TestCaptionAPI:
 
     def test_rename_caption_preset_updates_config_and_files(self, client, img_dir):
         image_path = str(img_dir / "photo1.jpg")
+        unaffected_path = str(img_dir / "photo2.png")
         client.post("/api/settings", json={
             "folder": str(img_dir),
             "sections": [{"name": "", "sentences": ["Old Caption"], "groups": [{"name": "Car", "sentences": ["Red Car", "Blue Car"]}]}],
@@ -1484,6 +1485,11 @@ class TestCaptionAPI:
             "image_path": image_path,
             "enabled_sentences": ["Old Caption", "Red Car"],
             "free_text": "notes",
+        })
+        client.post("/api/caption/save", json={
+            "image_path": unaffected_path,
+            "enabled_sentences": ["Blue Car"],
+            "free_text": "still unrelated",
         })
 
         resp = client.post("/api/caption/rename-preset", json={
@@ -1494,11 +1500,16 @@ class TestCaptionAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert data["sections"][0]["sentences"] == ["New Caption"]
+        assert data["touched_caption_files"] == 1
 
         caption = (img_dir / "photo1.txt").read_text(encoding="utf-8")
         assert "New Caption" in caption
         assert "Old Caption" not in caption
         assert "Red Car" in caption
+
+        unaffected_caption = (img_dir / "photo2.txt").read_text(encoding="utf-8")
+        assert "Blue Car" in unaffected_caption
+        assert "New Caption" not in unaffected_caption
 
     def test_rename_caption_preset_updates_free_text_occurrences(self, client, img_dir):
         image_path = str(img_dir / "photo1.jpg")
@@ -1518,6 +1529,7 @@ class TestCaptionAPI:
             "new_sentence": "New Caption",
         })
         assert resp.status_code == 200
+        assert resp.json()["touched_caption_files"] == 1
 
         caption = (img_dir / "photo1.txt").read_text(encoding="utf-8")
         assert "New Caption appears again in notes." in caption
