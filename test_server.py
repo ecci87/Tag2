@@ -1395,6 +1395,10 @@ class TestDuplicateImage:
         assert (img_dir / "photo1-copy.txt").exists()
         assert (img_dir / "photo1-copy.jpg.meta.json").exists()
         assert (img_dir / "photo1-copy.jpg.mask.png").exists()
+        assert data["image"]["path"] == str(duplicated_path)
+        assert data["image"]["name"] == "photo1-copy.jpg"
+        assert data["image"]["has_caption"] is True
+        assert data["image"]["has_mask"] is True
 
 
 class TestThumbnail:

@@ -1280,14 +1280,39 @@ async function deleteSelectedImages() {
       delete state.imageCrops[path];
       delete state.imageVersions[path];
     }
-
-    await loadFolder({ preserveScrollTop });
     const deletedPaths = new Set((data.deleted_paths || []).filter(Boolean));
+    removeMediaPathsFromState([...deletedPaths]);
     const survivingSelectedPaths = selectedPaths.filter(path => !deletedPaths.has(path));
     if (survivingSelectedPaths.length > 0) {
-      await selectUploadedImages(survivingSelectedPaths);
-    } else if (deletedPaths.size > 0 && nextSelectionPath) {
-      await selectUploadedImages([nextSelectionPath]);
+      await selectUploadedImages(survivingSelectedPaths, {
+        skipPendingContextSave: true,
+        preserveScrollTop,
+      });
+    } else if (deletedPaths.size > 0 && nextSelectionPath && state.images.some((img) => img.path === nextSelectionPath)) {
+      await selectUploadedImages([nextSelectionPath], {
+        skipPendingContextSave: true,
+        preserveScrollTop,
+      });
+    } else if (deletedPaths.size > 0) {
+      state.selectedPaths.clear();
+      state.lastClickedPath = null;
+      state.lastClickedIndex = -1;
+      hidePreview();
+      clearCropDraft();
+      freeText.disabled = true;
+      freeText.value = "";
+      if (typeof syncFreeTextHighlightState === "function") {
+        syncFreeTextHighlightState();
+      }
+      renderGrid({ preservePath: null, preserveScrollTop });
+      renderMetadataEditor();
+      if (typeof updateMultiInfo === "function") {
+        updateMultiInfo();
+      }
+      if (typeof renderSentences === "function") {
+        renderSentences();
+      }
+      updateActionButtons();
     }
 
     if (Array.isArray(data.errors) && data.errors.length > 0) {

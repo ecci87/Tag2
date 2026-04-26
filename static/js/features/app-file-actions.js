@@ -441,8 +441,21 @@ async function duplicateCurrentImage() {
       throw new Error(data.detail || "Failed to duplicate image");
     }
     const preserveScrollTop = fileGridContainer.scrollTop;
-    await loadFolder({ preserveScrollTop });
-    await selectUploadedImages([data.image_path]);
+    const duplicatedImage = data.image && typeof data.image === "object" ? data.image : null;
+    if (duplicatedImage?.path) {
+      upsertMediaEntry(duplicatedImage);
+      primeDuplicatedImageState(sourcePath, duplicatedImage);
+      await selectUploadedImages([duplicatedImage.path], {
+        skipPendingContextSave: true,
+        preserveScrollTop,
+      });
+    } else {
+      await loadFolder({ preserveScrollTop });
+      await selectUploadedImages([data.image_path], {
+        skipPendingContextSave: true,
+        preserveScrollTop,
+      });
+    }
     statusBar.textContent = `Duplicated ${getFileLabel(sourcePath)} as ${getFileLabel(data.image_path)}`;
   } catch (err) {
     showErrorToast(`Duplicate error: ${err.message}`);

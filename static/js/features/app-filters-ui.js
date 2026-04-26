@@ -329,11 +329,12 @@ async function ensureCaptionCacheLoadedForFiltering() {
 }
 
 function refreshGridForActiveFilters() {
+  const preservePath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
+  const preserveScrollTop = fileGridContainer?.scrollTop ?? null;
   if (hasAnyActiveFilters()) {
-    renderGrid();
+    renderGrid({ preservePath, preserveScrollTop });
   } else {
-    updateFileCountDisplay();
-    renderFilterActions();
+    renderGrid({ preservePath, preserveScrollTop });
   }
 }
 

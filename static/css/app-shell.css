@@ -435,6 +435,18 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   gap: 5px;
   flex-wrap: wrap;
   min-width: 0;
+  flex: 1 0 100%;
+}
+#left-panel .panel-header-actions #media-search-wrap {
+  flex: 1 1 180px;
+  min-width: 0;
+  margin-left: 0;
+  justify-content: flex-start;
+}
+#left-panel .panel-header-actions #media-search-input {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
 }
 #prompt-preview-grid-toggle-btn {
   min-width: 36px;
@@ -549,7 +561,8 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   background: rgba(249,226,175,0.10);
   color: var(--accent-warn);
 }
-#media-search-wrap {
+#media-search-wrap,
+#caption-search-wrap {
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -557,7 +570,8 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   min-width: 160px;
   margin-left: auto;
 }
-#media-search-input {
+#media-search-input,
+#caption-search-input {
   width: min(100%, 260px);
   height: 22px;
   padding: 0 9px;
@@ -569,30 +583,37 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   outline: none;
   transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
-#media-search-input::placeholder {
+#media-search-input::placeholder,
+#caption-search-input::placeholder {
   color: rgba(205,214,244,0.48);
 }
 #media-search-input:hover,
-#media-search-input:focus {
+#media-search-input:focus,
+#caption-search-input:hover,
+#caption-search-input:focus {
   border-color: rgba(137,180,250,0.42);
   background: rgba(30,33,48,0.72);
 }
-#media-search-input:focus {
+#media-search-input:focus,
+#caption-search-input:focus {
   box-shadow: 0 0 0 1px rgba(137,180,250,0.14);
 }
-#media-search-input.active {
+#media-search-input.active,
+#caption-search-input.active {
   border-color: rgba(249,226,175,0.45);
   background: rgba(249,226,175,0.08);
   color: var(--fg);
 }
 @media (max-width: 720px) {
-  #media-search-wrap {
+  #media-search-wrap,
+  #caption-search-wrap {
     flex-basis: 100%;
     min-width: 0;
     margin-left: 0;
     justify-content: stretch;
   }
-  #media-search-input {
+  #media-search-input,
+  #caption-search-input {
     width: 100%;
   }
 }

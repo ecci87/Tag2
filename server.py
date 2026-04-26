@@ -3465,9 +3465,12 @@ async def duplicate_image(data: DuplicateImageRequest):
         mask_target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"Could not duplicate image: {exc}") from exc
 
+    media_entry = _build_media_entry(target_path)
+
     return {
         "ok": True,
         "image_path": str(target_path),
+        "image": media_entry,
         "caption_path": str(caption_target) if caption_target.exists() else "",
         "mask_path": str(mask_target) if mask_target.exists() else "",
     }

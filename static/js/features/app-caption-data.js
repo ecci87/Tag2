@@ -529,7 +529,12 @@ function resetMetadataEditorTracking() {
 
 function updateMetadataCancelButtonState() {
   const disabled = state.selectedPaths.size === 0 || state.metadataSaving || !state.metadataEditorDirty;
-  metadataCancelBtn.disabled = disabled;
+  if (metadataCancelBtn) {
+    metadataCancelBtn.disabled = disabled;
+  }
+  if (metadataSaveBtn) {
+    metadataSaveBtn.disabled = disabled;
+  }
 }
 
 function initializeMetadataEditorTracking() {

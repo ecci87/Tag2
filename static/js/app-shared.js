@@ -23,6 +23,7 @@ const state = {
     captionState: "any",
   },
   mediaSearchQuery: "",
+  captionSearchQuery: "",
   filterCaptionCacheKey: "",
   filterLoadingPromise: null,
   captionLibraryLoadingPromise: null,
@@ -378,6 +379,7 @@ const captionsSection = $("#captions-section");
 const rightHorizontalResize = $("#right-horizontal-resize");
 const autoCaptionBtn = $("#auto-caption-btn");
 const modelLogOpenBtn = $("#model-log-open-btn");
+const captionSearchInput = $("#caption-search-input");
 const createPromptPreviewBtn = $("#create-prompt-preview-btn");
 const autoFreeTextCheckbox = $("#auto-free-text-checkbox");
 const autoPreviewCheckbox = $("#auto-preview-checkbox");
@@ -397,6 +399,7 @@ const metadataMaxTInput = $("#metadata-max-t-input");
 const metadataCaptionDropoutInput = $("#metadata-caption-dropout-input");
 const metadataCaptionDropoutEnabledInput = $("#metadata-caption-dropout-enabled-input");
 const metadataCancelBtn = $("#metadata-cancel-btn");
+const metadataSaveBtn = $("#metadata-save-btn");
 const multiInfo = $("#multi-info");
 const aiProgressPanel = $("#ai-progress-panel");
 const aiProgressSummary = $("#ai-progress-summary");

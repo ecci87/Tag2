@@ -124,6 +124,7 @@ if (promptPreviewGridToggleBtn) {
 addSafeClickListener(autoCaptionBtn, "autoCaptionSelected");
 addSafeClickListener(addFreeTextNowBtn, "addFreeTextNow");
 addSafeClickListener(metadataCancelBtn, "cancelMetadataChanges");
+addSafeClickListener(metadataSaveBtn, "saveMetadataForSelection");
 addSafeClickListener(videoClipBtn, "queueCurrentVideoClip");
 addSafeClickListener(videoExtractFrameBtn, "extractCurrentVideoFrame");
 addSafeClickListener(gifConvertBtn, "queueCurrentGifConversion");
@@ -145,6 +146,10 @@ if (metadataCaptionDropoutInput) {
 }
 if (metadataCaptionDropoutEnabledInput) {
   metadataCaptionDropoutEnabledInput.addEventListener("change", handleMetadataEditorInputChange);
+}
+if (captionSearchInput) {
+  captionSearchInput.addEventListener("input", handleCaptionSearchInput);
+  captionSearchInput.addEventListener("search", handleCaptionSearchInput);
 }
 hideAddButtonsCheckbox.addEventListener("change", () => {
   state.hideAddButtons = hideAddButtonsCheckbox.checked;

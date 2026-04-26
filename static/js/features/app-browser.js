@@ -433,6 +433,83 @@ async function loadFolder(options = {}) {
   }
 }
 
+function compareMediaEntries(left, right) {
+  const leftName = String(left?.name || "").trim();
+  const rightName = String(right?.name || "").trim();
+  const nameCompare = leftName.localeCompare(rightName, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+  if (nameCompare !== 0) return nameCompare;
+  return String(left?.path || "").localeCompare(String(right?.path || ""), undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function applyMediaEntryVersions(image) {
+  const imagePath = String(image?.path || "").trim();
+  if (!imagePath) return;
+  state.imageVersions[imagePath] = Number(image?.mtime || Date.now()) || Date.now();
+  const promptPreviewPath = String(image?.prompt_preview_path || "").trim();
+  if (promptPreviewPath) {
+    state.imageVersions[promptPreviewPath] = Number(image?.prompt_preview_mtime || 0) || 0;
+  }
+}
+
+function upsertMediaEntry(image) {
+  const imagePath = String(image?.path || "").trim();
+  if (!imagePath) return null;
+  const existingIndex = state.images.findIndex((entry) => entry.path === imagePath);
+  if (existingIndex >= 0) {
+    state.images.splice(existingIndex, 1, image);
+  } else {
+    state.images.push(image);
+  }
+  state.images.sort(compareMediaEntries);
+  applyMediaEntryVersions(image);
+  return image;
+}
+
+function primeDuplicatedImageState(sourcePath, image) {
+  const targetPath = String(image?.path || "").trim();
+  if (!targetPath) return;
+  const sourceCaption = state.captionCache[sourcePath];
+  if (sourceCaption && !state.captionDraftPaths.has(sourcePath)) {
+    state.captionCache[targetPath] = {
+      enabled_sentences: Array.isArray(sourceCaption.enabled_sentences)
+        ? [...sourceCaption.enabled_sentences]
+        : [],
+      free_text: String(sourceCaption.free_text || ""),
+    };
+  }
+}
+
+function removeMediaPathsFromState(paths = []) {
+  const deletedPaths = new Set((paths || []).filter(Boolean));
+  if (deletedPaths.size === 0) return deletedPaths;
+
+  state.images = state.images.filter((image) => !deletedPaths.has(image.path));
+  for (const path of deletedPaths) {
+    state.selectedPaths.delete(path);
+    state.captionDraftPaths.delete(path);
+    if (state.previewPath === path) {
+      state.previewPath = null;
+    }
+    if (state.lastClickedPath === path) {
+      state.lastClickedPath = null;
+    }
+  }
+
+  if (state.lastClickedPath && !state.images.some((image) => image.path === state.lastClickedPath)) {
+    state.lastClickedPath = null;
+  }
+  state.lastClickedIndex = state.lastClickedPath
+    ? state.images.findIndex((image) => image.path === state.lastClickedPath)
+    : -1;
+  return deletedPaths;
+}
+
 function getImageExtension(name) {
   const normalizedName = String(name || "").trim().toLowerCase();
   const dotIndex = normalizedName.lastIndexOf(".");
@@ -675,13 +752,17 @@ function renderUploadQueueStatus() {
   uploadQueueText.textContent = parts.join(" \u2022 ");
 }
 
-async function selectUploadedImages(paths) {
+async function selectUploadedImages(paths, options = {}) {
+  const {
+    skipPendingContextSave = false,
+    preserveScrollTop = fileGridContainer.scrollTop,
+  } = options;
   const uploadedPaths = Array.from(new Set((paths || []).filter(Boolean)));
   if (!uploadedPaths.length) {
     return;
   }
 
-  if (typeof savePendingMetadataChangesBeforeContextChange === "function") {
+  if (!skipPendingContextSave && typeof savePendingMetadataChangesBeforeContextChange === "function") {
     const didSaveMetadata = await savePendingMetadataChangesBeforeContextChange();
     if (!didSaveMetadata) return;
   }
@@ -701,7 +782,7 @@ async function selectUploadedImages(paths) {
   state.lastClickedIndex = state.images.findIndex(img => img.path === lastPath);
 
   updateGridSelection();
-  renderGrid({ preservePath: lastPath, preserveScrollTop: fileGridContainer.scrollTop });
+  renderGrid({ preservePath: lastPath, preserveScrollTop });
 
   if (availablePaths.length === 1) {
     await showPreview(lastPath);

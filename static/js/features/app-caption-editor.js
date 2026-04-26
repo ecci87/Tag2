@@ -128,7 +128,13 @@ function formatCaptionFileUpdateStatus(baseMessage, touchedCaptionFiles) {
   return `${baseMessage}, updated ${count} ${fileLabel}`;
 }
 
+function noteCaptionLibraryChanged() {
+  invalidateFreeTextCaptionLibraryWordSet();
+  syncFreeTextHighlightState();
+}
+
 function saveSectionsToStorage() {
+  noteCaptionLibraryChanged();
   // Debounce saves to avoid hammering the server during rapid edits
   if (_saveSentencesTimeout) clearTimeout(_saveSentencesTimeout);
   const requestToken = ++_saveSectionsRequestToken;
@@ -549,6 +555,7 @@ async function removeSentence(sentence) {
       throw new Error(data.detail || "Failed to delete caption");
     }
     state.sections = normalizeSectionsData(data.sections || state.sections);
+    noteCaptionLibraryChanged();
     applyRemovedSentencesToLocalState(data.removed_captions || data.removed_sentences || [sentence]);
     await refreshCaptionsAfterSchemaChange();
     statusBar.textContent = formatCaptionFileUpdateStatus("Caption deleted", data.touched_caption_files);
@@ -668,6 +675,7 @@ async function renameSentence(oldSentence, newSentence) {
       throw new Error(data.detail || "Failed to rename caption");
     }
     state.sections = normalizeSectionsData(data.sections || state.sections);
+    noteCaptionLibraryChanged();
     for (const caption of Object.values(state.captionCache)) {
       if (!caption?.enabled_sentences) continue;
       caption.enabled_sentences = [...new Set(caption.enabled_sentences.map(sentence => sentence === oldSentence ? nextSentence : sentence))];
@@ -725,6 +733,7 @@ async function renameSection(oldName, newName) {
       throw new Error(data.detail || "Failed to rename section");
     }
     state.sections = normalizeSectionsData(data.sections || state.sections);
+    noteCaptionLibraryChanged();
     renderSentences();
     statusBar.textContent = formatCaptionFileUpdateStatus("Section renamed", data.touched_caption_files);
   } catch (err) {
@@ -787,6 +796,7 @@ async function deleteSection(index) {
       throw new Error(data.detail || "Failed to delete section");
     }
     state.sections = normalizeSectionsData(data.sections || state.sections);
+    noteCaptionLibraryChanged();
     applyRemovedSentencesToLocalState(data.removed_sentences || []);
     await refreshCaptionsAfterSchemaChange();
     statusBar.textContent = formatCaptionFileUpdateStatus("Section deleted", data.touched_caption_files);
@@ -822,6 +832,7 @@ async function deleteGroup(secIdx, groupIdx) {
       throw new Error(data.detail || "Failed to delete group");
     }
     state.sections = normalizeSectionsData(data.sections || state.sections);
+    noteCaptionLibraryChanged();
     applyRemovedSentencesToLocalState(data.removed_sentences || []);
     await refreshCaptionsAfterSchemaChange();
     statusBar.textContent = formatCaptionFileUpdateStatus("Group deleted", data.touched_caption_files);
@@ -1367,7 +1378,10 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths, op
     const targetIdx = getGroupInsertIndexFromPointer(groupSentences, e.clientY);
     moveSentenceWithinContainerBefore(secIdx, groupIdx, payload.sentenceIdx, targetIdx);
   });
-  for (const [sentenceIdx, sentence] of (group.sentences || []).entries()) {
+  const visibleSentences = Array.isArray(options.visibleSentences)
+    ? options.visibleSentences
+    : (group.sentences || []).map((sentence, sentenceIdx) => ({ sentence, sentenceIdx }));
+  for (const { sentence, sentenceIdx } of visibleSentences) {
     groupSentences.appendChild(createSentenceListItem(sentence, selectedPaths, {
       isExclusive: true,
       allowSuppressToggle: true,
@@ -1489,6 +1503,103 @@ function createAddSectionRow() {
   return addRow;
 }
 
+function normalizeCaptionSearchQuery(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function captionMatchesSearchQuery(sentence, normalizedQuery) {
+  if (!normalizedQuery) return true;
+  return String(sentence || "").toLowerCase().includes(normalizedQuery);
+}
+
+function getVisibleGroupSentenceMatches(group, normalizedQuery) {
+  const groupSentences = Array.isArray(group?.sentences) ? group.sentences : [];
+  if (!normalizedQuery) {
+    return groupSentences.map((sentence, sentenceIdx) => ({ sentence, sentenceIdx }));
+  }
+
+  const matches = [];
+  groupSentences.forEach((sentence, sentenceIdx) => {
+    if (captionMatchesSearchQuery(sentence, normalizedQuery)) {
+      matches.push({ sentence, sentenceIdx });
+    }
+  });
+  return matches;
+}
+
+function getVisibleSectionEntries(section, normalizedQuery) {
+  const orderedEntries = getOrderedSectionEntries(section);
+  const sectionMatched = captionMatchesSearchQuery(section?.name || "(General)", normalizedQuery);
+  if (!normalizedQuery || sectionMatched) {
+    return {
+      sectionMatched,
+      entries: orderedEntries,
+    };
+  }
+
+  const visibleEntries = [];
+  for (const entry of orderedEntries) {
+    if (entry.type === "sentence") {
+      if (captionMatchesSearchQuery(entry.sentence, normalizedQuery)) {
+        visibleEntries.push(entry);
+      }
+      continue;
+    }
+
+    if (captionMatchesSearchQuery(entry.group?.name || "(Group)", normalizedQuery)) {
+      visibleEntries.push(entry);
+      continue;
+    }
+
+    const visibleSentences = getVisibleGroupSentenceMatches(entry.group, normalizedQuery);
+    if (visibleSentences.length > 0) {
+      visibleEntries.push({ ...entry, visibleSentences });
+    }
+  }
+  return {
+    sectionMatched,
+    entries: visibleEntries,
+  };
+}
+
+function createCaptionSearchEmptyState(searchQuery) {
+  const emptyState = document.createElement("div");
+  emptyState.className = "section-empty-state";
+  const trimmedQuery = String(searchQuery || "").trim();
+  emptyState.textContent = trimmedQuery
+    ? `No captions match "${trimmedQuery}".`
+    : "No captions available.";
+  return emptyState;
+}
+
+function syncCaptionSearchInputState() {
+  if (!captionSearchInput) return;
+  const searchQuery = String(state.captionSearchQuery || "");
+  const normalizedQuery = normalizeCaptionSearchQuery(searchQuery);
+  if (captionSearchInput.value !== searchQuery) {
+    captionSearchInput.value = searchQuery;
+  }
+  captionSearchInput.classList.toggle("active", !!normalizedQuery);
+  captionSearchInput.title = normalizedQuery
+    ? `Filtering captions for "${searchQuery.trim()}"`
+    : "Filter captions in the library";
+}
+
+function updateCaptionSearchQuery(value) {
+  const nextQuery = String(value || "");
+  if (nextQuery === state.captionSearchQuery) {
+    syncCaptionSearchInputState();
+    return;
+  }
+  state.captionSearchQuery = nextQuery;
+  syncCaptionSearchInputState();
+  renderSentences({ includePreview: false });
+}
+
+function handleCaptionSearchInput(event) {
+  updateCaptionSearchQuery(event?.target?.value || "");
+}
+
 function renderSentences(options = {}) {
   const { force = false, includePreview = true } = options;
   if (!force && hasActiveInlineEditor()) {
@@ -1506,14 +1617,23 @@ function renderSentences(options = {}) {
   sectionContainer.innerHTML = "";
   sentenceListElements.clear();
   const selectedPaths = [...state.selectedPaths];
+  const normalizedCaptionSearchQuery = normalizeCaptionSearchQuery(state.captionSearchQuery);
+  let hasVisibleEntries = false;
 
   state.sections = normalizeSectionsData(state.sections);
   const { counts: folderSentenceCounts, hasMissingCaptions } = getFolderSentenceCountState();
   if (hasMissingCaptions) {
     queueFolderSentenceCountLoad();
   }
+  syncCaptionSearchInputState();
 
   state.sections.forEach((section, secIdx) => {
+    const { sectionMatched, entries: visibleEntries } = getVisibleSectionEntries(section, normalizedCaptionSearchQuery);
+    if (normalizedCaptionSearchQuery && !sectionMatched && visibleEntries.length === 0) {
+      return;
+    }
+    hasVisibleEntries = true;
+
     const sectionBlock = document.createElement("div");
     sectionBlock.className = "section-group";
     sectionBlock.dataset.sectionIdx = secIdx;
@@ -1678,7 +1798,7 @@ function renderSentences(options = {}) {
       }
       moveSentenceToTopLevelSection(source.secIdx, source.groupIdx, source.sentence, secIdx);
     });
-    for (const entry of getOrderedSectionEntries(section)) {
+    for (const entry of visibleEntries) {
       if (entry.type === "sentence") {
         sectionSentences.appendChild(createSentenceListItem(entry.sentence, selectedPaths, {
           secIdx,
@@ -1690,6 +1810,7 @@ function renderSentences(options = {}) {
         sectionSentences.appendChild(createGroupListItem(section, entry.group, secIdx, entry.groupIdx, selectedPaths, {
           folderSentenceCounts,
           folderCountsPending: hasMissingCaptions,
+          visibleSentences: entry.visibleSentences,
         }));
       }
     }
@@ -1699,6 +1820,10 @@ function renderSentences(options = {}) {
     sectionBlock.appendChild(body);
     sectionContainer.appendChild(sectionBlock);
   });
+
+  if (normalizedCaptionSearchQuery && !hasVisibleEntries) {
+    sectionContainer.appendChild(createCaptionSearchEmptyState(state.captionSearchQuery));
+  }
 
   sectionContainer.appendChild(createAddSectionRow());
 
@@ -2282,6 +2407,11 @@ const FREE_TEXT_NON_COLOR_KEYWORDS = new Set([
 const freeTextColorProbeContext = document.createElement("canvas").getContext("2d");
 const freeTextResolvedColorCache = new Map();
 const freeTextColorSupportProbe = document.createElement("span");
+let freeTextCaptionLibraryWordSet = null;
+
+function invalidateFreeTextCaptionLibraryWordSet() {
+  freeTextCaptionLibraryWordSet = null;
+}
 
 function escapeFreeTextHtml(value) {
   return String(value || "")
@@ -2386,7 +2516,37 @@ function resolveFreeTextColorToken(word) {
 }
 
 function getFreeTextWordMatches(text) {
-  return Array.from(String(text || "").matchAll(/[A-Za-z]+(?:-[A-Za-z]+)*/g));
+  return Array.from(String(text || "").matchAll(/[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/g));
+}
+
+function getFreeTextCaptionLibraryWordSet() {
+  if (freeTextCaptionLibraryWordSet instanceof Set) {
+    return freeTextCaptionLibraryWordSet;
+  }
+
+  const words = new Set();
+  if (typeof getAllConfiguredSentences === "function") {
+    for (const sentence of getAllConfiguredSentences()) {
+      for (const match of getFreeTextWordMatches(sentence)) {
+        const normalizedWord = String(match[0] || "").toLowerCase();
+        if (normalizedWord) {
+          words.add(normalizedWord);
+        }
+      }
+    }
+  }
+
+  freeTextCaptionLibraryWordSet = words;
+  return words;
+}
+
+function hasFreeTextCaptionLibraryWord(text, captionLibraryWords = getFreeTextCaptionLibraryWordSet()) {
+  for (const match of getFreeTextWordMatches(text)) {
+    if (captionLibraryWords.has(String(match[0] || "").toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function getFreeTextColorPhraseMatch(text, wordMatches, startIndex) {
@@ -2405,7 +2565,7 @@ function getFreeTextColorPhraseMatch(text, wordMatches, startIndex) {
         Number(startMatch.index || 0) + startMatch[0].length,
         phraseEnd - endMatch[0].length,
       );
-      if (!/^[\s-]+(?:[A-Za-z]+(?:-[A-Za-z]+)*[\s-]+)*$/.test(betweenWords)) {
+      if (!/^[\s-]+(?:[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*[\s-]+)*$/.test(betweenWords)) {
         continue;
       }
     }
@@ -2423,28 +2583,40 @@ function getFreeTextColorPhraseMatch(text, wordMatches, startIndex) {
   return null;
 }
 
-function buildFreeTextColorTokenMarkup(word, backgroundRgb, resolvedColor = null) {
+function buildFreeTextColorTokenMarkup(word, backgroundRgb, resolvedColor = null, underlineMatch = false) {
   const effectiveResolvedColor = resolvedColor || resolveFreeTextColorToken(word);
-  if (!effectiveResolvedColor) {
+  if (!effectiveResolvedColor && !underlineMatch) {
     return escapeFreeTextHtml(word);
   }
 
-  const colorRgb = parseCssColorToRgb(effectiveResolvedColor);
-  let style = `color: ${effectiveResolvedColor};`;
-  if (colorRgb && backgroundRgb && getContrastRatio(colorRgb, backgroundRgb) < 2.6) {
-    const colorLuminance = getRelativeLuminance(colorRgb);
-    const backgroundLuminance = getRelativeLuminance(backgroundRgb);
-    const shadowColor = colorLuminance <= backgroundLuminance
-      ? "rgba(255,255,255,0.85)"
-      : "rgba(96,96,96,0.9)";
-    style += ` text-shadow: 0 0 1px ${shadowColor};`;
+  const classNames = [];
+  let style = "";
+  if (effectiveResolvedColor) {
+    classNames.push("free-text-color-token");
+    const colorRgb = parseCssColorToRgb(effectiveResolvedColor);
+    style = `color: ${effectiveResolvedColor};`;
+    if (colorRgb && backgroundRgb && getContrastRatio(colorRgb, backgroundRgb) < 2.6) {
+      const colorLuminance = getRelativeLuminance(colorRgb);
+      const backgroundLuminance = getRelativeLuminance(backgroundRgb);
+      const shadowColor = colorLuminance <= backgroundLuminance
+        ? "rgba(255,255,255,0.85)"
+        : "rgba(96,96,96,0.9)";
+      style += ` text-shadow: 0 0 1px ${shadowColor};`;
+    }
   }
-  return `<span class="free-text-color-token" style="${style}">${escapeFreeTextHtml(word)}</span>`;
+  if (underlineMatch) {
+    classNames.push("free-text-caption-match");
+  }
+
+  const classAttribute = classNames.length ? ` class="${classNames.join(" ")}"` : "";
+  const styleAttribute = style ? ` style="${style}"` : "";
+  return `<span${classAttribute}${styleAttribute}>${escapeFreeTextHtml(word)}</span>`;
 }
 
 function buildFreeTextHighlightMarkup(value) {
   const text = String(value || "");
   const backgroundRgb = getFreeTextEditorBackgroundRgb();
+  const captionLibraryWords = getFreeTextCaptionLibraryWordSet();
   const wordMatches = getFreeTextWordMatches(text);
   let html = "";
   let lastIndex = 0;
@@ -2456,12 +2628,22 @@ function buildFreeTextHighlightMarkup(value) {
     const nextStart = phraseMatch ? phraseMatch.start : matchIndex;
     html += escapeFreeTextHtml(text.slice(lastIndex, nextStart));
     if (phraseMatch) {
-      html += buildFreeTextColorTokenMarkup(phraseMatch.text, backgroundRgb, phraseMatch.resolvedColor);
+      html += buildFreeTextColorTokenMarkup(
+        phraseMatch.text,
+        backgroundRgb,
+        phraseMatch.resolvedColor,
+        hasFreeTextCaptionLibraryWord(phraseMatch.text, captionLibraryWords),
+      );
       lastIndex = phraseMatch.end;
       index = phraseMatch.endIndex;
       continue;
     }
-    html += escapeFreeTextHtml(match[0]);
+    html += buildFreeTextColorTokenMarkup(
+      match[0],
+      backgroundRgb,
+      null,
+      captionLibraryWords.has(String(match[0] || "").toLowerCase()),
+    );
     lastIndex = matchIndex + match[0].length;
   }
 
