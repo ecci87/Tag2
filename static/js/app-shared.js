@@ -25,6 +25,7 @@ const state = {
   mediaSearchQuery: "",
   filterCaptionCacheKey: "",
   filterLoadingPromise: null,
+  captionLibraryLoadingPromise: null,
   previewPath: null,
   previewMediaType: null,
   previewVideoMuted: false,

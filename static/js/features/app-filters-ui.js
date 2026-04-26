@@ -273,22 +273,32 @@ async function fetchMetadataBulk(paths) {
   return data;
 }
 
-async function ensureCaptionCacheLoadedForFiltering() {
-  const filters = getActiveSentenceFilters();
-  const searchActive = hasActiveSearchQuery();
-  if ((filters.length === 0 && !searchActive) || state.images.length === 0) return;
+async function ensureCaptionCacheLoadedForPaths(paths, options = {}) {
+  const normalizedPaths = Array.from(new Set((Array.isArray(paths) ? paths : []).filter(Boolean)));
+  if (!normalizedPaths.length) return;
 
-  const filterKey = getActiveSentenceFilterKey();
-  const needsReload = (filters.length > 0 && state.filterCaptionCacheKey !== filterKey) || state.images.some(img => !state.captionCache[img.path]);
-  if (!needsReload) return;
-  if (state.filterLoadingPromise) return state.filterLoadingPromise;
+  const { updateFilterKey = false, filterKey = getActiveSentenceFilterKey() } = options;
+  const hasMissingCaptions = normalizedPaths.some(path => !state.captionCache[path]);
+  if (!hasMissingCaptions) {
+    if (updateFilterKey) {
+      state.filterCaptionCacheKey = filterKey;
+    }
+    return;
+  }
+  if (state.filterLoadingPromise) {
+    return updateFilterKey
+      ? state.filterLoadingPromise.then(() => {
+        state.filterCaptionCacheKey = filterKey;
+      })
+      : state.filterLoadingPromise;
+  }
 
   state.filterLoadingPromise = (async () => {
-    const data = await fetchCaptionsBulk(state.images.map(img => img.path));
+    const data = await fetchCaptionsBulk(normalizedPaths);
     for (const [path, caption] of Object.entries(data || {})) {
       state.captionCache[path] = normalizeCaptionCacheEntry(caption);
     }
-    if (filters.length > 0) {
+    if (updateFilterKey) {
       state.filterCaptionCacheKey = filterKey;
     }
   })().finally(() => {
@@ -296,6 +306,26 @@ async function ensureCaptionCacheLoadedForFiltering() {
   });
 
   return state.filterLoadingPromise;
+}
+
+async function ensureCaptionCacheLoadedForCurrentFolder() {
+  return ensureCaptionCacheLoadedForPaths(state.images.map(img => img.path));
+}
+
+async function ensureCaptionCacheLoadedForFiltering() {
+  const filters = getActiveSentenceFilters();
+  const searchActive = hasActiveSearchQuery();
+  if ((filters.length === 0 && !searchActive) || state.images.length === 0) return;
+
+  const filterKey = getActiveSentenceFilterKey();
+  const hasMissingCaptions = state.images.some(img => !state.captionCache[img.path]);
+  const needsFilterKeyUpdate = filters.length > 0 && state.filterCaptionCacheKey !== filterKey;
+  if (!hasMissingCaptions && !needsFilterKeyUpdate) return;
+
+  return ensureCaptionCacheLoadedForPaths(state.images.map(img => img.path), {
+    updateFilterKey: filters.length > 0,
+    filterKey,
+  });
 }
 
 function refreshGridForActiveFilters() {

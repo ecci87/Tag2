@@ -387,6 +387,20 @@
   color: var(--txt-paper-strong);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), 0 0 0 1px var(--txt-paper-shadow);
 }
+.section-sentences li .sentence-folder-count {
+  min-width: 12px;
+  padding: 0;
+  color: var(--fg-dim);
+  display: inline-block;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.section-sentences li .sentence-folder-count.loading {
+  opacity: 0.72;
+}
 .section-sentences li .filter-toggle-btn {
   min-width: 20px;
   height: 20px;
@@ -822,6 +836,14 @@
   width: 100%;
   height: 28px;
   border-radius: 8px;
+  background: var(--bg3);
+  color: var(--accent);
+  border-color: var(--border);
+}
+.section-add-section-row button:hover {
+  background: rgba(137,180,250,0.12);
+  border-color: var(--accent);
+  filter: none;
 }
 
 /* Free text */

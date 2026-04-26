@@ -890,12 +890,47 @@ function getSentenceSelectionState(sentence, selectedPaths) {
   };
 }
 
+function getFolderSentenceCountState() {
+  const counts = new Map();
+  let hasMissingCaptions = false;
+  for (const image of state.images) {
+    const caption = state.captionCache[image.path];
+    if (!caption) {
+      hasMissingCaptions = true;
+      continue;
+    }
+    for (const sentence of (caption.enabled_sentences || [])) {
+      counts.set(sentence, (counts.get(sentence) || 0) + 1);
+    }
+  }
+  return { counts, hasMissingCaptions };
+}
+
+function queueFolderSentenceCountLoad() {
+  if (state.captionLibraryLoadingPromise) return;
+  if (!state.images.some(img => !state.captionCache[img.path])) return;
+  if (typeof ensureCaptionCacheLoadedForCurrentFolder !== "function") return;
+
+  state.captionLibraryLoadingPromise = Promise.resolve(ensureCaptionCacheLoadedForCurrentFolder())
+    .then(() => {
+      scheduleUiRender({ sentences: true });
+    })
+    .catch((err) => {
+      console.error("Failed to load folder caption counts:", err);
+    })
+    .finally(() => {
+      state.captionLibraryLoadingPromise = null;
+    });
+}
+
 function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const { isExclusive = false, allowSuppressToggle = false } = options;
   const secIdx = Number.isInteger(options.secIdx) ? options.secIdx : -1;
   const groupIdx = normalizeGroupIndex(options.groupIdx);
   const sentenceIdx = Number.isInteger(options.sentenceIdx) ? options.sentenceIdx : -1;
   const topLevelMix = !!options.topLevelMix;
+  const folderSentenceCounts = options.folderSentenceCounts instanceof Map ? options.folderSentenceCounts : null;
+  const folderCountsPending = !!options.folderCountsPending;
   const sentenceDragRef = createTopLevelSentenceDragRef(sentence, secIdx, groupIdx);
   const topLevelRef = topLevelMix ? sentenceDragRef : null;
   const canRefreshSentence = groupIdx === null;
@@ -903,6 +938,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   const autoCaptionSkipped = isSentenceSkippedForAutoCaption(sentence);
   const filterMode = getSentenceFilterMode(sentence);
   const isFilterActive = filterMode !== "off";
+  const folderCount = folderSentenceCounts?.get(sentence) || 0;
   const { isChecked, isPartial } = getSentenceSelectionState(sentence, selectedPaths);
   const li = document.createElement("li");
   li.dataset.sentence = sentence;
@@ -1001,6 +1037,16 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     await toggleSentenceFilter(sentence);
   });
 
+  const folderCountBadge = document.createElement("span");
+  folderCountBadge.className = `sentence-folder-count${folderCountsPending ? " loading" : ""}`;
+  folderCountBadge.textContent = folderCountsPending ? "\u2026" : String(folderCount);
+  folderCountBadge.title = folderCountsPending
+    ? "Loading caption count for this folder"
+    : `${folderCount} file${folderCount === 1 ? "" : "s"} in this folder include this caption`;
+  folderCountBadge.setAttribute("aria-label", folderCountsPending
+    ? "Loading caption count for this folder"
+    : `Caption appears in ${folderCount} file${folderCount === 1 ? "" : "s"} in this folder`);
+
   const autoCaptionSkipBtn = createAutoCaptionSkipButton(
     autoCaptionSkipped,
     "This caption will be skipped during Auto Caption",
@@ -1027,6 +1073,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     li.appendChild(dragHandle);
     li.appendChild(checkBox);
     li.appendChild(textSpan);
+    li.appendChild(folderCountBadge);
     if (refreshBtn) li.appendChild(refreshBtn);
     li.appendChild(filterToggleBtn);
     li.appendChild(autoCaptionSkipBtn);
@@ -1036,8 +1083,9 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     li.appendChild(dragHandle);
     li.appendChild(checkBox);
     li.appendChild(textSpan);
-    if (refreshBtn) li.appendChild(refreshBtn);
+    li.appendChild(folderCountBadge);
     li.appendChild(filterToggleBtn);
+    if (refreshBtn) li.appendChild(refreshBtn);
     li.appendChild(autoCaptionSkipBtn);
     li.appendChild(rmBtn);
   }
@@ -1129,7 +1177,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   return li;
 }
 
-function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
+function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths, options = {}) {
   const wrapper = document.createElement("li");
   wrapper.className = "group-item-wrap";
   const topLevelRef = createTopLevelGroupDragRef(group.id);
@@ -1306,6 +1354,8 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths) {
       secIdx,
       groupIdx,
       sentenceIdx,
+      folderSentenceCounts: options.folderSentenceCounts,
+      folderCountsPending: options.folderCountsPending,
     }));
   }
   groupBody.appendChild(groupSentences);
@@ -1438,6 +1488,10 @@ function renderSentences(options = {}) {
   const selectedPaths = [...state.selectedPaths];
 
   state.sections = normalizeSectionsData(state.sections);
+  const { counts: folderSentenceCounts, hasMissingCaptions } = getFolderSentenceCountState();
+  if (hasMissingCaptions) {
+    queueFolderSentenceCountLoad();
+  }
 
   state.sections.forEach((section, secIdx) => {
     const sectionBlock = document.createElement("div");
@@ -1609,9 +1663,14 @@ function renderSentences(options = {}) {
         sectionSentences.appendChild(createSentenceListItem(entry.sentence, selectedPaths, {
           secIdx,
           topLevelMix: true,
+          folderSentenceCounts,
+          folderCountsPending: hasMissingCaptions,
         }));
       } else if (entry.type === "group") {
-        sectionSentences.appendChild(createGroupListItem(section, entry.group, secIdx, entry.groupIdx, selectedPaths));
+        sectionSentences.appendChild(createGroupListItem(section, entry.group, secIdx, entry.groupIdx, selectedPaths, {
+          folderSentenceCounts,
+          folderCountsPending: hasMissingCaptions,
+        }));
       }
     }
     body.appendChild(sectionSentences);
