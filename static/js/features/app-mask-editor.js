@@ -1317,7 +1317,7 @@ function renderMaskStrokePreview() {
         if (imageMode) {
           const targetAlpha = clamp(influence * brushStrength, 0, 1);
           const baseAlpha = clamp((baseData[dataIndex + 3] || 0) / 255, 0, 1);
-          const outAlpha = targetAlpha + (baseAlpha * (1 - targetAlpha));
+          const outAlpha = Math.max(baseAlpha, targetAlpha);
           if (outAlpha <= 0) {
             outputData[dataIndex] = 0;
             outputData[dataIndex + 1] = 0;
@@ -1325,10 +1325,12 @@ function renderMaskStrokePreview() {
             outputData[dataIndex + 3] = 0;
             continue;
           }
-          const preservedBaseFactor = baseAlpha * (1 - targetAlpha);
-          outputData[dataIndex] = Math.round(((targetColor.r * targetAlpha) + (baseData[dataIndex] * preservedBaseFactor)) / outAlpha);
-          outputData[dataIndex + 1] = Math.round(((targetColor.g * targetAlpha) + (baseData[dataIndex + 1] * preservedBaseFactor)) / outAlpha);
-          outputData[dataIndex + 2] = Math.round(((targetColor.b * targetAlpha) + (baseData[dataIndex + 2] * preservedBaseFactor)) / outAlpha);
+          const colorBlend = baseAlpha <= 0
+            ? 1
+            : clamp(targetAlpha / Math.max(outAlpha, 1e-6), 0, 1);
+          outputData[dataIndex] = Math.round((baseData[dataIndex] * (1 - colorBlend)) + (targetColor.r * colorBlend));
+          outputData[dataIndex + 1] = Math.round((baseData[dataIndex + 1] * (1 - colorBlend)) + (targetColor.g * colorBlend));
+          outputData[dataIndex + 2] = Math.round((baseData[dataIndex + 2] * (1 - colorBlend)) + (targetColor.b * colorBlend));
           outputData[dataIndex + 3] = Math.round(outAlpha * 255);
           continue;
         }
