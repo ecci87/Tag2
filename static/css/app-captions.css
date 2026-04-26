@@ -929,6 +929,7 @@
   flex: 1;
   min-height: 0;
   background: var(--bg);
+  --free-text-scrollbar-gutter: 0px;
 }
 #free-text-highlight,
 #free-text {
@@ -944,6 +945,7 @@
 #free-text-highlight {
   position: absolute;
   inset: 0;
+  padding-right: calc(10px + var(--free-text-scrollbar-gutter));
   overflow: auto;
   pointer-events: none;
   color: var(--fg);
@@ -959,13 +961,6 @@
 }
 .free-text-color-token {
   font-weight: 700;
-}
-.free-text-caption-match {
-  text-decoration-line: underline;
-  text-decoration-color: rgba(249,226,175,0.9);
-  text-decoration-thickness: 2px;
-  text-underline-offset: 2px;
-  text-decoration-skip-ink: none;
 }
 #free-text {
   position: relative;

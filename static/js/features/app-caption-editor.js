@@ -129,7 +129,6 @@ function formatCaptionFileUpdateStatus(baseMessage, touchedCaptionFiles) {
 }
 
 function noteCaptionLibraryChanged() {
-  invalidateFreeTextCaptionLibraryWordSet();
   syncFreeTextHighlightState();
 }
 
@@ -2407,11 +2406,6 @@ const FREE_TEXT_NON_COLOR_KEYWORDS = new Set([
 const freeTextColorProbeContext = document.createElement("canvas").getContext("2d");
 const freeTextResolvedColorCache = new Map();
 const freeTextColorSupportProbe = document.createElement("span");
-let freeTextCaptionLibraryWordSet = null;
-
-function invalidateFreeTextCaptionLibraryWordSet() {
-  freeTextCaptionLibraryWordSet = null;
-}
 
 function escapeFreeTextHtml(value) {
   return String(value || "")
@@ -2519,36 +2513,6 @@ function getFreeTextWordMatches(text) {
   return Array.from(String(text || "").matchAll(/[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/g));
 }
 
-function getFreeTextCaptionLibraryWordSet() {
-  if (freeTextCaptionLibraryWordSet instanceof Set) {
-    return freeTextCaptionLibraryWordSet;
-  }
-
-  const words = new Set();
-  if (typeof getAllConfiguredSentences === "function") {
-    for (const sentence of getAllConfiguredSentences()) {
-      for (const match of getFreeTextWordMatches(sentence)) {
-        const normalizedWord = String(match[0] || "").toLowerCase();
-        if (normalizedWord) {
-          words.add(normalizedWord);
-        }
-      }
-    }
-  }
-
-  freeTextCaptionLibraryWordSet = words;
-  return words;
-}
-
-function hasFreeTextCaptionLibraryWord(text, captionLibraryWords = getFreeTextCaptionLibraryWordSet()) {
-  for (const match of getFreeTextWordMatches(text)) {
-    if (captionLibraryWords.has(String(match[0] || "").toLowerCase())) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function getFreeTextColorPhraseMatch(text, wordMatches, startIndex) {
   const startMatch = wordMatches[startIndex];
   if (!startMatch) return null;
@@ -2583,9 +2547,9 @@ function getFreeTextColorPhraseMatch(text, wordMatches, startIndex) {
   return null;
 }
 
-function buildFreeTextColorTokenMarkup(word, backgroundRgb, resolvedColor = null, underlineMatch = false) {
+function buildFreeTextColorTokenMarkup(word, backgroundRgb, resolvedColor = null) {
   const effectiveResolvedColor = resolvedColor || resolveFreeTextColorToken(word);
-  if (!effectiveResolvedColor && !underlineMatch) {
+  if (!effectiveResolvedColor) {
     return escapeFreeTextHtml(word);
   }
 
@@ -2604,10 +2568,6 @@ function buildFreeTextColorTokenMarkup(word, backgroundRgb, resolvedColor = null
       style += ` text-shadow: 0 0 1px ${shadowColor};`;
     }
   }
-  if (underlineMatch) {
-    classNames.push("free-text-caption-match");
-  }
-
   const classAttribute = classNames.length ? ` class="${classNames.join(" ")}"` : "";
   const styleAttribute = style ? ` style="${style}"` : "";
   return `<span${classAttribute}${styleAttribute}>${escapeFreeTextHtml(word)}</span>`;
@@ -2616,7 +2576,6 @@ function buildFreeTextColorTokenMarkup(word, backgroundRgb, resolvedColor = null
 function buildFreeTextHighlightMarkup(value) {
   const text = String(value || "");
   const backgroundRgb = getFreeTextEditorBackgroundRgb();
-  const captionLibraryWords = getFreeTextCaptionLibraryWordSet();
   const wordMatches = getFreeTextWordMatches(text);
   let html = "";
   let lastIndex = 0;
@@ -2632,7 +2591,6 @@ function buildFreeTextHighlightMarkup(value) {
         phraseMatch.text,
         backgroundRgb,
         phraseMatch.resolvedColor,
-        hasFreeTextCaptionLibraryWord(phraseMatch.text, captionLibraryWords),
       );
       lastIndex = phraseMatch.end;
       index = phraseMatch.endIndex;
@@ -2642,7 +2600,6 @@ function buildFreeTextHighlightMarkup(value) {
       match[0],
       backgroundRgb,
       null,
-      captionLibraryWords.has(String(match[0] || "").toLowerCase()),
     );
     lastIndex = matchIndex + match[0].length;
   }
@@ -2651,8 +2608,15 @@ function buildFreeTextHighlightMarkup(value) {
   return html;
 }
 
+function syncFreeTextHighlightMetrics() {
+  if (!freeText || !freeTextEditor) return;
+  const verticalScrollbarGutter = Math.max(0, freeText.offsetWidth - freeText.clientWidth);
+  freeTextEditor.style.setProperty("--free-text-scrollbar-gutter", `${verticalScrollbarGutter}px`);
+}
+
 function syncFreeTextHighlightScroll() {
   if (!freeTextHighlight || !freeText) return;
+  syncFreeTextHighlightMetrics();
   freeTextHighlight.scrollTop = freeText.scrollTop;
   freeTextHighlight.scrollLeft = freeText.scrollLeft;
 }
@@ -2669,6 +2633,16 @@ function syncFreeTextHighlightState() {
     freeTextHighlight.innerHTML = buildFreeTextHighlightMarkup(value);
   }
   syncFreeTextHighlightScroll();
+}
+
+const freeTextHighlightResizeObserver = typeof ResizeObserver === "function"
+  ? new ResizeObserver(() => {
+    syncFreeTextHighlightMetrics();
+    syncFreeTextHighlightScroll();
+  })
+  : null;
+if (freeTextHighlightResizeObserver && freeText) {
+  freeTextHighlightResizeObserver.observe(freeText);
 }
 
 let freeTextSaveTimeout = null;
