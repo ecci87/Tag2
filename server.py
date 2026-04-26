@@ -3079,10 +3079,11 @@ def _remove_captions_from_caption_files(folder: str, sections_before: list[dict]
     """Rewrite caption files in a folder after configured captions are deleted."""
     removed_set = {caption for caption in removed_captions if caption}
     if not removed_set:
-        return
+        return 0
 
     all_captions_before = _all_captions_from_sections(sections_before)
     headers_before = _all_headers_from_sections(sections_before)
+    touched_caption_files = 0
 
     for entry in _iter_folder_image_entries(folder):
         caption_path = entry.with_suffix(".txt")
@@ -3096,6 +3097,9 @@ def _remove_captions_from_caption_files(folder: str, sections_before: list[dict]
         enabled = _normalize_enabled_captions(enabled, sections_after)
         free_text = _remove_deleted_caption_lines(str(data.get("free_text", "") or ""), removed_set)
         _write_caption_file(str(entry), enabled, free_text, sections_after)
+        touched_caption_files += 1
+
+    return touched_caption_files
 
 
 @app.get("/api/crop")
@@ -3839,7 +3843,7 @@ async def rename_section(update: RenameSectionUpdate):
         raise HTTPException(status_code=400, detail="Folder not found")
     if old_name == new_name:
         cfg = _load_config()
-        return {"ok": True, "sections": _get_folder_sections(cfg, folder)}
+        return {"ok": True, "sections": _get_folder_sections(cfg, folder), "touched_caption_files": 0}
 
     cfg = _load_config()
     sections_before = _get_folder_sections(cfg, folder)
@@ -3860,6 +3864,7 @@ async def rename_section(update: RenameSectionUpdate):
     _save_config(cfg)
 
     folder_path = Path(folder)
+    touched_caption_files = 0
     for entry in folder_path.iterdir():
         if not entry.is_file() or entry.suffix.lower() not in MEDIA_EXTENSIONS:
             continue
@@ -3869,8 +3874,9 @@ async def rename_section(update: RenameSectionUpdate):
         data = _read_caption_file(str(entry), all_captions, headers_before)
         free_text = str(data.get("free_text", "") or "").replace(old_name, new_name)
         _write_caption_file(str(entry), _read_enabled_captions(data), free_text, sections)
+        touched_caption_files += 1
 
-    return {"ok": True, "sections": sections}
+    return {"ok": True, "sections": sections, "touched_caption_files": touched_caption_files}
 
 
 @app.post("/api/caption/delete-preset")
@@ -3895,8 +3901,8 @@ async def delete_caption_preset(update: DeleteCaptionPresetUpdate):
 
     _set_folder_sections(cfg, folder, sections)
     _save_config(cfg)
-    _remove_captions_from_caption_files(folder, sections_before, sections, [caption])
-    return {"ok": True, "sections": sections, "removed_captions": [caption], "removed_sentences": [caption]}
+    touched_caption_files = _remove_captions_from_caption_files(folder, sections_before, sections, [caption])
+    return {"ok": True, "sections": sections, "removed_captions": [caption], "removed_sentences": [caption], "touched_caption_files": touched_caption_files}
 
 
 @app.post("/api/group/delete")
@@ -3915,8 +3921,8 @@ async def delete_group(update: DeleteGroupUpdate):
 
     _set_folder_sections(cfg, folder, sections)
     _save_config(cfg)
-    _remove_captions_from_caption_files(folder, sections_before, sections, removed_captions)
-    return {"ok": True, "sections": sections, "removed_captions": removed_captions, "removed_sentences": removed_captions}
+    touched_caption_files = _remove_captions_from_caption_files(folder, sections_before, sections, removed_captions)
+    return {"ok": True, "sections": sections, "removed_captions": removed_captions, "removed_sentences": removed_captions, "touched_caption_files": touched_caption_files}
 
 
 @app.post("/api/section/delete")
@@ -3935,8 +3941,8 @@ async def delete_section(update: DeleteSectionUpdate):
 
     _set_folder_sections(cfg, folder, updated_sections)
     _save_config(cfg)
-    _remove_captions_from_caption_files(folder, sections_before, updated_sections, removed_captions)
-    return {"ok": True, "sections": updated_sections, "removed_captions": removed_captions, "removed_sentences": removed_captions}
+    touched_caption_files = _remove_captions_from_caption_files(folder, sections_before, updated_sections, removed_captions)
+    return {"ok": True, "sections": updated_sections, "removed_captions": removed_captions, "removed_sentences": removed_captions, "touched_caption_files": touched_caption_files}
 
 
 @app.post("/api/caption/save-free-text")
@@ -4761,6 +4767,7 @@ async def update_settings(data: SettingsUpdate):
     cfg = _load_config()
     sections_before = None
     sections_after = None
+    touched_caption_files = None
     if data.last_folder is not None:
         cfg["last_folder"] = data.last_folder
     if data.video_training_presets is not None:
@@ -4830,11 +4837,12 @@ async def update_settings(data: SettingsUpdate):
         sections_after = _get_folder_sections(cfg, data.folder)
     _save_config(cfg)
     if sections_before is not None and sections_after is not None:
-        _rewrite_caption_files_for_section_change(data.folder, sections_before, sections_after)
+        touched_caption_files = len(_rewrite_caption_files_for_section_change(data.folder, sections_before, sections_after))
     response = {"ok": True}
     if sections_after is not None and data.folder:
         response["folder"] = os.path.normpath(data.folder)
         response["sections"] = sections_after
+        response["touched_caption_files"] = touched_caption_files if touched_caption_files is not None else 0
     return response
 
 

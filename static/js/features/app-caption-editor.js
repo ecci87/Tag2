@@ -117,16 +117,42 @@ async function savePendingMetadataChangesBeforeContextChange() {
 
 // ===== SENTENCES =====
 let _saveSentencesTimeout = null;
+let _saveSectionsRequestToken = 0;
+
+function formatCaptionFileUpdateStatus(baseMessage, touchedCaptionFiles) {
+  const count = Number(touchedCaptionFiles);
+  if (!Number.isFinite(count) || count < 0) {
+    return baseMessage;
+  }
+  const fileLabel = count === 1 ? "image caption file" : "image caption files";
+  return `${baseMessage}, updated ${count} ${fileLabel}`;
+}
+
 function saveSectionsToStorage() {
   // Debounce saves to avoid hammering the server during rapid edits
   if (_saveSentencesTimeout) clearTimeout(_saveSentencesTimeout);
+  const requestToken = ++_saveSectionsRequestToken;
   _saveSentencesTimeout = setTimeout(() => {
     if (!state.folder) return;
+    statusBar.textContent = "Saving caption library...";
     fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sections: serializeSectionsForSave(), folder: state.folder }),
-    }).catch(err => console.error("Failed to save sections:", err));
+    })
+      .then(async (resp) => {
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          throw new Error(data.detail || "Failed to save caption library");
+        }
+        if (requestToken !== _saveSectionsRequestToken) return;
+        statusBar.textContent = formatCaptionFileUpdateStatus("Caption library saved", data.touched_caption_files);
+      })
+      .catch(err => {
+        if (requestToken !== _saveSectionsRequestToken) return;
+        console.error("Failed to save sections:", err);
+        statusBar.textContent = `Caption library save error: ${err.message}`;
+      });
   }, 300);
 }
 
@@ -525,7 +551,7 @@ async function removeSentence(sentence) {
     state.sections = normalizeSectionsData(data.sections || state.sections);
     applyRemovedSentencesToLocalState(data.removed_captions || data.removed_sentences || [sentence]);
     await refreshCaptionsAfterSchemaChange();
-    statusBar.textContent = "Caption deleted";
+    statusBar.textContent = formatCaptionFileUpdateStatus("Caption deleted", data.touched_caption_files);
   } catch (err) {
     statusBar.textContent = `Delete caption error: ${err.message}`;
     renderSentences();
@@ -663,13 +689,7 @@ async function renameSentence(oldSentence, newSentence) {
     } else {
       renderSentences();
     }
-    const touchedCaptionFiles = Number(data.touched_caption_files);
-    if (Number.isFinite(touchedCaptionFiles) && touchedCaptionFiles >= 0) {
-      const fileLabel = touchedCaptionFiles === 1 ? "image caption file" : "image caption files";
-      statusBar.textContent = `Caption renamed, updated ${touchedCaptionFiles} ${fileLabel}`;
-    } else {
-      statusBar.textContent = "Caption renamed";
-    }
+    statusBar.textContent = formatCaptionFileUpdateStatus("Caption renamed", data.touched_caption_files);
   } catch (err) {
     statusBar.textContent = `Rename error: ${err.message}`;
     renderSentences();
@@ -706,7 +726,7 @@ async function renameSection(oldName, newName) {
     }
     state.sections = normalizeSectionsData(data.sections || state.sections);
     renderSentences();
-    statusBar.textContent = "Section renamed";
+    statusBar.textContent = formatCaptionFileUpdateStatus("Section renamed", data.touched_caption_files);
   } catch (err) {
     statusBar.textContent = `Section rename error: ${err.message}`;
     renderSentences();
@@ -769,7 +789,7 @@ async function deleteSection(index) {
     state.sections = normalizeSectionsData(data.sections || state.sections);
     applyRemovedSentencesToLocalState(data.removed_sentences || []);
     await refreshCaptionsAfterSchemaChange();
-    statusBar.textContent = "Section deleted";
+    statusBar.textContent = formatCaptionFileUpdateStatus("Section deleted", data.touched_caption_files);
   } catch (err) {
     statusBar.textContent = `Delete section error: ${err.message}`;
     renderSentences();
@@ -804,7 +824,7 @@ async function deleteGroup(secIdx, groupIdx) {
     state.sections = normalizeSectionsData(data.sections || state.sections);
     applyRemovedSentencesToLocalState(data.removed_sentences || []);
     await refreshCaptionsAfterSchemaChange();
-    statusBar.textContent = "Group deleted";
+    statusBar.textContent = formatCaptionFileUpdateStatus("Group deleted", data.touched_caption_files);
   } catch (err) {
     statusBar.textContent = `Delete group error: ${err.message}`;
     renderSentences();
