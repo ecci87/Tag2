@@ -93,6 +93,8 @@ from tag2_images import (
     _save_image_mask,
     _save_video_mask,
     _save_image_file,
+    _suspend_thumbnail_processing_for_path,
+    _resume_thumbnail_processing_for_path,
     _write_default_video_mask,
     _write_default_image_mask,
 )
@@ -191,6 +193,11 @@ MAX_VIDEO_JOB_HISTORY = 24
 comfyui_job_lock = threading.Lock()
 comfyui_job_registry: dict[str, dict] = {}
 MAX_COMFYUI_JOB_HISTORY = 96
+media_stream_lock = threading.Lock()
+media_stream_active_counts: dict[str, int] = {}
+media_stream_cancelled_paths: set[str] = set()
+MEDIA_STREAM_CHUNK_SIZE = 256 * 1024
+MEDIA_RANGE_HEADER_PATTERN = re.compile(r"bytes=(\d*)-(\d*)$", re.IGNORECASE)
 
 # In-memory thumbnail cache lives in `tag2_images`.
 
@@ -1676,8 +1683,119 @@ async def get_thumbnail(path: str = Query(...), size: int = Query(default=256)):
     return StreamingResponse(BytesIO(data), media_type="image/jpeg")
 
 
+def _clear_media_stream_cancellation_if_idle(normalized_path: str) -> None:
+    """Drop a delete-time media stream cancellation flag once no streams remain."""
+    if media_stream_active_counts.get(normalized_path, 0) > 0:
+        return
+    media_stream_cancelled_paths.discard(normalized_path)
+
+
+def _start_media_stream(path_value: str) -> str:
+    """Track an active streamed media response for one path."""
+    normalized_path = _normalize_image_key(path_value)
+    with media_stream_lock:
+        if normalized_path in media_stream_cancelled_paths:
+            raise RuntimeError(f"Media stream cancelled for {Path(path_value).name}")
+        media_stream_active_counts[normalized_path] = media_stream_active_counts.get(normalized_path, 0) + 1
+    return normalized_path
+
+
+def _finish_media_stream(normalized_path: str) -> None:
+    """Release active streamed media bookkeeping for one path."""
+    with media_stream_lock:
+        remaining = media_stream_active_counts.get(normalized_path, 0) - 1
+        if remaining > 0:
+            media_stream_active_counts[normalized_path] = remaining
+        else:
+            media_stream_active_counts.pop(normalized_path, None)
+        _clear_media_stream_cancellation_if_idle(normalized_path)
+
+
+def _is_media_stream_cancelled(normalized_path: str) -> bool:
+    """Return whether delete has cancelled streamed media for a path."""
+    with media_stream_lock:
+        return normalized_path in media_stream_cancelled_paths
+
+
+def _suspend_media_stream_for_path(path_value: str, timeout_seconds: float = 1.5) -> None:
+    """Block new media streams for a path and wait briefly for active ones to stop."""
+    normalized_path = _normalize_image_key(path_value)
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds or 0.0))
+    with media_stream_lock:
+        media_stream_cancelled_paths.add(normalized_path)
+    while True:
+        with media_stream_lock:
+            active_count = media_stream_active_counts.get(normalized_path, 0)
+        if active_count <= 0:
+            return
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.05)
+
+
+def _resume_media_stream_for_path(path_value: str) -> None:
+    """Allow future media streams again once delete-time draining is complete."""
+    normalized_path = _normalize_image_key(path_value)
+    with media_stream_lock:
+        _clear_media_stream_cancellation_if_idle(normalized_path)
+
+
+def _parse_media_range_header(range_header: str, file_size: int) -> tuple[int, int]:
+    """Parse a single HTTP byte-range request."""
+    match = MEDIA_RANGE_HEADER_PATTERN.fullmatch(str(range_header or "").strip())
+    if not match:
+        raise HTTPException(status_code=416, detail="Invalid byte range")
+
+    start_text, end_text = match.groups()
+    if not start_text and not end_text:
+        raise HTTPException(status_code=416, detail="Invalid byte range")
+
+    try:
+        if start_text:
+            start = max(0, int(start_text))
+            end = int(end_text) if end_text else max(0, file_size - 1)
+        else:
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                raise ValueError("Suffix length must be positive")
+            end = max(0, file_size - 1)
+            start = max(0, file_size - suffix_length)
+    except ValueError as exc:
+        raise HTTPException(status_code=416, detail="Invalid byte range") from exc
+
+    if file_size <= 0:
+        return 0, -1
+    end = min(max(0, end), file_size - 1)
+    if start >= file_size or end < start:
+        raise HTTPException(status_code=416, detail="Invalid byte range")
+    return start, end
+
+
+async def _iter_media_file_chunks(request: Request, path_value: str, start: int, end: int):
+    """Stream a media file in chunks while honoring delete-time cancellation."""
+    normalized_path = _start_media_stream(path_value)
+    remaining = max(0, end - start + 1)
+    try:
+        with open(path_value, "rb") as media_file:
+            if start > 0:
+                media_file.seek(start)
+            while remaining > 0:
+                if _is_media_stream_cancelled(normalized_path):
+                    break
+                if await request.is_disconnected():
+                    break
+                chunk = media_file.read(min(MEDIA_STREAM_CHUNK_SIZE, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+                await asyncio.sleep(0)
+    finally:
+        _finish_media_stream(normalized_path)
+
+
 @app.get("/api/media")
-async def get_media(path: str = Query(...)):
+async def get_media(request: Request, path: str = Query(...)):
     """Serve the original media file with an inferred content type."""
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -1685,6 +1803,27 @@ async def get_media(path: str = Query(...)):
         raise HTTPException(status_code=400, detail="Unsupported media file")
 
     media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    if _is_video_path(path):
+        file_size = os.path.getsize(path)
+        range_header = request.headers.get("range")
+        start = 0
+        end = max(0, file_size - 1)
+        status_code = 200
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-store",
+        }
+        if range_header:
+            start, end = _parse_media_range_header(range_header, file_size)
+            status_code = 206
+            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+        headers["Content-Length"] = str(max(0, end - start + 1))
+        return StreamingResponse(
+            _iter_media_file_chunks(request, path, start, end),
+            media_type=media_type,
+            status_code=status_code,
+            headers=headers,
+        )
     return FileResponse(path, media_type=media_type)
 
 
@@ -1743,7 +1882,7 @@ async def get_video_meta(path: str = Query(...)):
     cfg = _load_config()
     _, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
     try:
-        metadata = _probe_video_info(path, ffprobe_path)
+        metadata = _probe_video_info(path, ffprobe_path, cancel_path=path)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -2847,7 +2986,7 @@ def _prepare_move_plan(source_folder: str, target_folder: str, image_paths: list
             normalized_selected.append(candidate)
 
     if not normalized_selected:
-        raise HTTPException(status_code=400, detail="Select at least one media file to move")
+        raise HTTPException(status_code=400, detail="Select at least one media file to copy")
 
     image_crops = cfg.get("image_crops") if isinstance(cfg.get("image_crops"), dict) else {}
     source_sections = _get_folder_sections(cfg, str(source_path))
@@ -2899,7 +3038,7 @@ def _prepare_move_plan(source_folder: str, target_folder: str, image_paths: list
         conflict_preview = "\n".join(f"- {message}" for message in conflicts[:8])
         if len(conflicts) > 8:
             conflict_preview += f"\n- ...and {len(conflicts) - 8} more conflict(s)"
-        raise HTTPException(status_code=400, detail=f"Move blocked by existing target files:\n{conflict_preview}")
+        raise HTTPException(status_code=400, detail=f"Copy blocked by existing target files:\n{conflict_preview}")
 
     target_sections_before = _get_folder_sections(cfg, str(target_path))
     target_sections_after = _merge_move_captions_into_target_sections(source_sections, target_sections_before, used_captions)
@@ -3237,7 +3376,21 @@ async def delete_images(data: BatchDeleteImagesRequest):
         backup_path = _get_crop_backup_path(normalized_path) if _is_image_path(normalized_path) else ""
 
         try:
-            path_obj.unlink()
+            _suspend_media_stream_for_path(normalized_path)
+            _suspend_thumbnail_processing_for_path(normalized_path)
+            last_permission_error: PermissionError | None = None
+            for attempt in range(6):
+                try:
+                    path_obj.unlink()
+                    last_permission_error = None
+                    break
+                except PermissionError as exc:
+                    last_permission_error = exc
+                    if attempt >= 5:
+                        raise
+                    time.sleep(0.15)
+            if last_permission_error is not None:
+                raise last_permission_error
             if caption_path.exists():
                 caption_path.unlink()
             if metadata_path.exists():
@@ -3257,6 +3410,9 @@ async def delete_images(data: BatchDeleteImagesRequest):
             errors.append({"path": normalized_path, "error": "Permission denied"})
         except OSError as exc:
             errors.append({"path": normalized_path, "error": str(exc)})
+        finally:
+            _resume_thumbnail_processing_for_path(normalized_path)
+            _resume_media_stream_for_path(normalized_path)
 
     if config_changed:
         _save_config(cfg)
@@ -3374,9 +3530,10 @@ async def clone_folder_stream(data: CloneFolderRequest):
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
+@app.post("/api/media/copy/stream")
 @app.post("/api/media/move/stream")
 async def move_selected_media_stream(data: MoveSelectedMediaRequest):
-    """Move selected media into another folder while merging caption presets and sidecars."""
+    """Copy selected media into another folder while merging caption presets and sidecars."""
     cfg = _load_config()
     cfg_before = copy.deepcopy(cfg)
     plan = _prepare_move_plan(data.source_folder, data.target_folder, data.image_paths or [], cfg)
@@ -3389,7 +3546,7 @@ async def move_selected_media_stream(data: MoveSelectedMediaRequest):
     media_entries: list[dict] = plan["media_entries"]
 
     async def event_stream():
-        moved_artifacts: list[tuple[Path, Path]] = []
+        copied_artifacts: list[Path] = []
         caption_backups: list[tuple[Path, str | None]] = []
         try:
             yield _event_bytes({
@@ -3410,8 +3567,8 @@ async def move_selected_media_stream(data: MoveSelectedMediaRequest):
                     if artifact.get("allow_replace") and target_artifact.exists():
                         target_artifact.unlink(missing_ok=True)
                     target_artifact.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(source_artifact), str(target_artifact))
-                    moved_artifacts.append((target_artifact, source_artifact))
+                    shutil.copy2(source_artifact, target_artifact)
+                    copied_artifacts.append(target_artifact)
 
                 _clear_thumbnail_cache_for_path(str(source_media_path))
                 _clear_thumbnail_cache_for_path(str(target_media_path))
@@ -3444,7 +3601,6 @@ async def move_selected_media_stream(data: MoveSelectedMediaRequest):
                 source_media_path: Path = media_entry["source_path"]
                 target_media_path: Path = media_entry["target_path"]
                 if media_entry.get("crop_state") is not None:
-                    image_crops.pop(_normalize_image_key(str(source_media_path)), None)
                     image_crops[_normalize_image_key(str(target_media_path))] = media_entry["crop_state"]
 
                 caption_snapshot = media_entry["caption_snapshot"]
@@ -3470,18 +3626,18 @@ async def move_selected_media_stream(data: MoveSelectedMediaRequest):
                 "source_folder": str(source_path),
                 "target_folder": str(target_path),
                 "total": len(media_entries),
+                "copied": len(media_entries),
                 "moved": len(media_entries),
             })
         except HTTPException:
             raise
         except Exception as exc:
             _restore_caption_file_backups(caption_backups)
-            for target_artifact, source_artifact in reversed(moved_artifacts):
+            for target_artifact in reversed(copied_artifacts):
                 try:
                     if not target_artifact.exists():
                         continue
-                    source_artifact.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(target_artifact), str(source_artifact))
+                    target_artifact.unlink()
                 except OSError:
                     continue
             _save_config(cfg_before)

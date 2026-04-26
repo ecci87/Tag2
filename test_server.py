@@ -658,6 +658,22 @@ class TestUploadImages:
 
 
 class TestVideoAPI:
+    def test_get_media_video_supports_range_requests(self, client, img_dir):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"0123456789")
+
+        resp = client.get(
+            "/api/media",
+            params={"path": str(video_path)},
+            headers={"Range": "bytes=2-5"},
+        )
+
+        assert resp.status_code == 206
+        assert resp.content == b"2345"
+        assert resp.headers["accept-ranges"] == "bytes"
+        assert resp.headers["content-range"] == "bytes 2-5/10"
+        assert resp.headers["content-length"] == "4"
+
     def test_get_video_meta(self, client, img_dir, monkeypatch):
         video_path = img_dir / "clip.mp4"
         video_path.write_bytes(b"fake-video-bytes")
@@ -908,6 +924,95 @@ class TestDeleteImages:
         assert not mask_a.exists()
         assert not mask_b.exists()
 
+    def test_delete_video_suspends_thumbnail_work_before_unlink(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        state = {"suspended": False, "resumed": False}
+        original_unlink = Path.unlink
+
+        def fake_suspend(path, timeout_seconds=1.5):
+            assert path == str(video_path)
+            state["suspended"] = True
+
+        def fake_resume(path):
+            assert path == str(video_path)
+            state["resumed"] = True
+
+        def guarded_unlink(self, *args, **kwargs):
+            if self == video_path and not state["suspended"]:
+                raise PermissionError("locked")
+            return original_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(server, "_suspend_thumbnail_processing_for_path", fake_suspend)
+        monkeypatch.setattr(server, "_resume_thumbnail_processing_for_path", fake_resume)
+        monkeypatch.setattr(Path, "unlink", guarded_unlink)
+
+        resp = client.post("/api/images/delete", json={"image_paths": [str(video_path)]})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["deleted_count"] == 1
+        assert state["suspended"] is True
+        assert state["resumed"] is True
+        assert not video_path.exists()
+
+    def test_delete_video_suspends_media_stream_before_unlink(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        state = {"suspended": False, "resumed": False}
+        original_unlink = Path.unlink
+
+        def fake_suspend(path, timeout_seconds=1.5):
+            assert path == str(video_path)
+            state["suspended"] = True
+
+        def fake_resume(path):
+            assert path == str(video_path)
+            state["resumed"] = True
+
+        def guarded_unlink(self, *args, **kwargs):
+            if self == video_path and not state["suspended"]:
+                raise PermissionError("locked")
+            return original_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(server, "_suspend_media_stream_for_path", fake_suspend)
+        monkeypatch.setattr(server, "_resume_media_stream_for_path", fake_resume)
+        monkeypatch.setattr(Path, "unlink", guarded_unlink)
+
+        resp = client.post("/api/images/delete", json={"image_paths": [str(video_path)]})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["deleted_count"] == 1
+        assert state["suspended"] is True
+        assert state["resumed"] is True
+        assert not video_path.exists()
+
+    def test_delete_video_retries_transient_permission_denied(self, client, img_dir, monkeypatch):
+        video_path = img_dir / "clip.mp4"
+        video_path.write_bytes(b"fake-video-bytes")
+        original_unlink = Path.unlink
+        attempts = {"count": 0}
+
+        def flaky_unlink(self, *args, **kwargs):
+            if self == video_path and attempts["count"] < 2:
+                attempts["count"] += 1
+                raise PermissionError("temporarily locked")
+            return original_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+        resp = client.post("/api/images/delete", json={"image_paths": [str(video_path)]})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["deleted_count"] == 1
+        assert attempts["count"] == 2
+        assert not video_path.exists()
+
     def test_delete_images_requires_paths(self, client):
         resp = client.post("/api/images/delete", json={"image_paths": []})
         assert resp.status_code == 400
@@ -1125,18 +1230,18 @@ class TestMoveSelectedMedia:
         target_path = target_dir / "photo1.jpg"
         assert done["target_folder"] == str(target_dir)
         assert target_path.exists()
-        assert not Path(moved_path).exists()
+        assert Path(moved_path).exists()
         assert untouched_path.exists()
-        assert not (img_dir / "photo1.txt").exists()
+        assert (img_dir / "photo1.txt").exists()
         assert (target_dir / "photo1.txt").exists()
-        assert not (img_dir / "photo1.jpg.meta.json").exists()
+        assert (img_dir / "photo1.jpg.meta.json").exists()
         assert (target_dir / "photo1.jpg.meta.json").exists()
-        assert not (img_dir / "photo1.jpg.mask.png").exists()
+        assert (img_dir / "photo1.jpg.mask.png").exists()
         assert (target_dir / "photo1.jpg.mask.png").exists()
 
         target_settings = client.get("/api/settings", params={"folder": str(target_dir)}).json()
-        assert target_settings["sections"][0]["name"] == "Scene"
-        assert target_settings["sections"][0]["sentences"] == ["bright"]
+        scene_section = next(section for section in target_settings["sections"] if section["name"] == "Scene")
+        assert scene_section["sentences"] == ["bright"]
 
         parsed = server._read_caption_file(
             str(target_path),
@@ -1144,7 +1249,7 @@ class TestMoveSelectedMedia:
             server._all_headers_from_sections(target_settings["sections"]),
         )
         assert parsed["enabled_sentences"] == ["bright"]
-        assert parsed["free_text"] == "kept free text"
+        assert parsed["free_text"].strip() == "kept free text"
 
     def test_move_selected_media_promotes_simple_target_caption_into_group(self, client, img_dir, tmp_path):
         source_folder = str(img_dir)
@@ -1221,8 +1326,10 @@ class TestMoveSelectedMedia:
             },
         ) as response:
             assert response.status_code == 400
+            response.read()
             data = response.json()
 
+        assert data["detail"].startswith("Copy blocked by existing target files:")
         assert "Target already contains photo1.jpg" in data["detail"]
         assert (img_dir / "photo1.jpg").exists()
         assert (target_dir / "photo1.jpg").exists()
@@ -1260,10 +1367,10 @@ class TestMoveSelectedMedia:
         cfg_after = server._load_config()
         source_key = server._normalize_image_key(source_path)
         target_key = server._normalize_image_key(target_path)
-        assert source_key not in cfg_after.get("image_crops", {})
+        assert cfg_after["image_crops"][source_key] == crop_state
         assert cfg_after["image_crops"][target_key] == crop_state
-        assert not crop_backup_path.exists()
-        assert not crop_mask_backup_path.exists()
+        assert crop_backup_path.exists()
+        assert crop_mask_backup_path.exists()
         assert Path(server._get_crop_backup_path(target_path)).exists()
         assert Path(server._get_crop_mask_backup_path(target_path)).exists()
 

@@ -54,6 +54,27 @@ function stopPreviewVideo({ clearSource = false } = {}) {
   syncPreviewVideoPlaybackState();
 }
 
+function waitForPreviewVideoRelease(timeoutMs = 500) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timeoutId = 0;
+    const eventNames = ["emptied", "abort", "error", "suspend"];
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+      eventNames.forEach((eventName) => previewVideo.removeEventListener(eventName, finish));
+      resolve();
+    };
+
+    eventNames.forEach((eventName) => previewVideo.addEventListener(eventName, finish, { once: true }));
+    timeoutId = window.setTimeout(finish, Math.max(50, Number(timeoutMs || 0)));
+  });
+}
+
 function resetPreviewVideoElement() {
   stopPreviewVideo({ clearSource: true });
   previewVideo.onloadedmetadata = null;
@@ -396,6 +417,20 @@ function getVideoTimelineFetchMap(path) {
   return fetchMap;
 }
 
+function cancelVideoTimelineFetches(path) {
+  const fetchMap = state.ui.videoTimelineFetches.get(path);
+  if (!fetchMap) return;
+  for (const [index, entry] of fetchMap.entries()) {
+    entry.controller?.abort();
+    fetchMap.delete(index);
+    const frame = state.videoTimelineCache[path]?.frames?.[index];
+    if (frame && frame.status === "loading") {
+      frame.status = "idle";
+    }
+  }
+  state.ui.videoTimelineFetches.delete(path);
+}
+
 function abortInvisibleVideoTimelineFetches(path, keepIndexes = new Set()) {
   const fetchMap = state.ui.videoTimelineFetches.get(path);
   if (!fetchMap) return;
@@ -424,7 +459,7 @@ async function ensureVisibleVideoTimelineFrames(path, visibleIndexes = []) {
 
   visibleIndexes.forEach((index) => {
     const frame = cache.frames[index];
-    if (!frame || frame.status === "loaded" || frame.status === "loading") return;
+    if (!frame || frame.status === "loaded" || frame.status === "loading" || frame.status === "error") return;
     const controller = new AbortController();
     frame.status = "loading";
     fetchMap.set(index, { controller, requestVersion });
@@ -457,7 +492,11 @@ async function ensureVisibleVideoTimelineFrames(path, visibleIndexes = []) {
         if (err?.name === "AbortError") {
           return;
         }
-        frame.status = "idle";
+        frame.failures = Math.max(0, Number(frame.failures || 0)) + 1;
+        frame.status = frame.failures >= 2 ? "error" : "idle";
+        if (frame.status === "error" && state.previewPath === path) {
+          renderVideoTimelineStrip(path);
+        }
       })
       .finally(() => {
         const activeMap = state.ui.videoTimelineFetches.get(path);
@@ -526,6 +565,8 @@ function renderVideoTimelineStrip(path = state.previewPath) {
     if (frame.objectUrl) {
       img.src = frame.objectUrl;
       frameNode.classList.add("loaded");
+    } else if (frame.status === "error") {
+      frameNode.classList.add("error");
     } else {
       frameNode.classList.add("loading");
     }
@@ -556,14 +597,19 @@ async function ensureVideoTimelineLoaded(path) {
   }
   const duration = Math.max(0, Number(meta?.duration || 0));
   const frames = [];
+  const safeTailPadding = duration > 0
+    ? Math.min(0.35, Math.max(0.08, duration / Math.max(24, frameCount * 4 || 1)))
+    : 0;
+  const maxFrameTime = Math.max(0, duration - safeTailPadding);
   for (let index = 0; index < frameCount; index += 1) {
-    const ratio = frameCount <= 1 ? 0 : index / (frameCount - 1);
-    const timeSeconds = duration <= 0 ? 0 : ratio * Math.max(duration - 0.05, 0);
+    const ratio = frameCount <= 1 ? 0.1 : (index + 0.5) / frameCount;
+    const timeSeconds = duration <= 0 ? 0 : Math.min(maxFrameTime, Math.max(0, ratio * duration));
     frames.push({
       timeSeconds,
       requestUrl: buildVideoFrameUrl(path, timeSeconds, 160, 90),
       objectUrl: null,
       status: "idle",
+      failures: 0,
     });
   }
   if (cached?.frames) {
@@ -845,7 +891,20 @@ async function extractCurrentVideoFrame() {
 
     const preserveScrollTop = fileGridContainer.scrollTop;
     await loadFolder({ preserveScrollTop });
-    await selectUploadedImages([data.image_path]);
+    await selectUploadedImages([sourcePath]);
+    if (state.previewPath === sourcePath && state.previewMediaType === "video") {
+      const restoreExtractPosition = () => {
+        previewVideo.removeEventListener("loadedmetadata", restoreExtractPosition);
+        previewVideo.removeEventListener("loadeddata", restoreExtractPosition);
+        seekPreviewVideoTo(timeSeconds);
+      };
+      if (previewVideo.readyState >= 1 && previewVideo.dataset.path === sourcePath) {
+        restoreExtractPosition();
+      } else {
+        previewVideo.addEventListener("loadedmetadata", restoreExtractPosition);
+        previewVideo.addEventListener("loadeddata", restoreExtractPosition);
+      }
+    }
 
     const copiedParts = [];
     if (data.caption_copied) copiedParts.push("caption");
@@ -1123,6 +1182,8 @@ async function releasePreviewMediaForDeletion(paths) {
   if (!state.previewPath || !targets.has(state.previewPath)) return;
 
   if (state.previewMediaType === "video") {
+    cancelVideoTimelineFetches(state.previewPath);
+    const releaseWait = waitForPreviewVideoRelease();
     stopPreviewVideo({ clearSource: true });
     previewInfo.style.display = "none";
     previewPlaceholder.style.display = "flex";
@@ -1133,7 +1194,7 @@ async function releasePreviewMediaForDeletion(paths) {
     clearCropDraft();
     renderPreviewCaptionOverlay();
     renderVideoEditPanel();
-    await new Promise((resolve) => window.setTimeout(resolve, 50));
+    await releaseWait;
     return;
   }
 

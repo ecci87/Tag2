@@ -16,6 +16,7 @@ async function loadCaptionData(path) {
       // Update UI if still selected
       if (state.selectedPaths.size === 1 && state.selectedPaths.has(path)) {
         freeText.value = state.captionCache[path].free_text || "";
+        syncFreeTextHighlightState();
         scheduleUiRender({ sentences: true });
       }
       if (state.previewPath === path) {
@@ -1893,6 +1894,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         }
         if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
           freeText.value = cache.free_text || "";
+          syncFreeTextHighlightState();
         }
         markCaptionIndicator(event.path, hasEffectiveCaptionContent(cache));
       } else if (event.type === "image-complete") {
@@ -1912,6 +1914,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         appendModelLog(getAutoCaptionCompleteLog(scope, event), "log-ok");
         if (state.selectedPaths.size === 1 && state.selectedPaths.has(event.path)) {
           freeText.value = event.free_text || "";
+          syncFreeTextHighlightState();
         }
         if (autoPreviewEnabled && hasContent) {
           queuePromptPreviewFromCurrentCaption(event.path)
@@ -2181,8 +2184,229 @@ function showSentenceContextMenu() { /* removed - using inline remove buttons no
 function showSectionContextMenu() { /* removed - using inline controls now */ }
 
 // ===== FREE TEXT =====
+const FREE_TEXT_COLOR_SENTINEL = "rgb(1, 2, 3)";
+const FREE_TEXT_NON_COLOR_KEYWORDS = new Set([
+  "transparent",
+  "currentcolor",
+  "inherit",
+  "initial",
+  "unset",
+  "revert",
+  "revert-layer",
+]);
+const freeTextColorProbeContext = document.createElement("canvas").getContext("2d");
+const freeTextResolvedColorCache = new Map();
+const freeTextColorSupportProbe = document.createElement("span");
+
+function escapeFreeTextHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;");
+}
+
+function parseCssColorToRgb(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return null;
+
+  const hexMatch = normalized.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hexMatch) {
+    const hex = hexMatch[1];
+    if (hex.length === 3) {
+      return {
+        r: Number.parseInt(`${hex[0]}${hex[0]}`, 16),
+        g: Number.parseInt(`${hex[1]}${hex[1]}`, 16),
+        b: Number.parseInt(`${hex[2]}${hex[2]}`, 16),
+      };
+    }
+    return {
+      r: Number.parseInt(hex.slice(0, 2), 16),
+      g: Number.parseInt(hex.slice(2, 4), 16),
+      b: Number.parseInt(hex.slice(4, 6), 16),
+    };
+  }
+
+  const rgbMatch = normalized.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+  if (rgbMatch) {
+    return {
+      r: Math.max(0, Math.min(255, Number.parseInt(rgbMatch[1], 10) || 0)),
+      g: Math.max(0, Math.min(255, Number.parseInt(rgbMatch[2], 10) || 0)),
+      b: Math.max(0, Math.min(255, Number.parseInt(rgbMatch[3], 10) || 0)),
+    };
+  }
+
+  return null;
+}
+
+function getRelativeLuminance({ r, g, b }) {
+  const toLinear = (channel) => {
+    const value = Math.max(0, Math.min(255, Number(channel || 0))) / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  };
+  return (0.2126 * toLinear(r)) + (0.7152 * toLinear(g)) + (0.0722 * toLinear(b));
+}
+
+function getContrastRatio(leftRgb, rightRgb) {
+  if (!leftRgb || !rightRgb) return Number.POSITIVE_INFINITY;
+  const leftLum = getRelativeLuminance(leftRgb);
+  const rightLum = getRelativeLuminance(rightRgb);
+  const lighter = Math.max(leftLum, rightLum);
+  const darker = Math.min(leftLum, rightLum);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function getFreeTextEditorBackgroundRgb() {
+  const background = getComputedStyle(freeTextEditor || freeText).backgroundColor;
+  return parseCssColorToRgb(background);
+}
+
+function isSupportedFreeTextCssColor(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return false;
+  if (typeof CSS !== "undefined" && typeof CSS.supports === "function") {
+    return CSS.supports("color", normalized);
+  }
+  freeTextColorSupportProbe.style.color = "";
+  freeTextColorSupportProbe.style.color = normalized;
+  return freeTextColorSupportProbe.style.color !== "";
+}
+
+function resolveFreeTextColorToken(word) {
+  const normalized = String(word || "").trim().toLowerCase().replace(/\s+/g, " ");
+  if (!normalized || !/^[a-z -]+$/.test(normalized)) {
+    return null;
+  }
+  const normalizedCompact = normalized.replace(/[\s-]+/g, "");
+  if (!normalizedCompact || FREE_TEXT_NON_COLOR_KEYWORDS.has(normalizedCompact)) {
+    return null;
+  }
+  if (!isSupportedFreeTextCssColor(normalizedCompact)) {
+    return null;
+  }
+  if (freeTextResolvedColorCache.has(normalizedCompact)) {
+    return freeTextResolvedColorCache.get(normalizedCompact);
+  }
+  if (!freeTextColorProbeContext) {
+    freeTextResolvedColorCache.set(normalizedCompact, null);
+    return null;
+  }
+
+  freeTextColorProbeContext.fillStyle = FREE_TEXT_COLOR_SENTINEL;
+  freeTextColorProbeContext.fillStyle = normalizedCompact;
+  const resolved = freeTextColorProbeContext.fillStyle;
+  const nextValue = resolved && resolved !== FREE_TEXT_COLOR_SENTINEL ? resolved : null;
+  freeTextResolvedColorCache.set(normalizedCompact, nextValue);
+  return nextValue;
+}
+
+function getFreeTextWordMatches(text) {
+  return Array.from(String(text || "").matchAll(/[A-Za-z]+(?:-[A-Za-z]+)*/g));
+}
+
+function getFreeTextColorPhraseMatch(text, wordMatches, startIndex) {
+  const startMatch = wordMatches[startIndex];
+  if (!startMatch) return null;
+
+  const maxPhraseWords = 4;
+  const longestIndex = Math.min(wordMatches.length - 1, startIndex + maxPhraseWords - 1);
+  for (let endIndex = longestIndex; endIndex >= startIndex; endIndex -= 1) {
+    const endMatch = wordMatches[endIndex];
+    const phraseStart = Number(startMatch.index || 0);
+    const phraseEnd = Number(endMatch.index || 0) + endMatch[0].length;
+    const phraseText = String(text || "").slice(phraseStart, phraseEnd);
+    if (endIndex > startIndex) {
+      const betweenWords = String(text || "").slice(
+        Number(startMatch.index || 0) + startMatch[0].length,
+        phraseEnd - endMatch[0].length,
+      );
+      if (!/^[\s-]+(?:[A-Za-z]+(?:-[A-Za-z]+)*[\s-]+)*$/.test(betweenWords)) {
+        continue;
+      }
+    }
+    const resolvedColor = resolveFreeTextColorToken(phraseText);
+    if (resolvedColor) {
+      return {
+        text: phraseText,
+        start: phraseStart,
+        end: phraseEnd,
+        endIndex,
+        resolvedColor,
+      };
+    }
+  }
+  return null;
+}
+
+function buildFreeTextColorTokenMarkup(word, backgroundRgb, resolvedColor = null) {
+  const effectiveResolvedColor = resolvedColor || resolveFreeTextColorToken(word);
+  if (!effectiveResolvedColor) {
+    return escapeFreeTextHtml(word);
+  }
+
+  const colorRgb = parseCssColorToRgb(effectiveResolvedColor);
+  let style = `color: ${effectiveResolvedColor};`;
+  if (colorRgb && backgroundRgb && getContrastRatio(colorRgb, backgroundRgb) < 2.6) {
+    const colorLuminance = getRelativeLuminance(colorRgb);
+    const backgroundLuminance = getRelativeLuminance(backgroundRgb);
+    const shadowColor = colorLuminance <= backgroundLuminance
+      ? "rgba(255,255,255,0.85)"
+      : "rgba(96,96,96,0.9)";
+    style += ` text-shadow: 0 0 1px ${shadowColor};`;
+  }
+  return `<span class="free-text-color-token" style="${style}">${escapeFreeTextHtml(word)}</span>`;
+}
+
+function buildFreeTextHighlightMarkup(value) {
+  const text = String(value || "");
+  const backgroundRgb = getFreeTextEditorBackgroundRgb();
+  const wordMatches = getFreeTextWordMatches(text);
+  let html = "";
+  let lastIndex = 0;
+
+  for (let index = 0; index < wordMatches.length; index += 1) {
+    const match = wordMatches[index];
+    const matchIndex = Number(match.index || 0);
+    const phraseMatch = getFreeTextColorPhraseMatch(text, wordMatches, index);
+    const nextStart = phraseMatch ? phraseMatch.start : matchIndex;
+    html += escapeFreeTextHtml(text.slice(lastIndex, nextStart));
+    if (phraseMatch) {
+      html += buildFreeTextColorTokenMarkup(phraseMatch.text, backgroundRgb, phraseMatch.resolvedColor);
+      lastIndex = phraseMatch.end;
+      index = phraseMatch.endIndex;
+      continue;
+    }
+    html += escapeFreeTextHtml(match[0]);
+    lastIndex = matchIndex + match[0].length;
+  }
+
+  html += escapeFreeTextHtml(text.slice(lastIndex));
+  return html;
+}
+
+function syncFreeTextHighlightScroll() {
+  if (!freeTextHighlight || !freeText) return;
+  freeTextHighlight.scrollTop = freeText.scrollTop;
+  freeTextHighlight.scrollLeft = freeText.scrollLeft;
+}
+
+function syncFreeTextHighlightState() {
+  if (!freeText || !freeTextEditor || !freeTextHighlight) return;
+  const value = String(freeText.value || "");
+  const isEmpty = !value;
+  freeTextEditor.classList.toggle("is-disabled", !!freeText.disabled);
+  freeTextHighlight.classList.toggle("placeholder", isEmpty);
+  if (isEmpty) {
+    freeTextHighlight.textContent = freeText.placeholder || "";
+  } else {
+    freeTextHighlight.innerHTML = buildFreeTextHighlightMarkup(value);
+  }
+  syncFreeTextHighlightScroll();
+}
+
 let freeTextSaveTimeout = null;
 freeText.addEventListener("input", () => {
+  syncFreeTextHighlightState();
   if (state.selectedPaths.size !== 1) return;
   const path = [...state.selectedPaths][0];
 
@@ -2200,6 +2424,8 @@ freeText.addEventListener("input", () => {
     saveFreeText(path);
   }, 400);
 });
+freeText.addEventListener("scroll", syncFreeTextHighlightScroll);
+syncFreeTextHighlightState();
 
 async function saveFreeText(path) {
   const cap = state.captionCache[path];

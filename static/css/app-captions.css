@@ -8,11 +8,32 @@
   width: 340px; min-width: 220px; max-width: 50vw;
   display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--bg2);
 }
+#right-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 10px;
+  flex-shrink: 0;
+}
 #right-panel-tabs {
   display: flex;
   gap: 6px;
-  padding: 6px 10px 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+#hide-add-buttons-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  user-select: none;
+  white-space: nowrap;
   flex-shrink: 0;
+}
+#hide-add-buttons-toggle input {
+  accent-color: var(--accent2);
 }
 .right-panel-tab-btn {
   padding: 4px 9px;
@@ -311,7 +332,7 @@
 .section-sentences li .sentence-text { flex: 1; }
 .section-sentences li .sentence-text.partial { color: var(--fg-dim); font-style: italic; }
 .section-sentences li .sentence-text.skip-auto-caption {
-  color: var(--accent-warn);
+  color: #f5a3ba;
 }
 .section-sentences li .sentence-text.hidden-export::after {
   content: " not in txt";
@@ -466,16 +487,16 @@
 .section-sentences li .auto-caption-skip-btn:hover,
 .section-header .auto-caption-skip-btn:hover,
 .group-header .auto-caption-skip-btn:hover {
-  border-color: rgba(249,226,175,0.5);
-  color: var(--accent-warn);
+  border-color: rgba(243,139,168,0.5);
+  color: #f5a3ba;
 }
 .section-sentences li .auto-caption-skip-btn.active,
 .section-header .auto-caption-skip-btn.active,
 .group-header .auto-caption-skip-btn.active {
-  border-color: rgba(249,226,175,0.5);
-  background: rgba(249,226,175,0.14);
-  color: var(--accent-warn);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 0 0 1px rgba(249,226,175,0.08);
+  border-color: rgba(243,139,168,0.5);
+  background: rgba(243,139,168,0.14);
+  color: #f5a3ba;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 0 0 1px rgba(243,139,168,0.08);
 }
 .section-sentences li .remove-btn:focus-visible {
   outline: 2px solid rgba(243,139,168,0.45);
@@ -505,18 +526,6 @@
 #model-log-open-btn.active {
   background: rgba(137,180,250,0.18);
   color: var(--fg);
-}
-#add-section-bar .toggle-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--fg-dim);
-  font-size: 12px;
-  user-select: none;
-  white-space: nowrap;
-}
-#add-section-bar .toggle-label input {
-  accent-color: var(--accent2);
 }
 #ai-progress-panel {
   display: none;
@@ -849,12 +858,64 @@
   color: var(--fg-dim); font-size: 12px; user-select: none; white-space: nowrap;
 }
 #freetext-section .panel-header .toggle-label input { accent-color: var(--accent2); }
-#free-text {
-  flex: 1; width: 100%; padding: 10px; background: var(--bg); color: var(--fg);
-  border: none; outline: none; resize: none; font-family: 'Consolas', 'Fira Code', monospace; font-size: 13px;
-  line-height: 1.5;
+#free-text-editor {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg);
 }
-#free-text:disabled { opacity: 0.4; }
+#free-text-highlight,
+#free-text {
+  margin: 0;
+  padding: 10px;
+  font-family: 'Consolas', 'Fira Code', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 4;
+}
+#free-text-highlight {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  pointer-events: none;
+  color: var(--fg);
+  background: transparent;
+  scrollbar-width: none;
+}
+#free-text-highlight::-webkit-scrollbar {
+  display: none;
+}
+#free-text-highlight.placeholder {
+  color: var(--fg-dim);
+  opacity: 0.55;
+}
+.free-text-color-token {
+  font-weight: 700;
+}
+#free-text {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--fg);
+  border: none;
+  outline: none;
+  resize: none;
+  text-shadow: none;
+}
+#free-text::selection {
+  background: rgba(137,180,250,0.28);
+}
+#free-text-editor.is-disabled #free-text-highlight {
+  opacity: 0.4;
+}
+#free-text:disabled { opacity: 1; }
 
 /* Multi-select info banner */
 #multi-info {

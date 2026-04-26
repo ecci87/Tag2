@@ -22,8 +22,8 @@
       <div id="folder-suggestions" role="listbox" aria-label="Matching folders" hidden></div>
     </div>
     <button id="load-btn">Load</button>
-    <button id="clone-folder-btn" type="button">Clone</button>
-    <button id="move-selected-btn" type="button">Move</button>
+    <button id="clone-folder-btn" type="button">Clone Folder</button>
+    <button id="move-selected-btn" type="button">Copy</button>
     <button id="settings-btn" title="App settings" aria-label="App settings">⚙</button>
     <div id="toolbar-status">
       <span id="status-bar"></span>
@@ -254,14 +254,16 @@
       <div id="add-section-bar">
         <button id="auto-caption-btn" class="generate-btn generate-btn-toolbar" title="Use Ollama to verify captions for the selected media"><span class="btn-content"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">Auto Caption</span></span></button>
         <button id="model-log-open-btn" type="button" title="Open model log overlay" aria-label="Open model log overlay" hidden>Log</button>
-        <label class="toggle-label" title="Hide add controls for sections and groups">
+      </div>
+      <div id="right-panel-header">
+        <div id="right-panel-tabs" role="tablist" aria-label="Right panel mode">
+          <button id="captions-tab-btn" class="right-panel-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="captions-editor-panel" data-right-panel-tab="captions">Captions</button>
+          <button id="metadata-tab-btn" class="right-panel-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="metadata-editor-panel" data-right-panel-tab="metadata">Metadata</button>
+        </div>
+        <label id="hide-add-buttons-toggle" class="toggle-label" title="Hide add controls for sections and groups">
           <input type="checkbox" id="hide-add-buttons-checkbox">
           <span>Hide Add Buttons</span>
         </label>
-      </div>
-      <div id="right-panel-tabs" role="tablist" aria-label="Right panel mode">
-        <button id="captions-tab-btn" class="right-panel-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="captions-editor-panel" data-right-panel-tab="captions">Captions</button>
-        <button id="metadata-tab-btn" class="right-panel-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="metadata-editor-panel" data-right-panel-tab="metadata">Metadata</button>
       </div>
       <div id="right-panel-content">
         <div id="captions-editor-panel" class="right-panel-mode-panel active" role="tabpanel" aria-labelledby="captions-tab-btn">
@@ -287,7 +289,10 @@
                 <button id="add-free-text-now-btn" class="generate-btn generate-btn-compact generate-btn-icon" type="button" title="Ask Ollama to add only free-text details for the selected media" aria-label="Ask Ollama to add only free-text details for the selected media"><span class="btn-icon" aria-hidden="true"></span></button>
               </div>
             </div>
-            <textarea id="free-text" placeholder="Additional caption text..." disabled></textarea>
+            <div id="free-text-editor">
+              <div id="free-text-highlight" aria-hidden="true"></div>
+              <textarea id="free-text" placeholder="Additional caption text..." disabled></textarea>
+            </div>
           </div>
         </div>
         <div id="metadata-editor-panel" class="right-panel-mode-panel" role="tabpanel" aria-labelledby="metadata-tab-btn" hidden>
@@ -520,7 +525,7 @@
 <div id="move-selected-modal" aria-hidden="true">
   <div id="move-selected-dialog" role="dialog" aria-modal="true" aria-labelledby="move-selected-title">
     <div id="move-selected-header">
-      <div id="move-selected-title">Move Selected Media</div>
+      <div id="move-selected-title">Copy Selected Media</div>
       <button id="move-selected-close-btn" type="button" aria-label="Close move dialog">×</button>
     </div>
     <form id="move-selected-form">
@@ -532,11 +537,11 @@
           <div id="move-target-folder-suggestions" role="listbox" aria-label="Matching target folders" hidden></div>
         </div>
       </div>
-      <div class="settings-help">Moves the selected media together with caption, metadata, mask, and reversible crop sidecars. Required captions and groups are merged into the target folder before the moved caption files are rewritten.</div>
+      <div class="settings-help">Copies the selected media together with caption, metadata, mask, and reversible crop sidecars. Required captions and groups are merged into the target folder before the copied caption files are rewritten.</div>
       <div id="move-selected-status" class="settings-help is-error" hidden></div>
       <div id="move-selected-actions">
         <button id="move-selected-cancel-btn" type="button">Cancel</button>
-        <button id="move-selected-confirm-btn" type="submit">Move selected</button>
+        <button id="move-selected-confirm-btn" type="submit">Copy selected</button>
       </div>
     </form>
   </div>

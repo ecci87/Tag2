@@ -881,15 +881,15 @@ function updateActionButtons() {
   const canRunFreeTextOnly = selectionSupportsVision && !!state.ollamaModel.trim();
   const hasBlockingWorkspaceAction = !!(state.cloning || state.moving || state.extractingFrame || state.uploading);
   cloneFolderBtn.disabled = !state.folder || state.autoCaptioning || hasBlockingWorkspaceAction;
-  cloneFolderBtn.textContent = state.cloning ? "Cloning..." : "Clone";
+  cloneFolderBtn.textContent = state.cloning ? "Cloning..." : "Clone Folder";
   cloneFolderBtn.title = state.selectedPaths.size > 1
     ? "Clone the selected media files into a new sibling folder"
     : "Clone the whole current folder into a new sibling folder";
   moveSelectedBtn.disabled = !state.folder || !hasSelection || state.autoCaptioning || hasBlockingWorkspaceAction;
-  moveSelectedBtn.textContent = state.moving ? "Moving..." : "Move";
+  moveSelectedBtn.textContent = state.moving ? "Copying..." : "Copy";
   moveSelectedBtn.title = hasSelection
-    ? `Move ${state.selectedPaths.size} selected media file${state.selectedPaths.size === 1 ? "" : "s"} into another folder`
-    : "Select one or more media files to move them into another folder";
+    ? `Copy ${state.selectedPaths.size} selected media file${state.selectedPaths.size === 1 ? "" : "s"} into another folder`
+    : "Select one or more media files to copy into another folder";
   autoCaptionBtn.disabled = hasBlockingWorkspaceAction || (!state.autoCaptioning && !canRunStructured);
   addFreeTextNowBtn.disabled = hasBlockingWorkspaceAction || (!state.autoCaptioning && !canRunFreeTextOnly);
   autoCaptionBtn.classList.toggle("running", state.autoCaptioning);

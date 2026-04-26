@@ -45,14 +45,14 @@ function renderMoveDialogSummary(selectedPaths = getMoveSelectionPaths()) {
   if (!moveSelectedSummary) return;
   const count = selectedPaths.length;
   if (!count) {
-    moveSelectedSummary.textContent = "Select one or more media files to move them into another folder.";
+    moveSelectedSummary.textContent = "Select one or more media files to copy into another folder.";
     return;
   }
   if (count === 1) {
-    moveSelectedSummary.textContent = `Move ${getFileLabel(selectedPaths[0])} from ${getFileLabel(state.folder || "current folder")} into:`;
+    moveSelectedSummary.textContent = `Copy ${getFileLabel(selectedPaths[0])} from ${getFileLabel(state.folder || "current folder")} into:`;
     return;
   }
-  moveSelectedSummary.textContent = `Move ${count} selected media files from ${getFileLabel(state.folder || "current folder")} into:`;
+  moveSelectedSummary.textContent = `Copy ${count} selected media files from ${getFileLabel(state.folder || "current folder")} into:`;
 }
 
 function hideMoveFolderAutocomplete() {
@@ -92,7 +92,7 @@ function openMoveSelectedDialog() {
     return;
   }
   if (state.autoCaptioning || state.cloning || state.moving || state.extractingFrame || state.uploading || state.duplicatingImage) {
-    showErrorToast("Finish the current operation before moving media.");
+    showErrorToast("Finish the current operation before copying media.");
     return;
   }
 
@@ -135,7 +135,7 @@ async function moveSelectedMediaToFolder(rawTargetFolder) {
     return;
   }
   if (state.autoCaptioning || state.cloning || state.moving || state.extractingFrame || state.uploading || state.duplicatingImage) {
-    showErrorToast("Finish the current operation before moving media.");
+    showErrorToast("Finish the current operation before copying media.");
     return;
   }
 
@@ -164,23 +164,23 @@ async function moveSelectedMediaToFolder(rawTargetFolder) {
   resetAutoCaptionProgress();
   updateAutoCaptionProgress({
     visible: true,
-    scopeLabel: "Move Selection",
+    scopeLabel: "Copy Selection",
     totalImages: Math.max(1, selectedPaths.length),
     processedImages: 0,
     completedImages: 0,
     errors: 0,
     currentPath: targetFolder,
-    currentMessage: "Preparing move...",
+    currentMessage: "Preparing copy...",
     currentStepIndex: 0,
     currentStepTotal: 1,
   });
   statusBar.textContent = selectedPaths.length === 1
-    ? `Moving ${getFileLabel(selectedPaths[0])}...`
-    : `Moving ${selectedPaths.length} media files...`;
+    ? `Copying ${getFileLabel(selectedPaths[0])}...`
+    : `Copying ${selectedPaths.length} media files...`;
 
   const preserveScrollTop = fileGridContainer.scrollTop;
   try {
-    const resp = await fetch("/api/media/move/stream", {
+    const resp = await fetch("/api/media/copy/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -192,33 +192,33 @@ async function moveSelectedMediaToFolder(rawTargetFolder) {
 
     if (!resp.ok) {
       const data = await resp.json().catch(() => ({}));
-      throw new Error(data.detail || "Failed to move selected media");
+      throw new Error(data.detail || "Failed to copy selected media");
     }
 
-    let movedCount = 0;
+    let copiedCount = 0;
     await readNdjsonStream(resp, (event) => {
       if (!event || typeof event !== "object") return;
       if (event.type === "start") {
         updateAutoCaptionProgress({
           visible: true,
-          scopeLabel: "Move Selection",
+          scopeLabel: "Copy Selection",
           totalImages: Math.max(1, Number(event.total || selectedPaths.length || 1)),
           processedImages: 0,
           completedImages: 0,
           currentPath: event.target_folder || targetFolder,
-          currentMessage: "Preparing move...",
+          currentMessage: "Preparing copy...",
           currentStepIndex: 0,
           currentStepTotal: 1,
         });
         return;
       }
       if (event.type === "progress") {
-        movedCount = Number(event.index || movedCount || 0);
+        copiedCount = Number(event.index || copiedCount || 0);
         updateAutoCaptionProgress({
           visible: true,
           totalImages: Math.max(1, Number(event.total || selectedPaths.length || 1)),
-          processedImages: movedCount,
-          completedImages: movedCount,
+          processedImages: copiedCount,
+          completedImages: copiedCount,
           currentPath: event.target_path || event.source_path || "",
           currentMessage: "Moved",
           currentStepIndex: 1,
@@ -236,33 +236,33 @@ async function moveSelectedMediaToFolder(rawTargetFolder) {
         return;
       }
       if (event.type === "done") {
-        movedCount = Number(event.moved || movedCount || selectedPaths.length || 0);
+        copiedCount = Number(event.copied || event.moved || copiedCount || selectedPaths.length || 0);
         updateAutoCaptionProgress({
           visible: true,
           totalImages: Math.max(1, Number(event.total || selectedPaths.length || 1)),
-          processedImages: Math.max(1, movedCount),
-          completedImages: Math.max(1, movedCount),
+          processedImages: Math.max(1, copiedCount),
+          completedImages: Math.max(1, copiedCount),
           currentPath: event.target_folder || targetFolder,
-          currentMessage: "Move complete",
+          currentMessage: "Copy complete",
           currentStepIndex: 1,
           currentStepTotal: 1,
         });
         return;
       }
       if (event.type === "error") {
-        throw new Error(event.message || "Move failed");
+        throw new Error(event.message || "Copy failed");
       }
     });
 
     state.moveDialog.lastTargetFolder = targetFolder;
     await loadFolder({ preserveScrollTop });
-    statusBar.textContent = movedCount === 1
-      ? `Moved 1 media file to ${getFileLabel(targetFolder)}`
-      : `Moved ${movedCount || selectedPaths.length} media files to ${getFileLabel(targetFolder)}`;
+    statusBar.textContent = copiedCount === 1
+      ? `Copied 1 media file to ${getFileLabel(targetFolder)}`
+      : `Copied ${copiedCount || selectedPaths.length} media files to ${getFileLabel(targetFolder)}`;
   } catch (err) {
-    const message = err?.message || "Failed to move selected media";
-    statusBar.textContent = `Move error: ${message}`;
-    showErrorToast(`Move error: ${message}`);
+    const message = err?.message || "Failed to copy selected media";
+    statusBar.textContent = `Copy error: ${message}`;
+    showErrorToast(`Copy error: ${message}`);
   } finally {
     state.moving = false;
     updateActionButtons();

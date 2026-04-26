@@ -11,6 +11,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 import warnings
 from functools import lru_cache
 from io import BytesIO
@@ -37,6 +39,10 @@ VIDEO_MASK_SIDECAR_PATTERN = re.compile(r"^(?P<source_name>.+)\.mask\.f(?P<frame
 THUMBNAIL_SIZES = [64, 128, 256, 400]
 PREVIEW_MAX_SIZE = 2048
 thumbnail_cache: dict[tuple[str, float, int, tuple | None], bytes] = {}
+thumbnail_processing_lock = threading.Lock()
+thumbnail_active_counts: dict[str, int] = {}
+thumbnail_cancelled_paths: set[str] = set()
+thumbnail_active_processes: dict[str, dict[int, subprocess.Popen]] = {}
 RUNTIME_CROP_BACKUP_DIR = tempfile.mkdtemp(prefix="tag2-crop-")
 GPU_ENCODER_CANDIDATES = (
     "h264_v4l2m2m",
@@ -471,6 +477,143 @@ def _clear_thumbnail_cache_for_path(image_path: str):
         thumbnail_cache.pop(key, None)
 
 
+def _clear_thumbnail_cancellation_if_idle(normalized_path: str) -> None:
+    """Drop a delete-time cancellation flag once no work remains for that path."""
+    if thumbnail_active_counts.get(normalized_path, 0) > 0:
+        return
+    if thumbnail_active_processes.get(normalized_path):
+        return
+    thumbnail_cancelled_paths.discard(normalized_path)
+
+
+def _start_thumbnail_processing(image_path: str) -> str:
+    """Track active thumbnail or preview work for one media path."""
+    normalized_path = _normalize_image_key(image_path)
+    with thumbnail_processing_lock:
+        if normalized_path in thumbnail_cancelled_paths:
+            raise RuntimeError(f"Thumbnail generation cancelled for {Path(image_path).name}")
+        thumbnail_active_counts[normalized_path] = thumbnail_active_counts.get(normalized_path, 0) + 1
+    return normalized_path
+
+
+def _finish_thumbnail_processing(normalized_path: str) -> None:
+    """Release active thumbnail bookkeeping for one media path."""
+    with thumbnail_processing_lock:
+        remaining = thumbnail_active_counts.get(normalized_path, 0) - 1
+        if remaining > 0:
+            thumbnail_active_counts[normalized_path] = remaining
+        else:
+            thumbnail_active_counts.pop(normalized_path, None)
+        _clear_thumbnail_cancellation_if_idle(normalized_path)
+
+
+def _is_thumbnail_processing_cancelled(normalized_path: str) -> bool:
+    """Return whether delete has cancelled new thumbnail work for this path."""
+    with thumbnail_processing_lock:
+        return normalized_path in thumbnail_cancelled_paths
+
+
+def _register_thumbnail_process(normalized_path: str, process: subprocess.Popen) -> None:
+    """Track an ffmpeg or ffprobe subprocess used for thumbnail generation."""
+    with thumbnail_processing_lock:
+        processes = thumbnail_active_processes.setdefault(normalized_path, {})
+        processes[id(process)] = process
+
+
+def _unregister_thumbnail_process(normalized_path: str, process: subprocess.Popen) -> None:
+    """Remove a tracked thumbnail subprocess."""
+    with thumbnail_processing_lock:
+        processes = thumbnail_active_processes.get(normalized_path)
+        if processes is not None:
+            processes.pop(id(process), None)
+            if not processes:
+                thumbnail_active_processes.pop(normalized_path, None)
+        _clear_thumbnail_cancellation_if_idle(normalized_path)
+
+
+def _stop_thumbnail_process(process: subprocess.Popen) -> None:
+    """Terminate a thumbnail subprocess quickly when delete needs the file handle back."""
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except Exception:
+        return
+    try:
+        process.wait(timeout=0.1)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            return
+
+
+def _run_thumbnail_subprocess(
+    command: list[str],
+    image_path: str,
+    timeout_seconds: float = 20.0,
+) -> subprocess.CompletedProcess:
+    """Run ffmpeg or ffprobe for thumbnails while honoring delete-time cancellation."""
+    normalized_path = _normalize_image_key(image_path)
+    deadline = time.monotonic() + max(0.5, float(timeout_seconds or 0.0))
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _register_thumbnail_process(normalized_path, process)
+    try:
+        while True:
+            if _is_thumbnail_processing_cancelled(normalized_path):
+                _stop_thumbnail_process(process)
+                process.communicate()
+                raise RuntimeError(f"Thumbnail generation cancelled for {Path(image_path).name}")
+            if time.monotonic() >= deadline:
+                _stop_thumbnail_process(process)
+                process.communicate()
+                raise RuntimeError(f"Thumbnail generation timed out for {Path(image_path).name}")
+            try:
+                stdout, stderr = process.communicate(timeout=0.05)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        _unregister_thumbnail_process(normalized_path, process)
+
+    return_code = process.returncode if process.returncode is not None else process.wait()
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, command, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(command, return_code, stdout, stderr)
+
+
+def _suspend_thumbnail_processing_for_path(image_path: str, timeout_seconds: float = 1.5) -> None:
+    """Block new thumbnail work for a path and stop any active video thumbnail subprocesses."""
+    normalized_path = _normalize_image_key(image_path)
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds or 0.0))
+
+    with thumbnail_processing_lock:
+        thumbnail_cancelled_paths.add(normalized_path)
+        active_processes = list((thumbnail_active_processes.get(normalized_path) or {}).values())
+
+    for process in active_processes:
+        _stop_thumbnail_process(process)
+
+    while True:
+        with thumbnail_processing_lock:
+            active_count = thumbnail_active_counts.get(normalized_path, 0)
+            active_processes = list((thumbnail_active_processes.get(normalized_path) or {}).values())
+        if active_count <= 0 and not active_processes:
+            return
+        for process in active_processes:
+            _stop_thumbnail_process(process)
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.05)
+
+
+def _resume_thumbnail_processing_for_path(image_path: str) -> None:
+    """Allow future thumbnail work again once any draining work for a path is gone."""
+    normalized_path = _normalize_image_key(image_path)
+    with thumbnail_processing_lock:
+        _clear_thumbnail_cancellation_if_idle(normalized_path)
+
+
 @lru_cache(maxsize=8)
 def _list_ffmpeg_encoders(ffmpeg_path: str) -> frozenset[str]:
     """Return the set of available ffmpeg encoder names."""
@@ -817,7 +960,7 @@ def _generate_thumbnail(filepath: str, size: int, crop: dict | None = None) -> b
         return b""
 
 
-def _probe_video_info(filepath: str, ffprobe_path: str = "ffprobe") -> dict:
+def _probe_video_info(filepath: str, ffprobe_path: str = "ffprobe", cancel_path: str | None = None) -> dict:
     """Probe a video file for primary stream dimensions and duration."""
     command = [
         ffprobe_path,
@@ -832,7 +975,7 @@ def _probe_video_info(filepath: str, ffprobe_path: str = "ffprobe") -> dict:
         filepath,
     ]
     try:
-        result = subprocess.run(command, capture_output=True, check=True)
+        result = _run_thumbnail_subprocess(command, cancel_path) if cancel_path else subprocess.run(command, capture_output=True, check=True)
     except FileNotFoundError as exc:
         raise RuntimeError(f"ffprobe not found: {ffprobe_path}") from exc
     except subprocess.CalledProcessError as exc:
@@ -930,7 +1073,7 @@ def _generate_video_thumbnail(
     hwaccel_mode: str | None = "auto",
 ) -> bytes:
     """Generate a JPEG thumbnail for a video by extracting a representative frame."""
-    video_info = _probe_video_info(filepath, ffprobe_path)
+    video_info = _probe_video_info(filepath, ffprobe_path, cancel_path=filepath)
     timestamp = _choose_video_preview_time(video_info)
     vf = f"scale={size}:{size}:force_original_aspect_ratio=decrease"
     command = [
@@ -955,7 +1098,7 @@ def _generate_video_thumbnail(
         "pipe:1",
     ]
     try:
-        result = subprocess.run(command, capture_output=True, check=True)
+        result = _run_thumbnail_subprocess(command, filepath)
     except FileNotFoundError as exc:
         raise RuntimeError(f"ffmpeg not found: {ffmpeg_path}") from exc
     except subprocess.CalledProcessError as exc:
@@ -996,7 +1139,7 @@ def _extract_video_frame(
         "pipe:1",
     ]
     try:
-        result = subprocess.run(command, capture_output=True, check=True)
+        result = _run_thumbnail_subprocess(command, filepath)
     except FileNotFoundError as exc:
         raise RuntimeError(f"ffmpeg not found: {ffmpeg_path}") from exc
     except subprocess.CalledProcessError as exc:
@@ -1401,15 +1544,19 @@ def _get_thumbnail(
     hwaccel_mode: str | None = "auto",
 ) -> bytes:
     """Get a thumbnail from cache or generate it."""
-    mtime = os.path.getmtime(filepath)
-    crop_key = None if not crop else (crop.get("x"), crop.get("y"), crop.get("w"), crop.get("h"), crop.get("ratio"))
-    key = (filepath, mtime, size, crop_key)
-    if key not in thumbnail_cache:
-        if _is_video_path(filepath):
-            thumbnail_cache[key] = _generate_video_thumbnail(filepath, size, ffmpeg_path, ffprobe_path, thread_count, hwaccel_mode)
-        else:
-            thumbnail_cache[key] = _generate_thumbnail(filepath, size, crop)
-    return thumbnail_cache[key]
+    normalized_path = _start_thumbnail_processing(filepath)
+    try:
+        mtime = os.path.getmtime(filepath)
+        crop_key = None if not crop else (crop.get("x"), crop.get("y"), crop.get("w"), crop.get("h"), crop.get("ratio"))
+        key = (filepath, mtime, size, crop_key)
+        if key not in thumbnail_cache:
+            if _is_video_path(filepath):
+                thumbnail_cache[key] = _generate_video_thumbnail(filepath, size, ffmpeg_path, ffprobe_path, thread_count, hwaccel_mode)
+            else:
+                thumbnail_cache[key] = _generate_thumbnail(filepath, size, crop)
+        return thumbnail_cache[key]
+    finally:
+        _finish_thumbnail_processing(normalized_path)
 
 
 def _render_image_bytes(

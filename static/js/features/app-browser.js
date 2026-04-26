@@ -410,6 +410,9 @@ async function loadFolder(options = {}) {
     freeText.value = "";
     updateActionButtons();
     freeText.disabled = true;
+    if (typeof syncFreeTextHighlightState === "function") {
+      syncFreeTextHighlightState();
+    }
 
     // Preload all thumbnails
     const thumbSize = getThumbLoadSize();
@@ -528,10 +531,83 @@ function getUploadQueuePendingImageCount() {
   return state.uploadQueue.reduce((sum, job) => sum + (job?.imageFiles?.length || 0), 0);
 }
 
+function getUploadQueueJobTotalBytes(job) {
+  if (!job) return 0;
+  if (job.totalBytes != null) {
+    return Math.max(0, Number(job.totalBytes || 0));
+  }
+  return (job.imageFiles || []).reduce((sum, file) => sum + Math.max(0, Number(file?.size || 0)), 0);
+}
+
+function getUploadQueuePendingByteCount() {
+  return state.uploadQueue.reduce((sum, job) => sum + getUploadQueueJobTotalBytes(job), 0);
+}
+
+function getUploadQueueCurrentTransferredBytes() {
+  const currentJob = state.uploadQueueCurrentJob;
+  if (!currentJob) return 0;
+  const completedBytes = Math.max(0, Number(currentJob.completedBytes || 0));
+  const activeTotal = Math.max(0, Number(currentJob.activeFileBytesTotal || 0));
+  const activeLoaded = Math.max(0, Number(currentJob.activeFileBytesLoaded || 0));
+  return Math.min(getUploadQueueJobTotalBytes(currentJob), completedBytes + Math.min(activeTotal || activeLoaded, activeLoaded));
+}
+
+function getUploadQueueTotalByteCount() {
+  return state.uploadQueueCompletedBytes
+    + getUploadQueueJobTotalBytes(state.uploadQueueCurrentJob)
+    + getUploadQueuePendingByteCount();
+}
+
 function getUploadQueueTotalImageCount() {
   return state.uploadQueueCompletedImages
     + (state.uploadQueueCurrentJob?.imageFiles?.length || 0)
     + getUploadQueuePendingImageCount();
+}
+
+function uploadSingleFileWithProgress(folder, file, onProgress = null) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/images/upload");
+
+    const emitProgress = (loaded, total) => {
+      if (typeof onProgress !== "function") return;
+      const normalizedTotal = Math.max(0, Number(file?.size || total || 0));
+      const normalizedLoaded = Math.max(0, Math.min(normalizedTotal || Number(total || 0), Number(loaded || 0)));
+      onProgress({ loaded: normalizedLoaded, total: normalizedTotal || Number(total || 0) });
+    };
+
+    xhr.upload.addEventListener("progress", (event) => {
+      emitProgress(event.loaded, event.total);
+    });
+
+    xhr.addEventListener("load", () => {
+      emitProgress(file?.size || 0, file?.size || 0);
+      let data = {};
+      try {
+        data = JSON.parse(xhr.responseText || "{}");
+      } catch {
+        data = {};
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data);
+        return;
+      }
+      reject(new Error(data.detail || "Upload failed"));
+    });
+
+    xhr.addEventListener("error", () => {
+      reject(new Error("Network error during upload"));
+    });
+
+    xhr.addEventListener("abort", () => {
+      reject(new Error("Upload cancelled"));
+    });
+
+    const formData = new FormData();
+    formData.append("folder", folder);
+    formData.append("files", file, file.name);
+    xhr.send(formData);
+  });
 }
 
 function renderUploadQueueStatus() {
@@ -551,13 +627,37 @@ function renderUploadQueueStatus() {
   const waitingJobs = state.uploadQueue.length;
   const completedImages = state.uploadQueueCompletedImages;
   const totalImages = getUploadQueueTotalImageCount();
-  const progressPercent = totalImages > 0 ? Math.max(0, Math.min(100, (completedImages / totalImages) * 100)) : 0;
+  const totalBytes = getUploadQueueTotalByteCount();
+  const transferredBytes = state.uploadQueueCompletedBytes + getUploadQueueCurrentTransferredBytes();
+  const progressPercent = totalBytes > 0
+    ? Math.max(0, Math.min(100, (transferredBytes / totalBytes) * 100))
+    : (totalImages > 0 ? Math.max(0, Math.min(100, (completedImages / totalImages) * 100)) : 0);
   uploadQueueProgressFill.style.width = `${progressPercent}%`;
   uploadQueueProgressFill.classList.toggle("active", !!currentJob);
 
   const parts = [];
   if (currentJob) {
-    parts.push(`Uploading ${currentJob.imageFiles.length} media file${currentJob.imageFiles.length === 1 ? "" : "s"} to ${getFileLabel(currentJob.folder)}`);
+    const jobTotal = Math.max(0, Number(currentJob.imageFiles?.length || 0));
+    const jobCompleted = Math.max(0, Math.min(jobTotal, Number(currentJob.completedFiles || 0)));
+    const activeIndex = jobTotal > 0 ? Math.min(jobTotal, jobCompleted + 1) : 0;
+    const activeFileName = String(
+      currentJob.activeFileName
+      || currentJob.imageFiles?.[Math.min(jobCompleted, Math.max(0, jobTotal - 1))]?.name
+      || ""
+    ).trim();
+    if (jobTotal > 1) {
+      parts.push(
+        activeFileName
+          ? `Uploading ${activeIndex}/${jobTotal}: ${getFileLabel(activeFileName)} to ${getFileLabel(currentJob.folder)}`
+          : `Uploading ${activeIndex}/${jobTotal} media files to ${getFileLabel(currentJob.folder)}`
+      );
+    } else {
+      parts.push(
+        activeFileName
+          ? `Uploading ${getFileLabel(activeFileName)} to ${getFileLabel(currentJob.folder)}`
+          : `Uploading 1 media file to ${getFileLabel(currentJob.folder)}`
+      );
+    }
   } else if (waitingJobs > 0) {
     parts.push(`Starting next upload job`);
   } else {
@@ -622,6 +722,10 @@ async function selectUploadedImages(paths) {
     clearCropDraft();
   }
 
+  if (typeof syncFreeTextHighlightState === "function") {
+    syncFreeTextHighlightState();
+  }
+
   renderMetadataEditor();
   if (typeof updateMultiInfo === "function") {
     updateMultiInfo();
@@ -650,34 +754,74 @@ async function processUploadQueue() {
 
   while (state.uploadQueue.length) {
     const job = state.uploadQueue.shift();
-    state.uploadQueueCurrentJob = job;
+    state.uploadQueueCurrentJob = {
+      ...job,
+      totalBytes: getUploadQueueJobTotalBytes(job),
+      completedFiles: 0,
+      completedBytes: 0,
+      activeFileName: job.imageFiles?.[0]?.name || "",
+      activeFileBytesLoaded: 0,
+      activeFileBytesTotal: Math.max(0, Number(job.imageFiles?.[0]?.size || 0)),
+    };
     renderUploadQueueStatus();
 
     try {
-      const formData = new FormData();
-      formData.append("folder", job.folder);
+      const uploadedPaths = [];
+      let uploadedCount = 0;
+      let renamedCount = 0;
+      let serverSkippedCount = 0;
+      let failedFiles = 0;
+
       for (const file of job.imageFiles) {
-        formData.append("files", file, file.name);
+        if (state.uploadQueueCurrentJob) {
+          state.uploadQueueCurrentJob.activeFileName = file?.name || "";
+          state.uploadQueueCurrentJob.activeFileBytesLoaded = 0;
+          state.uploadQueueCurrentJob.activeFileBytesTotal = Math.max(0, Number(file?.size || 0));
+          renderUploadQueueStatus();
+        }
+
+        try {
+          const data = await uploadSingleFileWithProgress(job.folder, file, ({ loaded, total }) => {
+            if (!state.uploadQueueCurrentJob) return;
+            state.uploadQueueCurrentJob.activeFileBytesLoaded = loaded;
+            state.uploadQueueCurrentJob.activeFileBytesTotal = Math.max(0, Number(total || file?.size || 0));
+            renderUploadQueueStatus();
+          });
+
+          const currentUploadedPaths = Array.isArray(data.uploaded)
+            ? data.uploaded.map(item => item?.path).filter(Boolean)
+            : [];
+          const currentUploadedCount = Number(data.uploaded_count || currentUploadedPaths.length || 0);
+          uploadedPaths.push(...currentUploadedPaths);
+          uploadedCount += currentUploadedCount;
+          renamedCount += Number(data.renamed_count || 0);
+          serverSkippedCount += Array.isArray(data.skipped) ? data.skipped.length : Number(data.skipped_count || 0);
+          state.uploadQueueCompletedImages += currentUploadedCount;
+        } catch (err) {
+          failedFiles += 1;
+          state.uploadQueueFailedJobs += 1;
+          const message = err?.message || "Upload failed";
+          state.uploadQueueLastSummary = `Upload error for ${getFileLabel(file?.name || job.folder)}: ${message}`;
+          showErrorToast(`Upload failed for ${getFileLabel(file?.name || job.folder)}: ${message}`);
+        } finally {
+          if (state.uploadQueueCurrentJob) {
+            state.uploadQueueCurrentJob.completedBytes = Math.min(
+              state.uploadQueueCurrentJob.totalBytes,
+              Number(state.uploadQueueCurrentJob.completedBytes || 0)
+                + Math.max(0, Number(state.uploadQueueCurrentJob.activeFileBytesLoaded || 0)),
+            );
+            state.uploadQueueCurrentJob.completedFiles = Math.min(
+              state.uploadQueueCurrentJob.imageFiles.length,
+              Number(state.uploadQueueCurrentJob.completedFiles || 0) + 1,
+            );
+            state.uploadQueueCurrentJob.activeFileBytesLoaded = 0;
+            state.uploadQueueCurrentJob.activeFileBytesTotal = 0;
+            renderUploadQueueStatus();
+          }
+        }
       }
 
-      const resp = await fetch("/api/images/upload", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        throw new Error(data.detail || "Upload failed");
-      }
-
-      const uploadedPaths = Array.isArray(data.uploaded)
-        ? data.uploaded.map(item => item?.path).filter(Boolean)
-        : [];
-      const uploadedCount = Number(data.uploaded_count || uploadedPaths.length || 0);
-      const renamedCount = Number(data.renamed_count || 0);
-      const serverSkippedCount = Array.isArray(data.skipped) ? data.skipped.length : Number(data.skipped_count || 0);
       const totalSkippedCount = job.clientSkippedCount + serverSkippedCount;
-
-      state.uploadQueueCompletedImages += uploadedCount;
 
       if (uploadedCount > 0 && isSameClientPath(state.folder, job.folder)) {
         const preserveScrollTop = fileGridContainer.scrollTop;
@@ -686,13 +830,15 @@ async function processUploadQueue() {
         await selectUploadedImages(uploadedPaths);
       }
 
-      const summary = [`Uploaded ${uploadedCount} image${uploadedCount === 1 ? "" : "s"} to ${getFileLabel(job.folder)}`];
-      summary[0] = `Uploaded ${uploadedCount} media file${uploadedCount === 1 ? "" : "s"} to ${getFileLabel(job.folder)}`;
+      const summary = [`Uploaded ${uploadedCount} media file${uploadedCount === 1 ? "" : "s"} to ${getFileLabel(job.folder)}`];
       if (renamedCount > 0) {
         summary.push(`${renamedCount} renamed`);
       }
       if (totalSkippedCount > 0) {
         summary.push(`${totalSkippedCount} skipped`);
+      }
+      if (failedFiles > 0) {
+        summary.push(`${failedFiles} failed`);
       }
       if (state.uploadQueue.length > 0) {
         summary.push(`${state.uploadQueue.length} queued`);
@@ -708,6 +854,7 @@ async function processUploadQueue() {
       showErrorToast(`Upload failed for ${getFileLabel(job.folder)}: ${err.message}`);
     }
 
+    state.uploadQueueCompletedBytes += Math.max(0, Number(state.uploadQueueCurrentJob?.completedBytes || 0));
     state.uploadQueueCurrentJob = null;
     renderUploadQueueStatus();
   }
@@ -717,6 +864,7 @@ async function processUploadQueue() {
   updateActionButtons();
   statusBar.textContent = state.uploadQueueLastSummary || "Upload queue complete";
   state.uploadQueueCompletedImages = 0;
+  state.uploadQueueCompletedBytes = 0;
   state.uploadQueueFailedJobs = 0;
   state.uploadQueueLastSummary = "";
 }
@@ -745,6 +893,7 @@ async function uploadDroppedFiles(fileList) {
 
   if (!state.uploading && !state.uploadQueue.length && !state.uploadQueueCurrentJob) {
     state.uploadQueueCompletedImages = 0;
+    state.uploadQueueCompletedBytes = 0;
     state.uploadQueueFailedJobs = 0;
     state.uploadQueueLastSummary = "";
   }
@@ -760,6 +909,7 @@ async function uploadDroppedFiles(fileList) {
   processUploadQueue().catch((err) => {
     state.uploading = false;
     state.uploadQueueCurrentJob = null;
+    state.uploadQueueCompletedBytes = 0;
     state.uploadQueueFailedJobs += 1;
     state.uploadQueueLastSummary = `Upload queue failed: ${err.message}`;
     renderUploadQueueStatus();
@@ -1114,6 +1264,10 @@ async function handleThumbClick(index, event) {
     freeText.value = "";
   }
 
+  if (typeof syncFreeTextHighlightState === "function") {
+    syncFreeTextHighlightState();
+  }
+
   renderMetadataEditor();
   if (typeof updateMultiInfo === "function") {
     updateMultiInfo();
@@ -1192,9 +1346,6 @@ function applyTransform() {
 async function showPreview(path, options = {}) {
   const { preserveView = false } = options;
   const previousPath = state.previewPath;
-  if (state.promptPreview.sourcePath && state.promptPreview.sourcePath !== path) {
-    resetPromptPreviewState();
-  }
   if (previousPath && previousPath !== path && state.maskEditor.active) {
     try {
       await saveMaskEdit();

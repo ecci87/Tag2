@@ -657,9 +657,13 @@ async function revealCurrentPromptPreviewInExplorer() {
 }
 
 async function pollPromptPreviewStatus() {
-  const sourcePath = state.previewPath;
-  if (!sourcePath || state.previewMediaType !== "image") return;
-  if (!isPromptPreviewSourceActive(sourcePath)) return;
+  const sourcePath = String(state.promptPreview.sourcePath || "").trim();
+  if (!sourcePath) return;
+  if (!state.images.some((item) => item.path === sourcePath)) {
+    resetPromptPreviewState();
+    return;
+  }
+  if (!isImageMediaPath(sourcePath)) return;
   if (state.promptPreview.loading) return;
   const summary = state.promptPreview.summary || createPromptPreviewSummary();
   const shouldPoll = Number(summary.running || 0) > 0 || Number(summary.queued || 0) > 0;

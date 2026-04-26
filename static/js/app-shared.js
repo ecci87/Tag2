@@ -210,6 +210,7 @@ const state = {
   uploadQueue: [],
   uploadQueueCurrentJob: null,
   uploadQueueCompletedImages: 0,
+  uploadQueueCompletedBytes: 0,
   uploadQueueFailedJobs: 0,
   uploadQueueLastSummary: "",
   videoJobs: {
@@ -382,6 +383,8 @@ const autoPreviewCheckbox = $("#auto-preview-checkbox");
 const addFreeTextNowBtn = $("#add-free-text-now-btn");
 const hideAddButtonsCheckbox = $("#hide-add-buttons-checkbox");
 const freeTextSection = $("#freetext-section");
+const freeTextEditor = $("#free-text-editor");
+const freeTextHighlight = $("#free-text-highlight");
 const freeText = $("#free-text");
 const metadataEditorPanel = $("#metadata-editor-panel");
 const metadataEditorSummary = $("#metadata-editor-summary");
