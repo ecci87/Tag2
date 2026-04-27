@@ -1526,6 +1526,20 @@ function sentenceMatchesCaptionLibraryFilters(sentence, normalizedQuery) {
   return captionMatchesSearchQuery(sentence, normalizedQuery);
 }
 
+function groupMatchesCaptionLibraryFilters(group, normalizedQuery) {
+  if (state.captionSkipFilterActive && !isGroupSkippedForAutoCaption(group)) {
+    return false;
+  }
+  return captionMatchesSearchQuery(group?.name || "(Group)", normalizedQuery);
+}
+
+function sectionMatchesCaptionLibraryFilters(section, normalizedQuery) {
+  if (state.captionSkipFilterActive && !isSectionSkippedForAutoCaption(section)) {
+    return false;
+  }
+  return captionMatchesSearchQuery(section?.name || "(General)", normalizedQuery);
+}
+
 function getVisibleGroupSentenceMatches(group, normalizedQuery) {
   const groupSentences = Array.isArray(group?.sentences) ? group.sentences : [];
   const matches = [];
@@ -1539,7 +1553,7 @@ function getVisibleGroupSentenceMatches(group, normalizedQuery) {
 
 function getVisibleSectionEntries(section, normalizedQuery) {
   const orderedEntries = getOrderedSectionEntries(section);
-  const sectionMatched = captionMatchesSearchQuery(section?.name || "(General)", normalizedQuery);
+  const sectionMatched = sectionMatchesCaptionLibraryFilters(section, normalizedQuery);
   const skipFilterActive = !!state.captionSkipFilterActive;
   if (!normalizedQuery && !skipFilterActive) {
     return {
@@ -1548,7 +1562,7 @@ function getVisibleSectionEntries(section, normalizedQuery) {
     };
   }
 
-  if (!!normalizedQuery && sectionMatched && !skipFilterActive) {
+  if (sectionMatched) {
     return {
       sectionMatched,
       entries: orderedEntries,
@@ -1564,7 +1578,7 @@ function getVisibleSectionEntries(section, normalizedQuery) {
       continue;
     }
 
-    if (captionMatchesSearchQuery(entry.group?.name || "(Group)", normalizedQuery) && !skipFilterActive) {
+    if (groupMatchesCaptionLibraryFilters(entry.group, normalizedQuery)) {
       visibleEntries.push(entry);
       continue;
     }
@@ -1677,7 +1691,7 @@ function renderSentences(options = {}) {
 
   state.sections.forEach((section, secIdx) => {
     const { sectionMatched, entries: visibleEntries } = getVisibleSectionEntries(section, normalizedCaptionSearchQuery);
-    if (normalizedCaptionSearchQuery && !sectionMatched && visibleEntries.length === 0) {
+    if ((normalizedCaptionSearchQuery || state.captionSkipFilterActive) && !sectionMatched && visibleEntries.length === 0) {
       return;
     }
     hasVisibleEntries = true;
