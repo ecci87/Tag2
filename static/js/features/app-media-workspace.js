@@ -47,9 +47,12 @@ function setImageMaskPresence(path, hasMask, version = null, maskCount = null) {
     return;
   }
 
-  const cell = fileGrid.querySelector(`.thumb-cell[data-path="${CSS.escape(path)}"]`);
-  if (cell) {
+  const cells = fileGrid.querySelectorAll(`.thumb-cell[data-path="${CSS.escape(path)}"]`);
+  cells.forEach((cell) => {
     cell.classList.toggle("has-mask", !!hasMask);
+  });
+  if (typeof syncVisibleThumbnailMaskOverlay === "function") {
+    syncVisibleThumbnailMaskOverlay(path);
   }
 }
 

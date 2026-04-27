@@ -451,6 +451,30 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
 #prompt-preview-grid-toggle-btn {
   min-width: 36px;
 }
+#thumb-mask-overlay-toggle-btn {
+  min-width: 32px;
+  border-color: rgba(166,227,161,0.24);
+  color: rgba(166,227,161,0.86);
+}
+#thumb-mask-overlay-toggle-btn:hover {
+  border-color: rgba(166,227,161,0.48);
+  color: rgba(166,227,161,0.98);
+  background: rgba(166,227,161,0.10);
+}
+#thumb-mask-overlay-toggle-btn.active {
+  border-color: rgba(166,227,161,0.52);
+  background: linear-gradient(180deg, rgba(166,227,161,0.24), rgba(166,227,161,0.12));
+  color: rgba(166,227,161,0.98);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 0 1px rgba(166,227,161,0.10);
+}
+.filter-chip-divider {
+  width: 1px;
+  height: 16px;
+  border-radius: 999px;
+  background: rgba(137,180,250,0.22);
+  margin: 0 2px;
+  flex: 0 0 auto;
+}
 .filter-chip {
   min-width: 56px;
   height: 22px;
@@ -667,6 +691,17 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   background: rgba(137,180,250,0.12);
 }
 .thumb-cell img { width: 100%; height: 100%; object-fit: contain; display: block; background: rgba(0,0,0,0.18); }
+.thumb-mask-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  opacity: 1;
+  mix-blend-mode: multiply;
+  image-rendering: auto;
+}
 .thumb-cell .thumb-name {
   position: absolute; bottom: 0; left: 0; right: 0;
   padding: 2px 4px; font-size: 10px; color: #fff;

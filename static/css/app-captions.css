@@ -46,6 +46,12 @@
 #hide-add-buttons-toggle input {
   accent-color: var(--accent2);
 }
+#caption-skip-filter-btn {
+  min-width: 20px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
 .right-panel-tab-btn {
   padding: 4px 7px;
   border: 1px solid var(--border);
@@ -451,7 +457,8 @@
 }
 .section-sentences li .auto-caption-skip-btn,
 .section-header .auto-caption-skip-btn,
-.group-header .auto-caption-skip-btn {
+.group-header .auto-caption-skip-btn,
+#caption-skip-filter-btn {
   display: inline-grid;
   place-items: center;
   border: 1px solid rgba(255,255,255,0.14);
@@ -469,7 +476,8 @@
   flex-shrink: 0;
 }
 .section-header .auto-caption-skip-btn,
-.group-header .auto-caption-skip-btn {
+.group-header .auto-caption-skip-btn,
+#caption-skip-filter-btn {
   min-width: 20px;
   width: 20px;
   height: 20px;
@@ -511,13 +519,15 @@
 }
 .section-sentences li .auto-caption-skip-btn:hover,
 .section-header .auto-caption-skip-btn:hover,
-.group-header .auto-caption-skip-btn:hover {
+.group-header .auto-caption-skip-btn:hover,
+#caption-skip-filter-btn:hover {
   border-color: rgba(243,139,168,0.5);
   color: #f5a3ba;
 }
 .section-sentences li .auto-caption-skip-btn.active,
 .section-header .auto-caption-skip-btn.active,
-.group-header .auto-caption-skip-btn.active {
+.group-header .auto-caption-skip-btn.active,
+#caption-skip-filter-btn.active {
   border-color: rgba(243,139,168,0.5);
   background: rgba(243,139,168,0.14);
   color: #f5a3ba;
@@ -930,15 +940,19 @@
   min-height: 0;
   background: var(--bg);
   --free-text-scrollbar-gutter: 0px;
+  --free-text-scroll-top: 0px;
+  --free-text-scroll-left: 0px;
 }
 #free-text-highlight,
 #free-text {
   margin: 0;
   padding: 10px;
+  box-sizing: border-box;
   font-family: 'Consolas', 'Fira Code', monospace;
   font-size: 13px;
   line-height: 1.5;
   white-space: pre-wrap;
+  overflow-wrap: break-word;
   word-break: break-word;
   tab-size: 4;
 }
@@ -946,11 +960,15 @@
   position: absolute;
   inset: 0;
   padding-right: calc(10px + var(--free-text-scrollbar-gutter));
-  overflow: auto;
+  overflow: hidden;
   pointer-events: none;
   color: var(--fg);
   background: transparent;
   scrollbar-width: none;
+}
+.free-text-highlight-content {
+  min-height: 100%;
+  transform: translate3d(calc(var(--free-text-scroll-left) * -1), calc(var(--free-text-scroll-top) * -1), 0);
 }
 #free-text-highlight::-webkit-scrollbar {
   display: none;
@@ -968,6 +986,7 @@
   flex: 1;
   width: 100%;
   height: 100%;
+  scrollbar-gutter: stable;
   background: transparent;
   color: transparent;
   -webkit-text-fill-color: transparent;

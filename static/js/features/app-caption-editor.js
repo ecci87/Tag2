@@ -614,10 +614,7 @@ function toggleSectionSkipAutoCaption(secIdx) {
 function createAutoCaptionSkipButton(skipped, activeTitle, inactiveTitle, onClick) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `auto-caption-skip-btn${skipped ? " active" : ""}`;
-  button.title = skipped ? activeTitle : inactiveTitle;
-  button.setAttribute("aria-label", skipped ? activeTitle : inactiveTitle);
-  button.setAttribute("aria-pressed", skipped ? "true" : "false");
+  button.className = "auto-caption-skip-btn";
 
   const icon = document.createElement("span");
   icon.className = "auto-caption-skip-icon";
@@ -633,12 +630,23 @@ function createAutoCaptionSkipButton(skipped, activeTitle, inactiveTitle, onClic
   icon.appendChild(iconText);
   icon.appendChild(iconBan);
   button.appendChild(icon);
+  syncAutoCaptionSkipButtonState(button, skipped, activeTitle, inactiveTitle);
 
   button.addEventListener("click", (e) => {
     e.stopPropagation();
     onClick(e);
   });
   return button;
+}
+
+function syncAutoCaptionSkipButtonState(button, skipped, activeTitle, inactiveTitle) {
+  if (!button) return;
+  const active = !!skipped;
+  const title = active ? activeTitle : inactiveTitle;
+  button.classList.toggle("active", active);
+  button.title = title;
+  button.setAttribute("aria-label", title);
+  button.setAttribute("aria-pressed", active ? "true" : "false");
 }
 
 async function renameSentence(oldSentence, newSentence) {
@@ -1511,15 +1519,18 @@ function captionMatchesSearchQuery(sentence, normalizedQuery) {
   return String(sentence || "").toLowerCase().includes(normalizedQuery);
 }
 
+function sentenceMatchesCaptionLibraryFilters(sentence, normalizedQuery) {
+  if (state.captionSkipFilterActive && !isSentenceSkippedForAutoCaption(sentence)) {
+    return false;
+  }
+  return captionMatchesSearchQuery(sentence, normalizedQuery);
+}
+
 function getVisibleGroupSentenceMatches(group, normalizedQuery) {
   const groupSentences = Array.isArray(group?.sentences) ? group.sentences : [];
-  if (!normalizedQuery) {
-    return groupSentences.map((sentence, sentenceIdx) => ({ sentence, sentenceIdx }));
-  }
-
   const matches = [];
   groupSentences.forEach((sentence, sentenceIdx) => {
-    if (captionMatchesSearchQuery(sentence, normalizedQuery)) {
+    if (sentenceMatchesCaptionLibraryFilters(sentence, normalizedQuery)) {
       matches.push({ sentence, sentenceIdx });
     }
   });
@@ -1529,7 +1540,15 @@ function getVisibleGroupSentenceMatches(group, normalizedQuery) {
 function getVisibleSectionEntries(section, normalizedQuery) {
   const orderedEntries = getOrderedSectionEntries(section);
   const sectionMatched = captionMatchesSearchQuery(section?.name || "(General)", normalizedQuery);
-  if (!normalizedQuery || sectionMatched) {
+  const skipFilterActive = !!state.captionSkipFilterActive;
+  if (!normalizedQuery && !skipFilterActive) {
+    return {
+      sectionMatched,
+      entries: orderedEntries,
+    };
+  }
+
+  if (!!normalizedQuery && sectionMatched && !skipFilterActive) {
     return {
       sectionMatched,
       entries: orderedEntries,
@@ -1539,13 +1558,13 @@ function getVisibleSectionEntries(section, normalizedQuery) {
   const visibleEntries = [];
   for (const entry of orderedEntries) {
     if (entry.type === "sentence") {
-      if (captionMatchesSearchQuery(entry.sentence, normalizedQuery)) {
+      if (sentenceMatchesCaptionLibraryFilters(entry.sentence, normalizedQuery)) {
         visibleEntries.push(entry);
       }
       continue;
     }
 
-    if (captionMatchesSearchQuery(entry.group?.name || "(Group)", normalizedQuery)) {
+    if (captionMatchesSearchQuery(entry.group?.name || "(Group)", normalizedQuery) && !skipFilterActive) {
       visibleEntries.push(entry);
       continue;
     }
@@ -1565,9 +1584,15 @@ function createCaptionSearchEmptyState(searchQuery) {
   const emptyState = document.createElement("div");
   emptyState.className = "section-empty-state";
   const trimmedQuery = String(searchQuery || "").trim();
-  emptyState.textContent = trimmedQuery
-    ? `No captions match "${trimmedQuery}".`
-    : "No captions available.";
+  if (trimmedQuery && state.captionSkipFilterActive) {
+    emptyState.textContent = `No disabled AI captions match "${trimmedQuery}".`;
+  } else if (trimmedQuery) {
+    emptyState.textContent = `No captions match "${trimmedQuery}".`;
+  } else if (state.captionSkipFilterActive) {
+    emptyState.textContent = "No captions are disabled for Auto Caption.";
+  } else {
+    emptyState.textContent = "No captions available.";
+  }
   return emptyState;
 }
 
@@ -1584,6 +1609,16 @@ function syncCaptionSearchInputState() {
     : "Filter captions in the library";
 }
 
+function syncCaptionSkipFilterButtonState() {
+  if (!captionSkipFilterBtn) return;
+  syncAutoCaptionSkipButtonState(
+    captionSkipFilterBtn,
+    state.captionSkipFilterActive,
+    "Showing only captions disabled for Auto Caption",
+    "Show only captions disabled for Auto Caption",
+  );
+}
+
 function updateCaptionSearchQuery(value) {
   const nextQuery = String(value || "");
   if (nextQuery === state.captionSearchQuery) {
@@ -1597,6 +1632,19 @@ function updateCaptionSearchQuery(value) {
 
 function handleCaptionSearchInput(event) {
   updateCaptionSearchQuery(event?.target?.value || "");
+}
+
+function toggleCaptionSkipFilter() {
+  state.captionSkipFilterActive = !state.captionSkipFilterActive;
+  syncCaptionSkipFilterButtonState();
+  renderSentences({ includePreview: false });
+  if (state.captionSkipFilterActive) {
+    statusBar.textContent = "Showing only captions disabled for Auto Caption";
+  } else if (normalizeCaptionSearchQuery(state.captionSearchQuery)) {
+    statusBar.textContent = `Filtering captions for "${String(state.captionSearchQuery || "").trim()}"`;
+  } else {
+    statusBar.textContent = "Showing all captions";
+  }
 }
 
 function renderSentences(options = {}) {
@@ -1625,6 +1673,7 @@ function renderSentences(options = {}) {
     queueFolderSentenceCountLoad();
   }
   syncCaptionSearchInputState();
+  syncCaptionSkipFilterButtonState();
 
   state.sections.forEach((section, secIdx) => {
     const { sectionMatched, entries: visibleEntries } = getVisibleSectionEntries(section, normalizedCaptionSearchQuery);
@@ -2605,7 +2654,14 @@ function buildFreeTextHighlightMarkup(value) {
   }
 
   html += escapeFreeTextHtml(text.slice(lastIndex));
+  if (text.endsWith("\n")) {
+    html += "&#8203;";
+  }
   return html;
+}
+
+function wrapFreeTextHighlightMarkup(markup) {
+  return `<div class="free-text-highlight-content">${markup}</div>`;
 }
 
 function syncFreeTextHighlightMetrics() {
@@ -2617,8 +2673,8 @@ function syncFreeTextHighlightMetrics() {
 function syncFreeTextHighlightScroll() {
   if (!freeTextHighlight || !freeText) return;
   syncFreeTextHighlightMetrics();
-  freeTextHighlight.scrollTop = freeText.scrollTop;
-  freeTextHighlight.scrollLeft = freeText.scrollLeft;
+  freeTextEditor.style.setProperty("--free-text-scroll-top", `${Math.max(0, freeText.scrollTop)}px`);
+  freeTextEditor.style.setProperty("--free-text-scroll-left", `${Math.max(0, freeText.scrollLeft)}px`);
 }
 
 function syncFreeTextHighlightState() {
@@ -2628,9 +2684,9 @@ function syncFreeTextHighlightState() {
   freeTextEditor.classList.toggle("is-disabled", !!freeText.disabled);
   freeTextHighlight.classList.toggle("placeholder", isEmpty);
   if (isEmpty) {
-    freeTextHighlight.textContent = freeText.placeholder || "";
+    freeTextHighlight.innerHTML = wrapFreeTextHighlightMarkup(escapeFreeTextHtml(freeText.placeholder || ""));
   } else {
-    freeTextHighlight.innerHTML = buildFreeTextHighlightMarkup(value);
+    freeTextHighlight.innerHTML = wrapFreeTextHighlightMarkup(buildFreeTextHighlightMarkup(value));
   }
   syncFreeTextHighlightScroll();
 }

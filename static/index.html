@@ -69,7 +69,9 @@
             <button id="filter-ar-btn" class="filter-chip" type="button" title="Show only images with the AR warning badge">AR</button>
             <button id="filter-mask-btn" class="filter-chip" type="button" title="Show only images that have a mask sidecar">M</button>
             <button id="filter-txt-btn" class="filter-chip" type="button" title="Show only images that have a txt caption file">TXT</button>
+            <span class="filter-chip-divider" aria-hidden="true"></span>
             <button id="prompt-preview-grid-toggle-btn" class="filter-chip" type="button" title="Show prompt preview thumbnails beside source thumbnails when available" aria-pressed="false">PV</button>
+            <button id="thumb-mask-overlay-toggle-btn" class="filter-chip" type="button" title="Overlay saved image masks on source thumbnails when available" aria-pressed="false">M</button>
           </div>
           <button id="clear-filters-btn" type="button" title="Clear active filters" aria-label="Clear active filters"></button>
           <div id="media-search-wrap">
@@ -262,6 +264,12 @@
           <div id="caption-search-wrap">
             <input id="caption-search-input" type="search" placeholder="Filter captions..." spellcheck="false" autocomplete="off" aria-label="Filter captions in the library">
           </div>
+          <button id="caption-skip-filter-btn" class="auto-caption-skip-btn" type="button" title="Show only captions disabled for Auto Caption" aria-label="Show only captions disabled for Auto Caption" aria-pressed="false">
+            <span class="auto-caption-skip-icon" aria-hidden="true">
+              <span class="auto-caption-skip-icon-text">AI</span>
+              <span class="auto-caption-skip-icon-ban"></span>
+            </span>
+          </button>
           <label id="hide-add-buttons-toggle" class="toggle-label" title="Hide add controls for sections and groups">
             <input type="checkbox" id="hide-add-buttons-checkbox">
             <span>Hide + Buttons</span>

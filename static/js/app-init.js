@@ -121,6 +121,20 @@ if (promptPreviewGridToggleBtn) {
       : "Showing source thumbnails only";
   });
 }
+if (thumbMaskOverlayToggleBtn) {
+  thumbMaskOverlayToggleBtn.addEventListener("click", () => {
+    state.showThumbnailMaskOverlays = !state.showThumbnailMaskOverlays;
+    renderThumbnailMaskOverlayToggle();
+    if (typeof rerenderGridPreservingView === "function") {
+      rerenderGridPreservingView();
+    } else if (typeof renderGrid === "function") {
+      renderGrid();
+    }
+    statusBar.textContent = state.showThumbnailMaskOverlays
+      ? "Showing saved image masks over source thumbnails when available"
+      : "Showing source thumbnails without mask overlays";
+  });
+}
 addSafeClickListener(autoCaptionBtn, "autoCaptionSelected");
 addSafeClickListener(addFreeTextNowBtn, "addFreeTextNow");
 addSafeClickListener(metadataCancelBtn, "cancelMetadataChanges");
@@ -150,6 +164,9 @@ if (metadataCaptionDropoutEnabledInput) {
 if (captionSearchInput) {
   captionSearchInput.addEventListener("input", handleCaptionSearchInput);
   captionSearchInput.addEventListener("search", handleCaptionSearchInput);
+}
+if (captionSkipFilterBtn) {
+  captionSkipFilterBtn.addEventListener("click", toggleCaptionSkipFilter);
 }
 hideAddButtonsCheckbox.addEventListener("change", () => {
   state.hideAddButtons = hideAddButtonsCheckbox.checked;
@@ -426,3 +443,4 @@ renderMaskEditorUi();
 updateActionButtons();
 renderFilterActions();
 renderPromptPreviewGridToggle();
+renderThumbnailMaskOverlayToggle();

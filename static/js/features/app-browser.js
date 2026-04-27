@@ -1064,6 +1064,73 @@ function createThumbnailPane(imagePath, thumbLoadSize, paneClassName = "") {
   return pane;
 }
 
+function shouldShowThumbnailMaskOverlay(img, options = {}) {
+  const { isPromptPreview = false } = options;
+  return !isPromptPreview
+    && !!state.showThumbnailMaskOverlays
+    && !!img?.has_mask
+    && img?.media_type === "image";
+}
+
+function getThumbnailMaskOverlayUrl(imagePath) {
+  return buildImageApiUrl("mask/image", imagePath, {
+    mask_v: getMaskVersion(imagePath),
+  });
+}
+
+function createThumbnailMaskOverlayElement(imagePath) {
+  const overlay = document.createElement("img");
+  overlay.className = "thumb-mask-overlay";
+  overlay.alt = "";
+  overlay.loading = "lazy";
+  overlay.decoding = "async";
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.dataset.path = imagePath;
+  overlay.dataset.maskVersion = String(getMaskVersion(imagePath));
+  overlay.src = getThumbnailMaskOverlayUrl(imagePath);
+  return overlay;
+}
+
+function getThumbnailMaskOverlayInsertBefore(container) {
+  return container.querySelector(".thumb-name, .caption-dot, .mask-badge, .aspect-warning, .prompt-preview-badge") || null;
+}
+
+function syncThumbnailMaskOverlayForContainer(container, imagePath, shouldShowMask) {
+  if (!container || !imagePath) return;
+  let overlay = container.querySelector(".thumb-mask-overlay");
+  if (!shouldShowMask) {
+    if (overlay) {
+      overlay.remove();
+    }
+    return;
+  }
+
+  const nextVersion = String(getMaskVersion(imagePath));
+  const nextSrc = getThumbnailMaskOverlayUrl(imagePath);
+  if (!overlay) {
+    overlay = createThumbnailMaskOverlayElement(imagePath);
+    container.insertBefore(overlay, getThumbnailMaskOverlayInsertBefore(container));
+    return;
+  }
+
+  if (overlay.dataset.path !== imagePath || overlay.dataset.maskVersion !== nextVersion || overlay.src !== new URL(nextSrc, window.location.href).href) {
+    overlay.dataset.path = imagePath;
+    overlay.dataset.maskVersion = nextVersion;
+    overlay.src = nextSrc;
+  }
+}
+
+function syncVisibleThumbnailMaskOverlay(path) {
+  if (!path || !fileGrid) return;
+  const image = state.images.find((item) => item.path === path);
+  if (!image) return;
+  const shouldShowMask = shouldShowThumbnailMaskOverlay(image);
+  const containers = fileGrid.querySelectorAll(`[data-mask-container-path="${CSS.escape(path)}"]`);
+  containers.forEach((container) => {
+    syncThumbnailMaskOverlayForContainer(container, path, shouldShowMask);
+  });
+}
+
 function appendStandardThumbnailBadges(cell, img) {
   const maskBadge = document.createElement("div");
   maskBadge.className = "mask-badge";
@@ -1117,8 +1184,12 @@ function createThumbCell(img, index, size, thumbLoadSize, options = {}) {
     cell.dataset.sourcePath = sourcePath;
   }
   cell.dataset.mediaType = isPromptPreview ? "image" : (img.media_type || getMediaType(img.path));
+  if (!isPromptPreview && sourcePath === imagePath && (img.media_type || getMediaType(img.path)) === "image") {
+    cell.dataset.maskContainerPath = sourcePath;
+  }
 
   cell.appendChild(createThumbnailImageElement(imagePath, thumbLoadSize));
+  syncThumbnailMaskOverlayForContainer(cell, sourcePath, shouldShowThumbnailMaskOverlay(img, { isPromptPreview }));
 
   const nameEl = document.createElement("div");
   nameEl.className = "thumb-name";
@@ -1168,6 +1239,8 @@ function createDualThumbCell(img, index, size, thumbLoadSize, previewPath) {
   mediaRow.className = "thumb-dual-media";
 
   const originalPane = createThumbnailPane(img.path, thumbLoadSize, "thumb-original-pane");
+  originalPane.dataset.maskContainerPath = img.path;
+  syncThumbnailMaskOverlayForContainer(originalPane, img.path, shouldShowThumbnailMaskOverlay(img));
   mediaRow.appendChild(originalPane);
 
   const previewPane = createThumbnailPane(previewPath, thumbLoadSize, "thumb-preview-pane");

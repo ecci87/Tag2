@@ -24,6 +24,7 @@ const state = {
   },
   mediaSearchQuery: "",
   captionSearchQuery: "",
+  captionSkipFilterActive: false,
   filterCaptionCacheKey: "",
   filterLoadingPromise: null,
   captionLibraryLoadingPromise: null,
@@ -177,6 +178,7 @@ const state = {
     loading: false,
   },
   showPromptPreviewThumbnails: false,
+  showThumbnailMaskOverlays: false,
   folderAutocomplete: {
     items: [],
     highlightedIndex: -1,
@@ -374,12 +376,14 @@ const sectionContainer = $("#section-container");
 const rightPanelTabButtons = [...document.querySelectorAll(".right-panel-tab-btn")];
 const rightPanelModePanels = [...document.querySelectorAll(".right-panel-mode-panel")];
 const promptPreviewGridToggleBtn = $("#prompt-preview-grid-toggle-btn");
+const thumbMaskOverlayToggleBtn = $("#thumb-mask-overlay-toggle-btn");
 const captionsEditorPanel = $("#captions-editor-panel");
 const captionsSection = $("#captions-section");
 const rightHorizontalResize = $("#right-horizontal-resize");
 const autoCaptionBtn = $("#auto-caption-btn");
 const modelLogOpenBtn = $("#model-log-open-btn");
 const captionSearchInput = $("#caption-search-input");
+const captionSkipFilterBtn = $("#caption-skip-filter-btn");
 const createPromptPreviewBtn = $("#create-prompt-preview-btn");
 const autoFreeTextCheckbox = $("#auto-free-text-checkbox");
 const autoPreviewCheckbox = $("#auto-preview-checkbox");

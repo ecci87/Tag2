@@ -298,6 +298,16 @@ function renderPromptPreviewGridToggle() {
     : "Show prompt preview thumbnails beside source thumbnails when available";
 }
 
+function renderThumbnailMaskOverlayToggle() {
+  if (!thumbMaskOverlayToggleBtn) return;
+  const active = !!state.showThumbnailMaskOverlays;
+  thumbMaskOverlayToggleBtn.classList.toggle("active", active);
+  thumbMaskOverlayToggleBtn.setAttribute("aria-pressed", active ? "true" : "false");
+  thumbMaskOverlayToggleBtn.title = active
+    ? "Hide saved image mask overlays on source thumbnails"
+    : "Overlay saved image masks on source thumbnails when available";
+}
+
 function seedPromptPreviewSnapshotFromFile(sourcePath, previewPath) {
   if (!sourcePath || !previewPath) return;
   const sameSource = isPromptPreviewSourceActive(sourcePath);
