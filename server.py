@@ -4659,6 +4659,7 @@ class SettingsUpdate(BaseModel):
     last_folder: Optional[str] = None
     sections: Optional[list[dict]] = None
     folder: Optional[str] = None  # which folder these sections belong to
+    rewrite_caption_files: Optional[bool] = None
     video_training_presets: Optional[list[dict]] = None
     video_training_profile_key: Optional[str] = None
     thumb_size: Optional[int] = None
@@ -4771,6 +4772,7 @@ async def update_settings(data: SettingsUpdate):
     sections_before = None
     sections_after = None
     touched_caption_files = None
+    should_rewrite_caption_files = data.rewrite_caption_files is not False
     if data.last_folder is not None:
         cfg["last_folder"] = data.last_folder
     if data.video_training_presets is not None:
@@ -4840,7 +4842,10 @@ async def update_settings(data: SettingsUpdate):
         sections_after = _get_folder_sections(cfg, data.folder)
     _save_config(cfg)
     if sections_before is not None and sections_after is not None:
-        touched_caption_files = len(_rewrite_caption_files_for_section_change(data.folder, sections_before, sections_after))
+        if should_rewrite_caption_files:
+            touched_caption_files = len(_rewrite_caption_files_for_section_change(data.folder, sections_before, sections_after))
+        else:
+            touched_caption_files = 0
     response = {"ok": True}
     if sections_after is not None and data.folder:
         response["folder"] = os.path.normpath(data.folder)

@@ -121,7 +121,7 @@ let _saveSectionsRequestToken = 0;
 
 function formatCaptionFileUpdateStatus(baseMessage, touchedCaptionFiles) {
   const count = Number(touchedCaptionFiles);
-  if (!Number.isFinite(count) || count < 0) {
+  if (!Number.isFinite(count) || count <= 0) {
     return baseMessage;
   }
   const fileLabel = count === 1 ? "image caption file" : "image caption files";
@@ -132,33 +132,59 @@ function noteCaptionLibraryChanged() {
   syncFreeTextHighlightState();
 }
 
-function saveSectionsToStorage() {
+function persistSectionsToStorage(requestToken, options = {}) {
+  const {
+    rewriteCaptionFiles = true,
+    savingMessage = "Saving caption library...",
+    successMessage = "Caption library saved",
+  } = options;
+  if (!state.folder) {
+    return Promise.resolve({ ok: false, skipped: true });
+  }
+  statusBar.textContent = savingMessage;
+  return fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sections: serializeSectionsForSave(),
+      folder: state.folder,
+      rewrite_caption_files: rewriteCaptionFiles,
+    }),
+  })
+    .then(async (resp) => {
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.detail || "Failed to save caption library");
+      }
+      if (requestToken === _saveSectionsRequestToken) {
+        statusBar.textContent = formatCaptionFileUpdateStatus(successMessage, data.touched_caption_files);
+      }
+      return { ok: true, data };
+    })
+    .catch((err) => {
+      if (requestToken === _saveSectionsRequestToken) {
+        console.error("Failed to save sections:", err);
+        statusBar.textContent = `Caption library save error: ${err.message}`;
+      }
+      return { ok: false, error: err };
+    });
+}
+
+function saveSectionsToStorage(options = {}) {
   noteCaptionLibraryChanged();
+  const { immediate = false } = options;
   // Debounce saves to avoid hammering the server during rapid edits
   if (_saveSentencesTimeout) clearTimeout(_saveSentencesTimeout);
   const requestToken = ++_saveSectionsRequestToken;
+  if (immediate) {
+    _saveSentencesTimeout = null;
+    return persistSectionsToStorage(requestToken, options);
+  }
   _saveSentencesTimeout = setTimeout(() => {
-    if (!state.folder) return;
-    statusBar.textContent = "Saving caption library...";
-    fetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sections: serializeSectionsForSave(), folder: state.folder }),
-    })
-      .then(async (resp) => {
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-          throw new Error(data.detail || "Failed to save caption library");
-        }
-        if (requestToken !== _saveSectionsRequestToken) return;
-        statusBar.textContent = formatCaptionFileUpdateStatus("Caption library saved", data.touched_caption_files);
-      })
-      .catch(err => {
-        if (requestToken !== _saveSectionsRequestToken) return;
-        console.error("Failed to save sections:", err);
-        statusBar.textContent = `Caption library save error: ${err.message}`;
-      });
+    _saveSentencesTimeout = null;
+    persistSectionsToStorage(requestToken, options);
   }, 300);
+  return Promise.resolve({ ok: true, deferred: true });
 }
 
 function applyRemovedSentencesToLocalState(removedSentences = []) {
@@ -321,9 +347,32 @@ function removeSentenceOrderItem(section, sentence) {
   ));
 }
 
+function removeGroupOrderItem(section, groupId) {
+  section.item_order = (section.item_order || []).filter((item) => !(
+    item
+    && item.type === "group"
+    && item.group_id === groupId
+  ));
+}
+
 function insertSentenceOrderItem(section, sentence, beforeRef = null) {
   const nextOrder = [...(section.item_order || [])];
   const newItem = createSentenceOrderItem(sentence);
+  const beforeKey = beforeRef ? getSectionOrderItemKey(beforeRef) : "";
+  const insertIndex = beforeKey
+    ? nextOrder.findIndex(item => getSectionOrderItemKey(item) === beforeKey)
+    : -1;
+  if (insertIndex >= 0) {
+    nextOrder.splice(insertIndex, 0, newItem);
+  } else {
+    nextOrder.push(newItem);
+  }
+  section.item_order = nextOrder;
+}
+
+function insertGroupOrderItem(section, groupId, beforeRef = null) {
+  const nextOrder = [...(section.item_order || [])];
+  const newItem = createGroupOrderItem(groupId);
   const beforeKey = beforeRef ? getSectionOrderItemKey(beforeRef) : "";
   const insertIndex = beforeKey
     ? nextOrder.findIndex(item => getSectionOrderItemKey(item) === beforeKey)
@@ -359,6 +408,17 @@ function extractSentenceFromSectionLocation(secIdx, groupIdx, sentence) {
   return { preserveSkip, preserveHidden };
 }
 
+function extractGroupFromSection(secIdx, groupId) {
+  const section = state.sections[secIdx];
+  const groups = Array.isArray(section?.groups) ? section.groups : null;
+  if (!section || !groups || !groupId) return null;
+  const sourceIndex = groups.findIndex(group => group?.id === groupId);
+  if (sourceIndex < 0) return null;
+  const [group] = groups.splice(sourceIndex, 1);
+  removeGroupOrderItem(section, groupId);
+  return group;
+}
+
 function insertSentenceIntoTopLevelSection(secIdx, sentence, beforeRef = null, options = {}) {
   const { preserveSkip = false } = options;
   const section = state.sections[secIdx];
@@ -392,6 +452,20 @@ function insertSentenceIntoGroup(secIdx, groupIdx, sentence, targetIdx = null, o
   const hidden = new Set(group.hidden_sentences || []);
   if (preserveHidden) hidden.add(sentence);
   group.hidden_sentences = group.sentences.filter(item => hidden.has(item));
+  return true;
+}
+
+function insertGroupIntoTopLevelSection(secIdx, group, beforeRef = null) {
+  const section = state.sections[secIdx];
+  if (!section || !group?.id) return false;
+  if (!Array.isArray(section.groups)) {
+    section.groups = [];
+  }
+  if (!section.groups.some(existingGroup => existingGroup?.id === group.id)) {
+    section.groups.push(group);
+  }
+  removeGroupOrderItem(section, group.id);
+  insertGroupOrderItem(section, group.id, beforeRef);
   return true;
 }
 
@@ -466,6 +540,40 @@ function moveSentenceToSectionHeader(sourceSecIdx, sourceGroupIdx, sentence, tar
   }
 
   moveSentenceToTopLevelSection(sourceSecIdx, sourceGroupIdx, sentence, targetSecIdx, firstRef);
+}
+
+function moveGroupToTopLevelSection(sourceSecIdx, groupId, targetSecIdx, beforeRef = null) {
+  const sourceRef = createTopLevelGroupDragRef(groupId);
+  if (sourceSecIdx === targetSecIdx) {
+    if (beforeRef) {
+      moveTopLevelSectionItem(targetSecIdx, sourceRef, beforeRef);
+    } else {
+      moveTopLevelSectionItemToEnd(targetSecIdx, sourceRef);
+    }
+    return;
+  }
+
+  const extractedGroup = extractGroupFromSection(sourceSecIdx, groupId);
+  if (!extractedGroup) return;
+  if (!insertGroupIntoTopLevelSection(targetSecIdx, extractedGroup, beforeRef)) return;
+  saveSectionsToStorage();
+  applyLocalSectionSchemaChange();
+}
+
+function moveGroupToSectionHeader(sourceSecIdx, groupId, targetSecIdx) {
+  const sourceRef = createTopLevelGroupDragRef(groupId);
+  const firstRef = getFirstTopLevelEntryRef(
+    targetSecIdx,
+    sourceSecIdx === targetSecIdx ? getSectionOrderItemKey(sourceRef) : ""
+  );
+
+  if (sourceSecIdx === targetSecIdx) {
+    if (!firstRef) return;
+    moveTopLevelSectionItem(targetSecIdx, sourceRef, firstRef);
+    return;
+  }
+
+  moveGroupToTopLevelSection(sourceSecIdx, groupId, targetSecIdx, firstRef);
 }
 
 function moveSentenceToGroupHeader(sourceSecIdx, sourceGroupIdx, sentence, targetSecIdx, targetGroupIdx) {
@@ -564,17 +672,41 @@ async function removeSentence(sentence) {
   }
 }
 
-function toggleSentenceHiddenOnExport(sentence) {
+async function toggleSentenceHiddenOnExport(sentence) {
   const group = findGroupForSentence(sentence);
   if (!group) return;
-  const hidden = new Set(group.hidden_sentences || []);
-  if (hidden.has(sentence)) {
-    hidden.delete(sentence);
-  } else {
+  const previousHiddenSentences = [...(group.hidden_sentences || [])];
+  const hidden = new Set(previousHiddenSentences);
+  const willHide = !hidden.has(sentence);
+  if (willHide) {
+    const confirmed = confirm(
+      `Remove "${sentence}" from every existing caption file in this folder?\n\n`
+      + "This rewrites all caption files in the current folder and removes this entry wherever it appears. "
+      + "Re-enabling TXT later will not add it back automatically."
+    );
+    if (!confirmed) return;
     hidden.add(sentence);
+  } else {
+    hidden.delete(sentence);
   }
   group.hidden_sentences = (group.sentences || []).filter(item => hidden.has(item));
-  saveSectionsToStorage();
+  renderSentences();
+
+  const result = await saveSectionsToStorage({
+    immediate: true,
+    rewriteCaptionFiles: willHide,
+    savingMessage: willHide
+      ? `Removing "${sentence}" from caption files...`
+      : `Enabling "${sentence}" for TXT output...`,
+    successMessage: willHide
+      ? `Removed "${sentence}" from caption files`
+      : `Enabled "${sentence}" for TXT output`,
+  });
+  if (result?.ok) {
+    return;
+  }
+
+  group.hidden_sentences = previousHiddenSentences;
   renderSentences();
 }
 
@@ -1131,7 +1263,6 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
     if (topLevelMix) {
       const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
       if (!payload || !isValidTopLevelDragRef(payload.item)) return;
-      if (payload.item.type === "group" && payload.secIdx !== secIdx) return;
       if (payload.item.type === "group" && getSectionOrderItemKey(payload.item) === getSectionOrderItemKey(topLevelRef)) return;
       if (isSameSentenceLocation(payload.item, secIdx, null, sentence)) return;
       e.preventDefault();
@@ -1172,8 +1303,7 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
       e.stopPropagation();
       li.classList.remove("drag-over");
       if (payload.item.type === "group") {
-        if (payload.secIdx !== secIdx) return;
-        moveTopLevelSectionItem(secIdx, payload.item, topLevelRef);
+        moveGroupToTopLevelSection(payload.secIdx, payload.item.group_id, secIdx, topLevelRef);
         return;
       }
       const source = getSentenceSectionItemSource(payload.item);
@@ -1407,7 +1537,6 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths, op
   wrapper.addEventListener("dragover", (e) => {
     const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
     if (!payload || !isValidTopLevelDragRef(payload.item)) return;
-    if (payload.item.type === "group" && payload.secIdx !== secIdx) return;
     if (payload.item.type === "group" && getSectionOrderItemKey(payload.item) === getSectionOrderItemKey(topLevelRef)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
@@ -1422,8 +1551,7 @@ function createGroupListItem(section, group, secIdx, groupIdx, selectedPaths, op
     e.preventDefault();
     wrapper.classList.remove("drag-over");
     if (payload.item.type === "group") {
-      if (payload.secIdx !== secIdx) return;
-      moveTopLevelSectionItem(secIdx, payload.item, topLevelRef);
+      moveGroupToTopLevelSection(payload.secIdx, payload.item.group_id, secIdx, topLevelRef);
       return;
     }
     const source = getSentenceSectionItemSource(payload.item);
@@ -1778,8 +1906,8 @@ function renderSentences(options = {}) {
       document.querySelectorAll(".section-header.drag-over").forEach(h => h.classList.remove("drag-over"));
     });
     header.addEventListener("dragover", (e) => {
-      const sentencePayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-      if (sentencePayload && isSentenceSectionItemRef(sentencePayload.item)) {
+      const topLevelPayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+      if (topLevelPayload && isValidTopLevelDragRef(topLevelPayload.item)) {
         e.preventDefault();
         e.stopPropagation();
         e.dataTransfer.dropEffect = "move";
@@ -1796,13 +1924,17 @@ function renderSentences(options = {}) {
       header.classList.remove("drag-over");
     });
     header.addEventListener("drop", (e) => {
-      const sentencePayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
-      if (sentencePayload && isSentenceSectionItemRef(sentencePayload.item)) {
-        const source = getSentenceSectionItemSource(sentencePayload.item);
-        if (!source) return;
+      const topLevelPayload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
+      if (topLevelPayload && isValidTopLevelDragRef(topLevelPayload.item)) {
         e.preventDefault();
         e.stopPropagation();
         header.classList.remove("drag-over");
+        if (topLevelPayload.item.type === "group") {
+          moveGroupToSectionHeader(topLevelPayload.secIdx, topLevelPayload.item.group_id, secIdx);
+          return;
+        }
+        const source = getSentenceSectionItemSource(topLevelPayload.item);
+        if (!source) return;
         moveSentenceToSectionHeader(source.secIdx, source.groupIdx, source.sentence, secIdx);
         return;
       }
@@ -1829,7 +1961,6 @@ function renderSentences(options = {}) {
     sectionSentences.addEventListener("dragover", (e) => {
       const payload = getDragPayload(e, SECTION_ITEM_DRAG_TYPE);
       if (!payload || !isValidTopLevelDragRef(payload.item)) return;
-      if (payload.item.type === "group" && payload.secIdx !== secIdx) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       if (e.target === sectionSentences) {
@@ -1848,8 +1979,7 @@ function renderSentences(options = {}) {
       e.preventDefault();
       sectionSentences.classList.remove("drag-over-end");
       if (payload.item.type === "group") {
-        if (payload.secIdx !== secIdx) return;
-        moveTopLevelSectionItemToEnd(secIdx, payload.item);
+        moveGroupToTopLevelSection(payload.secIdx, payload.item.group_id, secIdx);
         return;
       }
       const source = getSentenceSectionItemSource(payload.item);

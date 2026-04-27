@@ -2065,6 +2065,49 @@ class TestSettingsAPI:
         )
         assert parsed["enabled_sentences"] == ["Big"]
 
+    def test_unhiding_group_caption_does_not_repopulate_caption_files_when_rewrite_disabled(self, client, tmp_path):
+        folder = tmp_path / "images"
+        folder.mkdir()
+        image_path = folder / "sample.jpg"
+        Image.new("RGB", (10, 10)).save(image_path)
+
+        sections_before = [{
+            "name": "## Furniture",
+            "sentences": [],
+            "groups": [{
+                "name": "Chair",
+                "sentences": ["Chair visible", "Chair not in frame"],
+                "hidden_sentences": ["Chair not in frame"],
+            }],
+        }]
+        sections_after = [{
+            "name": "## Furniture",
+            "sentences": [],
+            "groups": [{
+                "name": "Chair",
+                "sentences": ["Chair visible", "Chair not in frame"],
+                "hidden_sentences": [],
+            }],
+        }]
+
+        client.post("/api/settings", json={
+            "folder": str(folder),
+            "sections": sections_before,
+        })
+        server._write_caption_file(str(image_path), ["Chair not in frame"], "", sections_before)
+        txt_path = image_path.with_suffix(".txt")
+        assert not txt_path.exists() or txt_path.read_text(encoding="utf-8").strip() == ""
+
+        resp = client.post("/api/settings", json={
+            "folder": str(folder),
+            "sections": sections_after,
+            "rewrite_caption_files": False,
+        })
+
+        assert resp.status_code == 200
+        assert resp.json()["touched_caption_files"] == 0
+        assert not txt_path.exists() or txt_path.read_text(encoding="utf-8").strip() == ""
+
     def test_save_and_load_video_training_presets_and_folder_profile(self, client, tmp_path):
         folder = str(tmp_path / "video_folder")
         os.makedirs(folder, exist_ok=True)
