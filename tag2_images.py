@@ -1601,18 +1601,22 @@ def _render_image_bytes(
         img.close()
 
 
-def _encode_image_for_ollama(filepath: str) -> str:
+def _encode_image_for_ollama(filepath: str, crop: dict | None = None) -> str:
     """Encode an image as base64 JPEG for Ollama vision models."""
     if not _is_image_path(filepath):
         raise ValueError("Only image files can be encoded for Ollama vision models")
-    data = _get_thumbnail(filepath, PREVIEW_MAX_SIZE)
-    if not data:
-        data = Path(filepath).read_bytes()
+    if crop:
+        data, _ = _render_image_bytes(filepath, crop=crop, max_size=PREVIEW_MAX_SIZE, force_jpeg=True)
+    else:
+        data = _get_thumbnail(filepath, PREVIEW_MAX_SIZE)
+        if not data:
+            data = Path(filepath).read_bytes()
     return base64.b64encode(data).decode("ascii")
 
 
 def _encode_media_for_ollama(
     filepath: str,
+    crop: dict | None = None,
     ffmpeg_path: str = "ffmpeg",
     ffprobe_path: str = "ffprobe",
     thread_count: int = 0,
@@ -1620,7 +1624,9 @@ def _encode_media_for_ollama(
 ) -> list[str]:
     """Encode supported media as one or more base64 JPEG inputs for Ollama vision models."""
     if _is_image_path(filepath):
-        return [_encode_image_for_ollama(filepath)]
+        return [_encode_image_for_ollama(filepath, crop=crop)]
+    if crop:
+        raise ValueError("Crop is only supported for image Ollama inputs")
     if not _is_video_path(filepath):
         raise ValueError("Only image and video files can be encoded for Ollama vision models")
 

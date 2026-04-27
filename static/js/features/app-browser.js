@@ -1345,6 +1345,7 @@ async function handlePromptPreviewThumbClick(index, sourcePath, previewPath, eve
 async function handleThumbClick(index, event) {
   const img = state.images[index];
   if (!img) return;
+  const previousPreviewPath = state.previewPath;
   if (typeof savePendingMetadataChangesBeforeContextChange === "function") {
     const didSaveMetadata = await savePendingMetadataChangesBeforeContextChange();
     if (!didSaveMetadata) return;
@@ -1386,6 +1387,10 @@ async function handleThumbClick(index, event) {
   }
 
   updateGridSelection();
+
+  if (state.aiRegionPicker?.active && (state.selectedPaths.size !== 1 || previousPreviewPath !== img.path)) {
+    stopAiRegionPicker({ keepStatus: true });
+  }
 
   // Show preview of last clicked (or first selected)
   if (state.selectedPaths.size === 1) {
@@ -1500,6 +1505,9 @@ function applyTransform() {
 async function showPreview(path, options = {}) {
   const { preserveView = false } = options;
   const previousPath = state.previewPath;
+  if (state.aiRegionPicker?.active && previousPath && previousPath !== path) {
+    stopAiRegionPicker({ keepStatus: true });
+  }
   if (previousPath && previousPath !== path && state.maskEditor.active) {
     try {
       await saveMaskEdit();
@@ -1629,6 +1637,9 @@ function hidePreview() {
   if (state.maskEditor.active) {
     closeMaskEditor();
   }
+  if (state.aiRegionPicker?.active) {
+    stopAiRegionPicker({ keepStatus: true });
+  }
   state.previewPath = null;
   state.previewMediaType = null;
   resetPromptPreviewState();
@@ -1698,7 +1709,7 @@ function hidePreview() {
   });
 
   panel.addEventListener("contextmenu", (e) => {
-    if (canEditCrop() || isMaskEditorVisible()) e.preventDefault();
+    if (canEditCrop() || isAiRegionPickerVisible() || isMaskEditorVisible()) e.preventDefault();
   });
 
   // Mouse wheel zoom - zooms toward cursor position
@@ -1754,6 +1765,18 @@ function hidePreview() {
       e.preventDefault();
       return;
     }
+    if (e.button === 0 && canEditAiRegionPicker()) {
+      if (e.target.closest("#video-edit-panel, #preview-caption-overlay, #mask-editor-panel, #preview-action-bar, #mask-action-bar, #crop-apply-btn, #crop-cancel-btn, #crop-remove-btn, #mask-edit-btn, #image-edit-btn, #duplicate-image-btn, #mask-apply-btn, #mask-cancel-btn, #mask-undo-btn, #mask-redo-btn, #mask-view-mode-btn, #mask-latent-preview-btn, #mask-reset-btn, #rotate-controls")) {
+        return;
+      }
+      if (!isClientInsidePreviewImage(e.clientX, e.clientY)) {
+        return;
+      }
+      startCropCreate(e);
+      updateCropGuideFromClient(e.clientX, e.clientY);
+      e.preventDefault();
+      return;
+    }
     if (e.button === 2 && canEditCrop()) {
       startCropCreate(e);
       updateCropGuideFromClient(e.clientX, e.clientY);
@@ -1800,30 +1823,44 @@ function hidePreview() {
       paintMaskAtClient(e.clientX, e.clientY);
       return;
     }
-    if (state.cropInteraction && canEditCrop()) {
+    if (state.cropInteraction && canInteractPreviewRect()) {
       updateCropGuideFromClient(e.clientX, e.clientY);
       const point = screenToImage(e.clientX, e.clientY);
       if (state.cropInteraction.mode === "create") {
-        const result = chooseClosestRatio(
-          state.cropInteraction.anchor.x,
-          state.cropInteraction.anchor.y,
-          point.x,
-          point.y,
-          state.cropAspectRatios,
-          state.cropInteraction.stickySnap,
-        );
+        const result = state.cropInteraction.freeform
+          ? createFreeformCrop(
+            state.cropInteraction.anchor.x,
+            state.cropInteraction.anchor.y,
+            point.x,
+            point.y,
+          )
+          : chooseClosestRatio(
+            state.cropInteraction.anchor.x,
+            state.cropInteraction.anchor.y,
+            point.x,
+            point.y,
+            state.cropAspectRatios,
+            state.cropInteraction.stickySnap,
+          );
         if (result?.crop) {
           state.cropInteraction.stickySnap = result.stickyChoice;
           setCropDraft(result.crop, true);
         }
       } else if (state.cropInteraction.mode === "resize") {
-        const result = resizeCropFromHandle(
-          state.cropInteraction.baseCrop,
-          state.cropInteraction.handle,
-          point.x,
-          point.y,
-          state.cropInteraction.stickySnap,
-        );
+        const result = state.cropInteraction.freeform
+          ? resizeFreeformCropFromHandle(
+            state.cropInteraction.baseCrop,
+            state.cropInteraction.handle,
+            point.x,
+            point.y,
+          )
+          : resizeCropFromHandle(
+            state.cropInteraction.baseCrop,
+            state.cropInteraction.handle,
+            point.x,
+            point.y,
+            state.cropInteraction.stickySnap,
+          );
         if (result?.crop) {
           state.cropInteraction.stickySnap = result.stickyChoice;
           setCropDraft(result.crop, true);
@@ -1890,7 +1927,7 @@ function hidePreview() {
 
 cropBox.querySelectorAll("[data-handle]").forEach(handleEl => {
   handleEl.addEventListener("mousedown", (e) => {
-    if (e.button !== 0 || !canEditCrop()) return;
+    if (e.button !== 0 || !canInteractPreviewRect()) return;
     startCropResize(handleEl.dataset.handle, e);
   });
 });
@@ -1949,7 +1986,13 @@ maskLatentNoiseInput.addEventListener("input", (e) => {
   updateMaskControlLabels();
   scheduleMaskLatentPreviewRender({ imageDirty: true });
 });
-cropApplyBtn.addEventListener("click", applyCropDraft);
+cropApplyBtn.addEventListener("click", () => {
+  if (isAiRegionPickerActive()) {
+    globalThis.describeFreeTextRegion?.().catch(() => {});
+    return;
+  }
+  applyCropDraft();
+});
 cropCancelBtn.addEventListener("click", cancelCropEdit);
 cropRemoveBtn.addEventListener("click", removeCrop);
 rotateLeftBtn.addEventListener("click", () => rotatePreviewImage("left"));

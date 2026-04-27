@@ -3993,6 +3993,26 @@ class AutoCaptionRequest(BaseModel):
         return caption or None
 
 
+class AutoCaptionRegionDescribeRequest(BaseModel):
+    media_path: Optional[str] = None
+    image_path: Optional[str] = None
+    crop: dict
+    caption_text: Optional[str] = None
+    free_text: Optional[str] = None
+    enabled_captions: list[str] = Field(default_factory=list)
+    enabled_sentences: list[str] = Field(default_factory=list)
+    model: Optional[str] = None
+    free_text_prompt_template: Optional[str] = None
+    timeout_seconds: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+
+    def resolved_media_path(self) -> str | None:
+        return self.media_path or self.image_path
+
+    def resolved_enabled_captions(self) -> list[str]:
+        return list(self.enabled_captions or self.enabled_sentences)
+
+
 def _resolve_caption_targets(
     sections: list[dict],
     target_section_index: int | None = None,
@@ -4281,6 +4301,88 @@ async def auto_caption(data: AutoCaptionRequest):
         "free_text_model_output": free_text_model_output,
         "added_free_text_lines": added_free_text_lines,
         "results": results,
+    }
+
+
+@app.post("/api/auto-caption/describe-region")
+async def auto_caption_describe_region(data: AutoCaptionRegionDescribeRequest):
+    """Describe one selected image region and merge the result into free text without persisting it."""
+    media_path = data.resolved_media_path()
+    if not media_path or not os.path.isfile(media_path):
+        raise HTTPException(status_code=404, detail="Media not found")
+    if not _is_image_path(media_path):
+        raise HTTPException(status_code=400, detail="Region description is only available for image files")
+
+    cfg = _load_config()
+    model = (data.model or _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL)).strip()
+    host = _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
+    free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE)
+    timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+    max_output_tokens = data.max_output_tokens or _get_ollama_max_output_tokens(cfg, DEFAULT_OLLAMA_MAX_OUTPUT_TOKENS)
+
+    if not model:
+        raise HTTPException(status_code=400, detail="No Ollama model configured")
+
+    folder = str(Path(media_path).parent)
+    sections = _get_folder_sections(cfg, folder)
+    all_captions = _all_captions_from_sections(sections)
+    headers = _all_headers_from_sections(sections)
+    requested_enabled = [
+        str(caption or "").strip()
+        for caption in data.resolved_enabled_captions()
+        if str(caption or "").strip()
+    ]
+    enabled = _normalize_enabled_captions(requested_enabled, sections)
+    free_text = str(data.free_text or "")
+    caption_text = str(data.caption_text or "").strip()
+
+    if not caption_text and not requested_enabled and not free_text:
+        enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
+        requested_enabled = list(enabled)
+        enabled = _normalize_enabled_captions(enabled, sections)
+
+    if not caption_text:
+        caption_text = _build_caption_text(enabled, free_text, sections)
+        if not caption_text.strip():
+            parts = []
+            if requested_enabled:
+                parts.append("\n".join(requested_enabled))
+            if free_text.strip():
+                parts.append(free_text.strip())
+            caption_text = "\n\n".join(parts)
+
+    try:
+        image_size = _get_display_image_size(media_path)
+        crop = _normalize_crop_rect(data.crop, image_size)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid crop: {exc}") from exc
+
+    try:
+        answer = _suggest_free_text(
+            host,
+            model,
+            media_path,
+            caption_text,
+            encode_image_func=partial(_encode_media_for_ollama, crop=crop),
+            generate_func=_ollama_generate,
+            prompt_template=free_text_prompt_template,
+            timeout=timeout_seconds,
+            max_output_tokens=max_output_tokens,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"Ollama error: {exc}") from exc
+
+    merge_known_captions = enabled or requested_enabled
+    merged_free_text, added_lines = _merge_free_text(free_text, answer, merge_known_captions)
+    return {
+        "ok": True,
+        "path": media_path,
+        "crop": crop,
+        "answer": answer,
+        "enabled_captions": merge_known_captions,
+        "enabled_sentences": merge_known_captions,
+        "free_text": merged_free_text,
+        "added_lines": added_lines,
     }
 
 

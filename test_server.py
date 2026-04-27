@@ -2669,6 +2669,43 @@ class TestOllamaHelpers:
 
 
 class TestCropAPI:
+    def test_auto_caption_describe_region_uses_cropped_image_and_merges_free_text(self, client, single_image, monkeypatch):
+        recorded = {}
+
+        def fake_encode(path, crop=None, **kwargs):
+            recorded["path"] = path
+            recorded["crop"] = crop
+            return ["region-bytes"]
+
+        def fake_generate(host, payload, timeout=120):
+            assert "Current caption text:\nMoon\n\nNight sky" in payload["prompt"]
+            assert payload["images"] == ["region-bytes"]
+            assert payload["options"]["num_predict"] == 17
+            return {"response": "Moon\nNight sky\nSilver clouds"}
+
+        monkeypatch.setattr(server, "_encode_media_for_ollama", fake_encode)
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption/describe-region", json={
+            "image_path": single_image,
+            "crop": {"x": 80, "y": 90, "w": 40, "h": 20, "ratio": "4:3"},
+            "caption_text": "Moon\n\nNight sky",
+            "enabled_captions": ["Moon"],
+            "free_text": "Night sky",
+            "free_text_prompt_template": "Current caption text:\n{caption_text}",
+            "timeout_seconds": 11,
+            "max_output_tokens": 17,
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert recorded["path"] == single_image
+        assert recorded["crop"] == {"x": 80, "y": 90, "w": 20, "h": 10, "ratio": "4:3"}
+        assert data["crop"] == {"x": 80, "y": 90, "w": 20, "h": 10, "ratio": "4:3"}
+        assert data["answer"] == "Moon\nNight sky\nSilver clouds"
+        assert data["added_lines"] == ["Silver clouds"]
+        assert data["free_text"] == "Night sky\nSilver clouds"
+
     def test_get_crop_default_none(self, client, single_image):
         resp = client.get("/api/crop", params={"path": single_image})
         assert resp.status_code == 200

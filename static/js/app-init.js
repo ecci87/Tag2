@@ -137,6 +137,7 @@ if (thumbMaskOverlayToggleBtn) {
 }
 addSafeClickListener(autoCaptionBtn, "autoCaptionSelected");
 addSafeClickListener(addFreeTextNowBtn, "addFreeTextNow");
+addSafeClickListener(addRegionFreeTextBtn, "toggleFreeTextRegionPicker");
 addSafeClickListener(metadataCancelBtn, "cancelMetadataChanges");
 addSafeClickListener(metadataSaveBtn, "saveMetadataForSelection");
 addSafeClickListener(videoClipBtn, "queueCurrentVideoClip");
@@ -341,7 +342,7 @@ document.addEventListener("keydown", (e) => {
     cancelMaskEdit();
     return;
   }
-  if (e.key === "Escape" && (state.cropDraft || state.cropInteraction)) {
+  if (e.key === "Escape" && (state.cropDraft || state.cropInteraction || state.aiRegionPicker?.active)) {
     e.preventDefault();
     cancelCropEdit();
     return;

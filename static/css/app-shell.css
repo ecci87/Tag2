@@ -209,6 +209,27 @@ input, textarea, button { font-family: inherit; font-size: inherit; }
   min-height: 24px;
   height: 24px;
 }
+#add-region-free-text-btn.generate-btn-icon {
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  height: 24px;
+}
+.generate-btn.picker-active {
+  background:
+    linear-gradient(rgba(19, 44, 68, 0.94), rgba(19, 44, 68, 0.94)) padding-box,
+    linear-gradient(90deg, #92e7ff, #78b9ff, #c4f6ff) border-box;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.04), 0 12px 26px rgba(0,0,0,0.28), 0 0 24px rgba(120, 185, 255, 0.18), inset 0 0 16px rgba(255,255,255,0.04);
+}
+.generate-btn.picker-active .btn-label {
+  background: linear-gradient(90deg, #eefaff, #92e7ff, #d6fbff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.generate-btn.picker-active .btn-icon {
+  filter: drop-shadow(0 0 8px rgba(120, 185, 255, 0.45));
+}
 .generate-btn.running {
   background:
     linear-gradient(rgba(18, 54, 34, 0.94), rgba(18, 54, 34, 0.94)) padding-box,

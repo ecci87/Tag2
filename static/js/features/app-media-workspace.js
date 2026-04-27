@@ -423,6 +423,88 @@ function clearCropDraft() {
   renderMaskEditorUi();
 }
 
+function canUseRegionDescription() {
+  return state.selectedPaths.size === 1
+    && !!state.previewPath
+    && !!imgNatW
+    && !!imgNatH
+    && isImageMediaPath(state.previewPath);
+}
+
+function isAiRegionPickerActive() {
+  return !!state.aiRegionPicker.active;
+}
+
+function isAiRegionPickerVisible() {
+  if (!isAiRegionPickerActive()) {
+    return false;
+  }
+  if (isMaskEditorVisible()) {
+    return false;
+  }
+  return canUseRegionDescription();
+}
+
+function canEditAiRegionPicker() {
+  return isAiRegionPickerVisible() && !state.aiRegionPicker.loading;
+}
+
+function canInteractPreviewRect() {
+  return canEditCrop() || canEditAiRegionPicker();
+}
+
+function beginAiRegionPicker() {
+  if (state.aiRegionPicker.loading) {
+    return false;
+  }
+  if (!canUseRegionDescription()) {
+    const message = state.selectedPaths.size !== 1
+      ? "Select a single image first"
+      : "Region description is only available for images";
+    statusBar.textContent = message;
+    showErrorToast(message);
+    return false;
+  }
+  if (state.cropDraft || state.cropInteraction) {
+    const message = "Finish or cancel the current crop edit first";
+    statusBar.textContent = message;
+    showErrorToast(message);
+    return false;
+  }
+  state.aiRegionPicker.active = true;
+  state.aiRegionPicker.loading = false;
+  state.aiRegionPicker.abortController = null;
+  state.cropDraft = null;
+  state.cropDirty = false;
+  state.cropInteraction = null;
+  setCropGuideToCenter();
+  updateActionButtons();
+  statusBar.textContent = "Drag a rectangle over the image to describe a region";
+  return true;
+}
+
+function stopAiRegionPicker(options = {}) {
+  const { abort = true, keepStatus = false } = options;
+  const controller = state.aiRegionPicker.abortController;
+  state.aiRegionPicker.active = false;
+  state.aiRegionPicker.loading = false;
+  state.aiRegionPicker.abortController = null;
+  state.cropDraft = null;
+  state.cropDirty = false;
+  state.cropInteraction = null;
+  if (abort && controller) {
+    controller.abort();
+  }
+  clearCropGuide();
+  renderCropOverlay();
+  renderVideoEditPanel();
+  renderMaskEditorUi();
+  updateActionButtons();
+  if (!keepStatus) {
+    statusBar.textContent = "Region picker cancelled";
+  }
+}
+
 function canEditCrop() {
   if (isMaskEditorVisible()) {
     return false;
@@ -434,6 +516,10 @@ function canEditCrop() {
     return true;
   }
   return isVideoMediaPath(state.previewPath);
+}
+
+function isCropEditActive() {
+  return !isAiRegionPickerActive() && canEditCrop() && !!(state.cropDraft || state.cropInteraction);
 }
 
 function getCurrentCropState() {
@@ -481,7 +567,7 @@ function setCropGuideToCenter() {
 }
 
 function updateCropGuideFromClient(clientX, clientY) {
-  if (!canEditCrop()) {
+  if (!canInteractPreviewRect()) {
     clearCropGuide();
     return;
   }
@@ -502,22 +588,28 @@ function updateCropGuideFromClient(clientX, clientY) {
 }
 
 function updateCropButtons() {
-  const editable = canEditCrop();
+  const aiRegionVisible = isAiRegionPickerVisible();
+  const cropEditable = canEditCrop();
+  const overlayVisible = aiRegionVisible || cropEditable;
   const hasDraft = !!state.cropDraft;
   const videoCrop = state.previewMediaType === "video";
-  cropRemoveBtn.classList.toggle("visible", !videoCrop && editable && !hasDraft && hasAppliedCrop());
-  cropCancelBtn.classList.toggle("visible", editable && hasDraft);
-  cropCancelBtn.textContent = videoCrop ? "Clear Crop" : "Cancel";
-  cropApplyBtn.classList.toggle("visible", !videoCrop && editable && hasDraft && state.cropDirty);
-  cropApplyBtn.textContent = "Apply";
-  rotateControls.classList.toggle("visible", !videoCrop && editable && !hasDraft);
+  cropRemoveBtn.classList.toggle("visible", !aiRegionVisible && !videoCrop && cropEditable && !hasDraft && hasAppliedCrop());
+  cropCancelBtn.classList.toggle("visible", aiRegionVisible ? overlayVisible : cropEditable && hasDraft);
+  cropCancelBtn.textContent = aiRegionVisible ? "Cancel" : (videoCrop ? "Clear Crop" : "Cancel");
+  cropCancelBtn.disabled = !!state.aiRegionPicker.loading;
+  cropApplyBtn.classList.toggle("visible", aiRegionVisible ? overlayVisible && hasDraft : (!videoCrop && cropEditable && hasDraft && state.cropDirty));
+  cropApplyBtn.textContent = aiRegionVisible ? (state.aiRegionPicker.loading ? "Describing..." : "Describe") : "Apply";
+  cropApplyBtn.disabled = aiRegionVisible ? (!hasDraft || !!state.aiRegionPicker.loading) : false;
+  rotateControls.classList.toggle("visible", !aiRegionVisible && !videoCrop && cropEditable && !hasDraft);
   renderGifConvertButton();
 }
 
 function renderCropOverlay() {
   const crop = state.cropDraft;
   const guide = state.cropGuide;
-  if (guide && canEditCrop()) {
+  const overlayVisible = canEditCrop() || isAiRegionPickerVisible();
+  previewStage.classList.toggle("ai-region-picker-mode", canEditAiRegionPicker());
+  if (guide && overlayVisible) {
     cropGuideV.classList.add("visible");
     cropGuideH.classList.add("visible");
     cropGuideV.style.left = `${panX + guide.x * zoomLevel}px`;
@@ -530,9 +622,12 @@ function renderCropOverlay() {
     cropGuideV.classList.remove("visible");
     cropGuideH.classList.remove("visible");
   }
-  if (!crop || !canEditCrop()) {
+  if (!crop || !overlayVisible) {
     cropBox.classList.remove("active");
     updateCropButtons();
+    if (typeof renderPreviewActionBar === "function") {
+      renderPreviewActionBar();
+    }
     return;
   }
   cropBox.classList.add("active");
@@ -540,8 +635,13 @@ function renderCropOverlay() {
   cropBox.style.top = (panY + crop.y * zoomLevel) + "px";
   cropBox.style.width = (crop.w * zoomLevel) + "px";
   cropBox.style.height = (crop.h * zoomLevel) + "px";
-  cropLabel.textContent = `${crop.ratio || "custom"} \u2022 ${crop.w}\u00D7${crop.h}`;
+  cropLabel.textContent = isAiRegionPickerVisible()
+    ? `region \u2022 ${crop.w}\u00D7${crop.h}`
+    : `${crop.ratio || "custom"} \u2022 ${crop.w}\u00D7${crop.h}`;
   updateCropButtons();
+  if (typeof renderPreviewActionBar === "function") {
+    renderPreviewActionBar();
+  }
 }
 
 function screenToImage(clientX, clientY) {
@@ -608,6 +708,23 @@ function chooseClosestRatio(anchorX, anchorY, currentX, currentY, ratios, sticky
   return {
     crop: chosen.crop,
     stickyChoice: chosen.key,
+  };
+}
+
+function createFreeformCrop(anchorX, anchorY, currentX, currentY) {
+  const left = clamp(Math.min(anchorX, currentX), 0, Math.max(0, imgNatW - 1));
+  const top = clamp(Math.min(anchorY, currentY), 0, Math.max(0, imgNatH - 1));
+  const right = clamp(Math.max(anchorX, currentX), Math.min(imgNatW, left + 1), imgNatW);
+  const bottom = clamp(Math.max(anchorY, currentY), Math.min(imgNatH, top + 1), imgNatH);
+  return {
+    crop: {
+      x: left,
+      y: top,
+      w: Math.max(1, right - left),
+      h: Math.max(1, bottom - top),
+      ratio: "freeform",
+    },
+    stickyChoice: null,
   };
 }
 
@@ -712,6 +829,53 @@ function resizeCropFromHandle(baseCrop, handle, currentX, currentY, stickyChoice
   return null;
 }
 
+function resizeFreeformCropFromHandle(baseCrop, handle, currentX, currentY) {
+  const minSize = 1;
+  let left = baseCrop.x;
+  let top = baseCrop.y;
+  let right = baseCrop.x + baseCrop.w;
+  let bottom = baseCrop.y + baseCrop.h;
+
+  if (handle.includes("w")) {
+    left = clamp(currentX, 0, imgNatW - minSize);
+  }
+  if (handle.includes("e")) {
+    right = clamp(currentX, minSize, imgNatW);
+  }
+  if (handle.includes("n")) {
+    top = clamp(currentY, 0, imgNatH - minSize);
+  }
+  if (handle.includes("s")) {
+    bottom = clamp(currentY, minSize, imgNatH);
+  }
+
+  if (left > right - minSize) {
+    if (handle.includes("w")) {
+      left = right - minSize;
+    } else {
+      right = left + minSize;
+    }
+  }
+  if (top > bottom - minSize) {
+    if (handle.includes("n")) {
+      top = bottom - minSize;
+    } else {
+      bottom = top + minSize;
+    }
+  }
+
+  return {
+    crop: {
+      x: left,
+      y: top,
+      w: Math.max(minSize, right - left),
+      h: Math.max(minSize, bottom - top),
+      ratio: baseCrop.ratio || "freeform",
+    },
+    stickyChoice: null,
+  };
+}
+
 async function loadCropData(path) {
   if (!isImageMediaPath(path)) {
     state.imageCrops[path] = null;
@@ -735,16 +899,23 @@ async function loadCropData(path) {
 
 function startCropCreate(event) {
   const start = screenToImage(event.clientX, event.clientY);
-  state.cropInteraction = { mode: "create", anchor: start, stickySnap: null };
+  const freeform = isAiRegionPickerActive();
+  state.cropInteraction = { mode: "create", anchor: start, stickySnap: null, freeform };
   const ratio = state.cropAspectRatios[0] || { label: "1:1", value: 1 };
-  setCropDraft({ x: start.x, y: start.y, w: 1, h: 1, ratio: ratio.label }, true);
+  setCropDraft({ x: start.x, y: start.y, w: 1, h: 1, ratio: freeform ? "freeform" : ratio.label }, true);
 }
 
 function startCropResize(handle, event) {
   if (!state.cropDraft) return;
   event.preventDefault();
   event.stopPropagation();
-  state.cropInteraction = { mode: "resize", handle, baseCrop: { ...state.cropDraft }, stickySnap: null };
+  state.cropInteraction = {
+    mode: "resize",
+    handle,
+    baseCrop: { ...state.cropDraft },
+    stickySnap: null,
+    freeform: isAiRegionPickerActive(),
+  };
 }
 
 async function applyCropDraft() {
@@ -791,6 +962,10 @@ async function applyCropDraftWithOptions(options = {}) {
 }
 
 function cancelCropEdit() {
+  if (isAiRegionPickerActive()) {
+    stopAiRegionPicker();
+    return;
+  }
   if (!state.cropDraft && !state.cropInteraction) return;
   clearCropDraft();
   statusBar.textContent = "Crop edit cancelled";
@@ -882,21 +1057,38 @@ function updateActionButtons() {
   const selectionSupportsVision = hasSelection;
   const canRunStructured = selectionSupportsVision && hasCaptions && !!state.ollamaModel.trim();
   const canRunFreeTextOnly = selectionSupportsVision && !!state.ollamaModel.trim();
-  const hasBlockingWorkspaceAction = !!(state.cloning || state.moving || state.extractingFrame || state.uploading);
-  cloneFolderBtn.disabled = !state.folder || state.autoCaptioning || hasBlockingWorkspaceAction;
+  const canRunRegionDescribe = canUseRegionDescription() && !!state.ollamaModel.trim();
+  const hasBlockingWorkspaceAction = !!(state.cloning || state.moving || state.extractingFrame || state.uploading || state.aiRegionPicker.loading);
+  const pickerActive = isAiRegionPickerActive();
+  cloneFolderBtn.disabled = !state.folder || state.autoCaptioning || pickerActive || hasBlockingWorkspaceAction;
   cloneFolderBtn.textContent = state.cloning ? "Cloning..." : "Clone Folder";
   cloneFolderBtn.title = state.selectedPaths.size > 1
     ? "Clone the selected media files into a new sibling folder"
     : "Clone the whole current folder into a new sibling folder";
-  moveSelectedBtn.disabled = !state.folder || !hasSelection || state.autoCaptioning || hasBlockingWorkspaceAction;
+  moveSelectedBtn.disabled = !state.folder || !hasSelection || state.autoCaptioning || pickerActive || hasBlockingWorkspaceAction;
   moveSelectedBtn.textContent = state.moving ? "Copying..." : "Copy";
   moveSelectedBtn.title = hasSelection
     ? `Copy ${state.selectedPaths.size} selected media file${state.selectedPaths.size === 1 ? "" : "s"} into another folder`
     : "Select one or more media files to copy into another folder";
-  autoCaptionBtn.disabled = hasBlockingWorkspaceAction || (!state.autoCaptioning && !canRunStructured);
-  addFreeTextNowBtn.disabled = hasBlockingWorkspaceAction || (!state.autoCaptioning && !canRunFreeTextOnly);
+  autoCaptionBtn.disabled = hasBlockingWorkspaceAction || pickerActive || (!state.autoCaptioning && !canRunStructured);
+  addFreeTextNowBtn.disabled = hasBlockingWorkspaceAction || pickerActive || (!state.autoCaptioning && !canRunFreeTextOnly);
   autoCaptionBtn.classList.toggle("running", state.autoCaptioning);
   addFreeTextNowBtn.classList.toggle("running", state.autoCaptioning && state.autoCaptionMode === "free-text-only");
+  if (addRegionFreeTextBtn) {
+    addRegionFreeTextBtn.disabled = hasBlockingWorkspaceAction || state.autoCaptioning || (!pickerActive && !canRunRegionDescribe);
+    addRegionFreeTextBtn.classList.toggle("running", !!state.aiRegionPicker.loading);
+    addRegionFreeTextBtn.classList.toggle("picker-active", pickerActive && !state.aiRegionPicker.loading);
+    setGenerateButtonContent(
+      addRegionFreeTextBtn,
+      pickerActive
+        ? (state.aiRegionPicker.loading ? "Describing selected region" : "Cancel region picker")
+        : "Describe a selected image region and append the result to free text",
+      { iconOnly: true, iconFactory: createGenerateRegionPickerIcon }
+    );
+    addRegionFreeTextBtn.title = pickerActive
+      ? (state.aiRegionPicker.loading ? "Describe the selected image region" : "Cancel region picker")
+      : "Describe a selected image region and append the result to free text";
+  }
   setGenerateButtonContent(autoCaptionBtn, state.autoCaptioning && state.autoCaptionMode === "full" ? "Stop Auto Caption" : "Auto Caption");
   setGenerateButtonContent(
     addFreeTextNowBtn,

@@ -2404,6 +2404,109 @@ async function addFreeTextNow() {
   return runAutoCaptionStream({ freeTextOnly: true });
 }
 
+function buildRegionDescriptionCaptionContext(path) {
+  const cache = ensureCaptionCache(path);
+  const enabledSentences = orderEnabledSentences(Array.isArray(cache.enabled_sentences) ? cache.enabled_sentences : []);
+  const currentFreeText = state.selectedPaths.size === 1 && state.selectedPaths.has(path)
+    ? String(freeText.value || "")
+    : String(cache.free_text || "");
+  const parts = [];
+  if (enabledSentences.length > 0) {
+    parts.push(enabledSentences.join("\n"));
+  }
+  if (currentFreeText.trim()) {
+    parts.push(currentFreeText.trim());
+  }
+  return {
+    enabledSentences,
+    currentFreeText,
+    captionText: parts.join("\n\n"),
+  };
+}
+
+async function toggleFreeTextRegionPicker() {
+  if (state.aiRegionPicker.loading) {
+    stopAiRegionPicker();
+    return;
+  }
+  if (state.aiRegionPicker.active) {
+    stopAiRegionPicker();
+    return;
+  }
+  if (!state.ollamaModel.trim()) {
+    statusBar.textContent = "Configure an Ollama model first";
+    openSettingsModal();
+    return;
+  }
+  beginAiRegionPicker();
+}
+
+async function describeFreeTextRegion() {
+  if (!state.aiRegionPicker.active || state.aiRegionPicker.loading) {
+    return;
+  }
+  if (state.selectedPaths.size !== 1 || !state.previewPath || !isImageMediaPath(state.previewPath)) {
+    stopAiRegionPicker({ keepStatus: true });
+    statusBar.textContent = "Select a single image first";
+    return;
+  }
+  if (!state.cropDraft) {
+    statusBar.textContent = "Draw a region first";
+    return;
+  }
+  const path = state.previewPath;
+  const controller = new AbortController();
+  const { enabledSentences, currentFreeText, captionText } = buildRegionDescriptionCaptionContext(path);
+  state.aiRegionPicker.loading = true;
+  state.aiRegionPicker.abortController = controller;
+  renderCropOverlay();
+  updateActionButtons();
+  statusBar.textContent = "Describing selected region...";
+
+  try {
+    const resp = await fetch("/api/auto-caption/describe-region", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        image_path: path,
+        crop: buildCropPayload(state.cropDraft),
+        model: state.ollamaModel.trim(),
+        caption_text: captionText,
+        free_text: currentFreeText,
+        enabled_captions: enabledSentences,
+        free_text_prompt_template: state.ollamaFreeTextPromptTemplate,
+        timeout_seconds: state.ollamaTimeoutSeconds,
+        max_output_tokens: state.ollamaMaxOutputTokens,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to describe selected region");
+    }
+    const nextFreeText = String(data.free_text || currentFreeText);
+    if (nextFreeText !== currentFreeText) {
+      setFreeTextDraftForPath(path, nextFreeText, {
+        syncEditor: state.selectedPaths.size === 1 && state.selectedPaths.has(path),
+      });
+    }
+    const addedCount = Array.isArray(data.added_lines) ? data.added_lines.length : 0;
+    statusBar.textContent = addedCount > 0
+      ? `Added ${addedCount} region detail${addedCount === 1 ? "" : "s"}`
+      : "No new region details found";
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      statusBar.textContent = "Region description cancelled";
+    } else {
+      const message = err?.message || "Failed to describe selected region";
+      statusBar.textContent = message;
+      showErrorToast(message);
+    }
+  } finally {
+    stopAiRegionPicker({ abort: false, keepStatus: true });
+  }
+}
+
 async function refreshGroupCaptions(sectionIndex, groupIndex) {
   return runAutoCaptionStream({
     targetSectionIndex: sectionIndex,
@@ -2846,24 +2949,34 @@ if (freeTextHighlightResizeObserver && freeText) {
 }
 
 let freeTextSaveTimeout = null;
-freeText.addEventListener("input", () => {
-  syncFreeTextHighlightState();
-  if (state.selectedPaths.size !== 1) return;
-  const path = [...state.selectedPaths][0];
-
-  // Update cache
-  if (!state.captionCache[path]) {
-    state.captionCache[path] = { enabled_sentences: [], free_text: "" };
-  }
-  state.captionCache[path].free_text = freeText.value;
-  state.captionDraftPaths.add(path);
-
-  // Debounced save
+function queueFreeTextSave(path) {
   if (freeTextSaveTimeout) clearTimeout(freeTextSaveTimeout);
   freeTextSaveTimeout = setTimeout(() => {
     freeTextSaveTimeout = null;
     saveFreeText(path);
   }, 400);
+}
+
+function setFreeTextDraftForPath(path, value, options = {}) {
+  const { syncEditor = false } = options;
+  const nextFreeText = String(value || "");
+  if (!state.captionCache[path]) {
+    state.captionCache[path] = { enabled_sentences: [], free_text: "" };
+  }
+  state.captionCache[path].free_text = nextFreeText;
+  state.captionDraftPaths.add(path);
+  if (syncEditor && state.selectedPaths.size === 1 && state.selectedPaths.has(path)) {
+    freeText.value = nextFreeText;
+    syncFreeTextHighlightState();
+  }
+  queueFreeTextSave(path);
+}
+
+freeText.addEventListener("input", () => {
+  syncFreeTextHighlightState();
+  if (state.selectedPaths.size !== 1) return;
+  const path = [...state.selectedPaths][0];
+  setFreeTextDraftForPath(path, freeText.value);
 });
 freeText.addEventListener("scroll", syncFreeTextHighlightScroll);
 syncFreeTextHighlightState();
@@ -2939,6 +3052,8 @@ Object.assign(globalThis, {
   renderSentences,
   autoCaptionSelected,
   addFreeTextNow,
+  toggleFreeTextRegionPicker,
+  describeFreeTextRegion,
   saveMetadataForSelection,
   refreshGroupCaptions,
   refreshSectionCaptions,

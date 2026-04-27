@@ -336,6 +336,12 @@
 #preview-stage.mask-signal-probe-mode.dragging {
   cursor: grabbing;
 }
+#preview-stage.ai-region-picker-mode {
+  cursor: crosshair;
+}
+#preview-stage.ai-region-picker-mode.dragging {
+  cursor: crosshair;
+}
 #crop-overlay {
   position: absolute; inset: 0; pointer-events: none; z-index: 4;
 }

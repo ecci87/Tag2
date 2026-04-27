@@ -45,6 +45,11 @@ const state = {
   autoCaptioning: false,
   autoCaptionMode: null,
   autoCaptionAbortController: null,
+  aiRegionPicker: {
+    active: false,
+    loading: false,
+    abortController: null,
+  },
   cropAspectRatioLabels: ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"],
   cropAspectRatios: [],
   maskLatentBaseWidthPresets: [512, 768, 1024, 1280],
@@ -388,6 +393,7 @@ const createPromptPreviewBtn = $("#create-prompt-preview-btn");
 const autoFreeTextCheckbox = $("#auto-free-text-checkbox");
 const autoPreviewCheckbox = $("#auto-preview-checkbox");
 const addFreeTextNowBtn = $("#add-free-text-now-btn");
+const addRegionFreeTextBtn = $("#add-region-free-text-btn");
 const hideAddButtonsCheckbox = $("#hide-add-buttons-checkbox");
 const freeTextSection = $("#freetext-section");
 const freeTextEditor = $("#free-text-editor");
@@ -534,6 +540,35 @@ function createGenerateSparkleIcon() {
   return svg;
 }
 
+function createGenerateRegionPickerIcon() {
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+
+  const frame = document.createElementNS(svgNs, "path");
+  frame.setAttribute("d", "M4.5 7.5V5.5H9.5M14.5 5.5H19.5V10.5M19.5 14.5V18.5H14.5M9.5 18.5H4.5V13.5");
+  frame.setAttribute("stroke", "#9bf4ff");
+  frame.setAttribute("stroke-width", "1.7");
+  frame.setAttribute("stroke-linecap", "round");
+  frame.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(frame);
+
+  const arrow = document.createElementNS(svgNs, "path");
+  arrow.setAttribute("d", "M11.7 4.2V12L14 9.9L16.3 15.6L18.2 14.8L15.9 9.1L19.4 9L11.7 4.2Z");
+  arrow.setAttribute("fill", "#d8b1ff");
+  svg.appendChild(arrow);
+
+  const sparkle = document.createElementNS(svgNs, "path");
+  sparkle.setAttribute("d", "M7.25 10.7L7.75 12.1L9.15 12.6L7.75 13.1L7.25 14.5L6.75 13.1L5.35 12.6L6.75 12.1L7.25 10.7Z");
+  sparkle.setAttribute("fill", "#ffc4f0");
+  svg.appendChild(sparkle);
+
+  return svg;
+}
+
 function createFilterIcon() {
   const svgNs = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(svgNs, "svg");
@@ -586,13 +621,14 @@ function initializeFilterButtons() {
 
 function setGenerateButtonContent(button, label, options = {}) {
   if (!button) return;
-  const { iconOnly = false } = options;
+  const { iconOnly = false, iconFactory = createGenerateSparkleIcon } = options;
+  const buildIcon = typeof iconFactory === "function" ? iconFactory : createGenerateSparkleIcon;
   button.replaceChildren();
 
   if (iconOnly) {
     const icon = document.createElement("span");
     icon.className = "btn-icon";
-    icon.appendChild(createGenerateSparkleIcon());
+    icon.appendChild(buildIcon());
     button.appendChild(icon);
   } else {
     const content = document.createElement("span");
@@ -600,7 +636,7 @@ function setGenerateButtonContent(button, label, options = {}) {
 
     const icon = document.createElement("span");
     icon.className = "btn-icon";
-    icon.appendChild(createGenerateSparkleIcon());
+    icon.appendChild(buildIcon());
 
     const labelSpan = document.createElement("span");
     labelSpan.className = "btn-label";
