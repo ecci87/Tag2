@@ -559,7 +559,8 @@
 }
 #model-log-open-btn {
   min-width: 58px;
-  padding: 0 10px;
+  height: 35px;
+  padding: 6px 16px;
   border: 1px solid rgba(137,180,250,0.28);
   border-radius: 6px;
   background: rgba(137,180,250,0.08);
@@ -568,6 +569,9 @@
   font-size: 12px;
   font-weight: 700;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 #model-log-open-btn:hover {
   border-color: rgba(137,180,250,0.42);

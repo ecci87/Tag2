@@ -6,7 +6,7 @@
 <title>Image Captioning Tool</title>
 <link rel="stylesheet" href="/static/css/app-shell.css?v=20260426a">
 <link rel="stylesheet" href="/static/css/app-preview.css?v=20260419b">
-<link rel="stylesheet" href="/static/css/app-captions.css?v=20260427a">
+<link rel="stylesheet" href="/static/css/app-captions.css?v=20260428c">
 <link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260419b">
 </head>
 <body>
@@ -255,7 +255,7 @@
     <div id="right-panel">
       <div id="add-section-bar">
         <button id="auto-caption-btn" class="generate-btn generate-btn-toolbar" title="Use Ollama to verify captions for the selected media"><span class="btn-content"><span class="btn-icon" aria-hidden="true"></span><span class="btn-label">Auto Caption</span></span></button>
-        <button id="model-log-open-btn" type="button" title="Open model log overlay" aria-label="Open model log overlay" hidden>Log</button>
+        <button id="model-log-open-btn" type="button" title="Open log overlay" aria-label="Open log overlay">Log</button>
       </div>
       <div id="right-panel-header">
         <div id="right-panel-tabs" role="tablist" aria-label="Right panel mode">
@@ -432,6 +432,11 @@
             <textarea id="settings-ollama-free-text-prompt" spellcheck="false"></textarea>
             <div class="settings-help">Use <span>{caption_text}</span>, <span>{current_caption}</span>, or <span>{caption}</span> for the updated caption txt.</div>
           </div>
+          <div class="settings-field">
+            <label for="settings-ollama-region-system-prompt">Regional Image System Prompt</label>
+            <textarea id="settings-ollama-region-system-prompt" spellcheck="false"></textarea>
+            <div class="settings-help">Use <span>{region_location}</span>, <span>{caption_text}</span>, <span>{region_position_sentence}</span>, or <span>{region_edges_sentence}</span>.</div>
+          </div>
           <div class="settings-grid">
             <div class="settings-field">
               <label for="settings-comfyui-server">ComfyUI Server</label>
@@ -561,17 +566,17 @@
   </div>
 </div>
 
-<script defer src="/static/js/app-shared.js?v=20260419b"></script>
+<script defer src="/static/js/app-shared.js?v=20260428e"></script>
 <script defer src="/static/js/features/app-file-actions.js?v=20260426a"></script>
 <script defer src="/static/js/features/app-caption-data.js?v=20260414d"></script>
 <script defer src="/static/js/features/app-filters-ui.js?v=20260426a"></script>
 <script defer src="/static/js/features/app-mask-editor.js?v=20260419b"></script>
-<script defer src="/static/js/features/app-media-workspace.js?v=20260419b"></script>
-<script defer src="/static/js/features/app-settings.js?v=20260414d"></script>
+<script defer src="/static/js/features/app-media-workspace.js?v=20260428h"></script>
+<script defer src="/static/js/features/app-settings.js?v=20260428a"></script>
 <script defer src="/static/js/features/app-preview-tools.js?v=20260419a"></script>
 <script defer src="/static/js/features/app-media-playback.js?v=20260426a"></script>
-<script defer src="/static/js/features/app-browser.js?v=20260426a"></script>
-<script defer src="/static/js/features/app-caption-editor.js?v=20260427a"></script>
+<script defer src="/static/js/features/app-browser.js?v=20260428e"></script>
+<script defer src="/static/js/features/app-caption-editor.js?v=20260428i"></script>
 <script defer src="/static/js/app-init.js?v=20260419c"></script>
 </body>
 </html>

@@ -2678,7 +2678,14 @@ class TestCropAPI:
             return ["region-bytes"]
 
         def fake_generate(host, payload, timeout=120):
-            assert "Current caption text:\nMoon\n\nNight sky" in payload["prompt"]
+            assert timeout == 11
+            assert payload["prompt"] == server.DEFAULT_OLLAMA_REGION_PROMPT_TEMPLATE
+            assert "You are describing a region in a larger source image." in payload["system"]
+            assert "region comes from the 'lower right corner of the image'." in payload["system"]
+            assert "Describe subtle background material too, and actual full text." in payload["system"]
+            assert "Don't describe that the image is a region" in payload["system"]
+            assert "Moon\n\nNight sky" not in payload["system"]
+            assert "<X> is visible in the lower right corner of the image" in payload["system"]
             assert payload["images"] == ["region-bytes"]
             assert payload["options"]["num_predict"] == 17
             return {"response": "Moon\nNight sky\nSilver clouds"}
@@ -2702,9 +2709,182 @@ class TestCropAPI:
         assert recorded["path"] == single_image
         assert recorded["crop"] == {"x": 80, "y": 90, "w": 20, "h": 10, "ratio": "4:3"}
         assert data["crop"] == {"x": 80, "y": 90, "w": 20, "h": 10, "ratio": "4:3"}
+        assert data["region_position"] == "lower right corner"
+        assert data["timeout_seconds"] == 11
+        assert data["max_output_tokens"] == 17
+        assert "'lower right corner of the image'" in data["system_prompt"]
         assert data["answer"] == "Moon\nNight sky\nSilver clouds"
-        assert data["added_lines"] == ["Silver clouds"]
-        assert data["free_text"] == "Night sky\nSilver clouds"
+        assert data["answer_lines"] == ["Moon", "Night sky", "Silver clouds"]
+        assert data["added_lines"] == ["Moon", "Night sky", "Silver clouds"]
+        assert data["ignored_lines"] == []
+        assert data["free_text"] == "Night sky\nMoon\nNight sky\nSilver clouds"
+
+    def test_auto_caption_describe_region_uses_custom_region_system_prompt_template(self, client, single_image, monkeypatch):
+        settings_resp = client.post("/api/settings", json={
+            "ollama_region_system_prompt_template": "Region hint: {region_location}\nEdge hint: {region_edges_sentence}",
+        })
+        assert settings_resp.status_code == 200
+
+        def fake_encode(path, crop=None, **kwargs):
+            return ["region-bytes"]
+
+        def fake_generate(host, payload, timeout=120):
+            assert payload["prompt"] == server.DEFAULT_OLLAMA_REGION_PROMPT_TEMPLATE
+            assert payload["system"] == (
+                "Region hint: lower right corner of the image\n"
+                "Edge hint: The crop touches the right edge and bottom edge."
+            )
+            return {"response": "Silver clouds"}
+
+        monkeypatch.setattr(server, "_encode_media_for_ollama", fake_encode)
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption/describe-region", json={
+            "image_path": single_image,
+            "crop": {"x": 80, "y": 90, "w": 40, "h": 20, "ratio": "4:3"},
+            "caption_text": "Moon\n\nNight sky",
+            "enabled_captions": ["Moon"],
+            "free_text": "Night sky",
+        })
+
+        assert resp.status_code == 200
+        assert resp.json()["system_prompt"] == (
+            "Region hint: lower right corner of the image\n"
+            "Edge hint: The crop touches the right edge and bottom edge."
+        )
+
+    def test_auto_caption_describe_region_supports_caption_text_in_custom_region_system_prompt_template(self, client, single_image, monkeypatch):
+        settings_resp = client.post("/api/settings", json={
+            "ollama_region_system_prompt_template": "Region hint: {region_location}\nCaption text:\n{caption_text}\n\nAnswer:",
+        })
+        assert settings_resp.status_code == 200
+
+        def fake_encode(path, crop=None, **kwargs):
+            return ["region-bytes"]
+
+        def fake_generate(host, payload, timeout=120):
+            assert payload["prompt"] == server.DEFAULT_OLLAMA_REGION_PROMPT_TEMPLATE
+            assert payload["system"] == (
+                "Region hint: lower right corner of the image\n"
+                "Caption text:\nMoon\n\nNight sky\n\nAnswer:"
+            )
+            return {"response": "Silver clouds"}
+
+        monkeypatch.setattr(server, "_encode_media_for_ollama", fake_encode)
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption/describe-region", json={
+            "image_path": single_image,
+            "crop": {"x": 80, "y": 90, "w": 40, "h": 20, "ratio": "4:3"},
+            "caption_text": "Moon\n\nNight sky",
+            "enabled_captions": ["Moon"],
+            "free_text": "Night sky",
+            "free_text_prompt_template": "Current caption text:\n{caption_text}",
+        })
+
+        assert resp.status_code == 200
+        assert resp.json()["system_prompt"] == (
+            "Region hint: lower right corner of the image\n"
+            "Caption text:\nMoon\n\nNight sky\n\nAnswer:"
+        )
+
+    def test_auto_caption_describe_region_rebuilds_unresolved_caption_text_placeholder(self, client, single_image, monkeypatch):
+        def fake_encode(path, crop=None, **kwargs):
+            return ["region-bytes"]
+
+        def fake_generate(host, payload, timeout=120):
+            assert payload["prompt"] == server.DEFAULT_OLLAMA_REGION_PROMPT_TEMPLATE
+            assert "Moon\n\nNight sky" not in payload["system"]
+            assert "{caption_text}" not in payload["system"]
+            return {"response": "Silver clouds"}
+
+        monkeypatch.setattr(server, "_encode_media_for_ollama", fake_encode)
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption/describe-region", json={
+            "image_path": single_image,
+            "crop": {"x": 80, "y": 90, "w": 40, "h": 20, "ratio": "4:3"},
+            "caption_text": "{caption_text}",
+            "enabled_captions": ["Moon"],
+            "free_text": "Night sky",
+            "free_text_prompt_template": "Current caption text:\n{caption_text}",
+        })
+
+        assert resp.status_code == 200
+        assert "{caption_text}" not in resp.json()["system_prompt"]
+
+    def test_auto_caption_describe_region_uses_configured_timeout_and_token_limit(self, client, single_image, monkeypatch):
+        folder = str(os.path.dirname(single_image))
+        settings_resp = client.post("/api/settings", json={
+            "folder": folder,
+            "sections": [{"name": "", "sentences": ["Moon"], "groups": []}],
+            "ollama_server": "localhost",
+            "ollama_port": 11435,
+            "ollama_timeout_seconds": 12,
+            "ollama_max_output_tokens": 7,
+            "ollama_model": "llava",
+            "ollama_free_text_prompt_template": "Current caption text:\n{caption_text}",
+        })
+        assert settings_resp.status_code == 200
+
+        def fake_encode(path, crop=None, **kwargs):
+            return ["region-bytes"]
+
+        def fake_generate(host, payload, timeout=120):
+            assert host == "http://localhost:11435"
+            assert timeout == 12
+            assert payload["options"]["num_predict"] == 7
+            return {"response": "Silver clouds"}
+
+        monkeypatch.setattr(server, "_encode_media_for_ollama", fake_encode)
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption/describe-region", json={
+            "image_path": single_image,
+            "crop": {"x": 80, "y": 90, "w": 40, "h": 20, "ratio": "4:3"},
+            "caption_text": "Moon",
+            "enabled_captions": ["Moon"],
+            "free_text": "",
+        })
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["host"] == "http://localhost:11435"
+        assert data["timeout_seconds"] == 12
+        assert data["max_output_tokens"] == 7
+
+    def test_describe_region_position_handles_large_half_spans(self):
+        assert server._describe_region_position({"x": 0, "y": 55, "w": 100, "h": 45}, (100, 100)) == "lower half of the image"
+        assert server._describe_region_position({"x": 45, "y": 15, "w": 55, "h": 70}, (100, 100)) == "right half of the image"
+
+    def test_describe_region_position_uses_far_side_labels(self):
+        assert server._describe_region_position({"x": 82, "y": 32, "w": 18, "h": 30}, (100, 100)) == "far right center"
+        assert server._describe_region_position({"x": 0, "y": 30, "w": 18, "h": 30}, (100, 100)) == "far left center"
+
+    def test_describe_region_position_uses_tall_vertical_band_labels(self):
+        assert server._describe_region_position({"x": 0, "y": 0, "w": 16, "h": 100}, (100, 100)) == "far left side"
+        assert server._describe_region_position({"x": 0, "y": 0, "w": 28, "h": 100}, (100, 100)) == "left side"
+        assert server._describe_region_position({"x": 38, "y": 0, "w": 24, "h": 100}, (100, 100)) == "middle vertical strip"
+        assert server._describe_region_position({"x": 0, "y": 0, "w": 45, "h": 100}, (100, 100)) == "left half of the image"
+
+    def test_describe_region_position_uses_horizontal_center_labels(self):
+        assert server._describe_region_position({"x": 0, "y": 72, "w": 100, "h": 28}, (100, 100)) == "lower part of the image"
+        assert server._describe_region_position({"x": 0, "y": 0, "w": 100, "h": 22}, (100, 100)) == "far upper part of the image"
+        assert server._describe_region_position({"x": 10, "y": 86, "w": 80, "h": 14}, (100, 100)) == "far lower part of the image"
+        assert server._describe_region_position({"x": 0, "y": 55, "w": 100, "h": 45}, (100, 100)) == "lower half of the image"
+
+    def test_describe_region_position_keeps_center_for_smaller_centered_regions(self):
+        assert server._describe_region_position({"x": 30, "y": 72, "w": 40, "h": 28}, (100, 100)) == "lower center"
+        assert server._describe_region_position({"x": 0, "y": 30, "w": 18, "h": 30}, (100, 100)) == "far left center"
+
+    def test_describe_region_position_uses_precise_center_offsets(self):
+        assert server._describe_region_position({"x": 30, "y": 40, "w": 20, "h": 20}, (100, 100)) == "slightly to the left of the center"
+        assert server._describe_region_position({"x": 40, "y": 30, "w": 20, "h": 20}, (100, 100)) == "slightly above the center"
+        assert server._describe_region_position({"x": 30, "y": 30, "w": 20, "h": 20}, (100, 100)) == "slightly above and to the left of the center"
+        assert server._describe_region_position({"x": 40, "y": 40, "w": 20, "h": 20}, (100, 100)) == "center"
+
+    def test_describe_region_position_does_not_use_corner_for_tall_edge_strip(self):
+        assert server._describe_region_position({"x": 82, "y": 40, "w": 18, "h": 60}, (100, 100)) == "far right side"
 
     def test_get_crop_default_none(self, client, single_image):
         resp = client.get("/api/crop", params={"path": single_image})

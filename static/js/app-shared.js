@@ -49,6 +49,11 @@ const state = {
     active: false,
     loading: false,
     abortController: null,
+    queue: [],
+    currentJob: null,
+    completedJobs: 0,
+    failedJobs: 0,
+    totalJobs: 0,
   },
   cropAspectRatioLabels: ["4:3", "16:9", "3:4", "1:1", "9:16", "2:3", "3:2"],
   cropAspectRatios: [],
@@ -140,6 +145,7 @@ const state = {
   ollamaGroupPromptTemplate: "You are selecting the single best caption for one media item from a numbered list. Reply with exactly one number from 1 to {count}. Pick the most likely correct caption for the media.\n\nGroup: {group_name}\n{options}\n\nAnswer:",
   ollamaEnableFreeText: true,
   ollamaFreeTextPromptTemplate: "You are improving a media caption file. The caption text below already covers known details and must not be repeated. Look at the media and return only notable, important visual details that are still missing. Return either NONE or one short line per missing detail, with no bullets or numbering.\n\nCurrent caption text:\n{caption_text}\n\nAnswer:",
+  ollamaRegionSystemPromptTemplate: "You are describing a region in a larger source image. The provided crop comes from the '{region_location}'.\nDescribe what is visible in the given region or how it looks like. Explicitly and always include the actual location of the region in the description using natural wording such as '<thing> is visible in the {region_location}'. For multiple objects inside the given region, mention their positional relation.\nDescribe everything that is still missing in the current caption text:\n{caption_text}\nReturn either NONE or one short line per missing detail, with no bullets or numbering.\n\nAnswer:",
   comfyuiServer: "127.0.0.1",
   comfyuiPort: 8188,
   comfyuiWorkflowPath: "",
@@ -199,6 +205,7 @@ const state = {
     processedImages: 0,
     errors: 0,
     completedImages: 0,
+    queuedItems: 0,
     enableFreeText: false,
     freeTextOnly: false,
     currentPath: "",
@@ -471,6 +478,7 @@ const settingsPromptInput = $("#settings-ollama-prompt");
 const settingsGroupPromptInput = $("#settings-ollama-group-prompt");
 const settingsAutoFreeTextEnabled = $("#settings-auto-free-text-enabled");
 const settingsFreeTextPromptInput = $("#settings-ollama-free-text-prompt");
+const settingsRegionSystemPromptInput = $("#settings-ollama-region-system-prompt");
 const sentenceListElements = new Map();
 let errorToastTimer = null;
 

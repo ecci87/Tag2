@@ -113,6 +113,7 @@ from tag2_ollama import (
     _get_ollama_model,
     _get_ollama_port,
     _get_ollama_prompt_template,
+    _get_ollama_region_system_prompt_template,
     _get_ollama_server,
     _get_ollama_timeout_seconds,
     _merge_free_text,
@@ -286,6 +287,17 @@ DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE = (
     "Current caption text:\n{caption_text}\n\n"
     "Answer:"
 )
+DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE = (
+    "You are describing a region in a larger source image. "
+    "region comes from the '{region_location}'.\n"
+    "Describe what is visible in the given region or how it looks like. "
+    "Describe subtle background material too, and actual full text. "
+    "Explicitly and always include that location of the region in the description using natural wording such as '<X> is visible in the {region_location}'. "
+    "For multiple objects inside the given region, mention their positional relation to each other. "
+    "Don't describe that the image is a region, just describe the content and location.\n\n"
+    "Answer:"
+)
+DEFAULT_OLLAMA_REGION_PROMPT_TEMPLATE = "Describe the provided image crop."
 COMFYUI_PROMPT_PLACEHOLDER = "{{TAG2_PROMPT}}"
 COMFYUI_FILENAME_PREFIX_PLACEHOLDER = "{{TAG2_FILENAME_PREFIX}}"
 COMFYUI_SEED_PLACEHOLDER = "{{TAG2_SEED}}"
@@ -790,6 +802,7 @@ def _load_config() -> dict:
         "ollama_group_prompt_template": DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE,
         "ollama_enable_free_text": True,
         "ollama_free_text_prompt_template": DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE,
+        "ollama_region_system_prompt_template": DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE,
         # Local ComfyUI prompt-preview settings
         "comfyui_server": DEFAULT_COMFYUI_SERVER,
         "comfyui_port": DEFAULT_COMFYUI_PORT,
@@ -4013,6 +4026,240 @@ class AutoCaptionRegionDescribeRequest(BaseModel):
         return list(self.enabled_captions or self.enabled_sentences)
 
 
+def _clamp_region_fraction(value: float) -> float:
+    return max(0.0, min(1.0, float(value or 0.0)))
+
+
+def _describe_center_offset(center_x: float, center_y: float) -> str:
+    horizontal = None
+    vertical = None
+    if center_x < 0.46:
+        horizontal = "left"
+    elif center_x > 0.54:
+        horizontal = "right"
+    if center_y < 0.46:
+        vertical = "above"
+    elif center_y > 0.54:
+        vertical = "below"
+
+    if not horizontal and not vertical:
+        return "center"
+    if horizontal and vertical:
+        horizontal_phrase = "to the left" if horizontal == "left" else "to the right"
+        return f"slightly {vertical} and {horizontal_phrase} of the center"
+    if horizontal:
+        horizontal_phrase = "to the left" if horizontal == "left" else "to the right"
+        return f"slightly {horizontal_phrase} of the center"
+    return f"slightly {vertical} the center"
+
+
+def _describe_region_position(crop: dict, image_size: tuple[int, int]) -> str:
+    image_width = max(1.0, float(image_size[0] or 1))
+    image_height = max(1.0, float(image_size[1] or 1))
+    left = _clamp_region_fraction(float(crop.get("x") or 0.0) / image_width)
+    top = _clamp_region_fraction(float(crop.get("y") or 0.0) / image_height)
+    right = _clamp_region_fraction(float((crop.get("x") or 0.0) + (crop.get("w") or 0.0)) / image_width)
+    bottom = _clamp_region_fraction(float((crop.get("y") or 0.0) + (crop.get("h") or 0.0)) / image_height)
+    width_fraction = max(0.0, right - left)
+    height_fraction = max(0.0, bottom - top)
+    center_x = (left + right) / 2.0
+    center_y = (top + bottom) / 2.0
+
+    if width_fraction >= 0.58 and height_fraction >= 0.40:
+        if top <= 0.12 and center_y <= 0.34:
+            return "upper half of the image"
+        if bottom >= 0.88 and center_y >= 0.66:
+            return "lower half of the image"
+    if height_fraction >= 0.58 and width_fraction >= 0.40:
+        if left <= 0.12 and center_x <= 0.34:
+            return "left half of the image"
+        if right >= 0.88 and center_x >= 0.66:
+            return "right half of the image"
+
+    touches_left = left <= 0.14
+    touches_right = right >= 0.86
+    touches_top = top <= 0.14
+    touches_bottom = bottom >= 0.86
+    compact_corner = width_fraction <= 0.38 and height_fraction <= 0.38
+    if compact_corner and touches_top and touches_left and center_x <= 0.34 and center_y <= 0.34:
+        return "upper left corner"
+    if compact_corner and touches_top and touches_right and center_x >= 0.66 and center_y <= 0.34:
+        return "upper right corner"
+    if compact_corner and touches_bottom and touches_left and center_x <= 0.34 and center_y >= 0.66:
+        return "lower left corner"
+    if compact_corner and touches_bottom and touches_right and center_x >= 0.66 and center_y >= 0.66:
+        return "lower right corner"
+
+    far_left = touches_left and center_x <= 0.18 and width_fraction <= 0.24
+    far_right = touches_right and center_x >= 0.82 and width_fraction <= 0.24
+    far_top = touches_top and center_y <= 0.18 and height_fraction <= 0.24
+    far_bottom = touches_bottom and center_y >= 0.82 and height_fraction <= 0.24
+    tall_vertical_band = height_fraction >= 0.55 and width_fraction <= 0.5
+    if tall_vertical_band:
+        if far_left:
+            return "far left side"
+        if far_right:
+            return "far right side"
+        if touches_left and width_fraction >= 0.38:
+            return "left half of the image"
+        if touches_right and width_fraction >= 0.38:
+            return "right half of the image"
+        if center_x <= 0.34:
+            return "left side"
+        if center_x >= 0.66:
+            return "right side"
+        return "middle vertical strip"
+
+    wide_horizontal_band = width_fraction >= 0.55 and height_fraction <= 0.5
+    if wide_horizontal_band:
+        if touches_top and height_fraction >= 0.38:
+            return "upper half of the image"
+        if touches_bottom and height_fraction >= 0.38:
+            return "lower half of the image"
+        if far_top:
+            return "far upper part of the image"
+        if far_bottom:
+            return "far lower part of the image"
+        if center_y <= 0.34:
+            return "upper part of the image"
+        if center_y >= 0.66:
+            return "lower part of the image"
+        return "middle horizontal strip"
+
+    if 0.28 <= center_y <= 0.72:
+        if far_left:
+            return "far left center"
+        if far_right:
+            return "far right center"
+
+    horizontal = "left" if center_x < 0.34 else ("right" if center_x > 0.66 else "center")
+    vertical = "upper" if center_y < 0.34 else ("lower" if center_y > 0.66 else "center")
+    if vertical == "center" and horizontal == "center":
+        return _describe_center_offset(center_x, center_y)
+    if vertical == "center":
+        if touches_left and horizontal == "left":
+            return "left center"
+        if touches_right and horizontal == "right":
+            return "right center"
+        return f"center {horizontal} side"
+    if horizontal == "center":
+        if far_top:
+            return "far upper center"
+        if far_bottom:
+            return "far lower center"
+        if touches_top and vertical == "upper":
+            return "upper center"
+        if touches_bottom and vertical == "lower":
+            return "lower center"
+        return f"{vertical} center"
+    return f"{vertical} {horizontal}"
+
+
+def _describe_region_edges(crop: dict, image_size: tuple[int, int]) -> list[str]:
+    image_width = max(1.0, float(image_size[0] or 1))
+    image_height = max(1.0, float(image_size[1] or 1))
+    left = _clamp_region_fraction(float(crop.get("x") or 0.0) / image_width)
+    top = _clamp_region_fraction(float(crop.get("y") or 0.0) / image_height)
+    right = _clamp_region_fraction(float((crop.get("x") or 0.0) + (crop.get("w") or 0.0)) / image_width)
+    bottom = _clamp_region_fraction(float((crop.get("y") or 0.0) + (crop.get("h") or 0.0)) / image_height)
+    edges: list[str] = []
+    if left <= 0.02:
+        edges.append("left edge")
+    if right >= 0.98:
+        edges.append("right edge")
+    if top <= 0.02:
+        edges.append("top edge")
+    if bottom >= 0.98:
+        edges.append("bottom edge")
+    return edges
+
+
+def _join_region_edge_descriptions(edges: list[str]) -> str:
+    if not edges:
+        return ""
+    if len(edges) == 1:
+        return edges[0]
+    if len(edges) == 2:
+        return f"{edges[0]} and {edges[1]}"
+    return f"{', '.join(edges[:-1])}, and {edges[-1]}"
+
+
+def _build_region_location_phrase(region_position: str) -> str:
+    phrase = str(region_position or "").strip()
+    if not phrase:
+        return "selected region of the image"
+    if re.search(r" of the (?:original )?image$", phrase):
+        return re.sub(r" of the (?:original )?image$", " of the image", phrase)
+    if phrase.endswith(" of the image"):
+        return phrase
+    return f"{phrase} of the image"
+
+
+def _build_region_location_system_prompt(
+    region_position: str,
+    crop: dict,
+    image_size: tuple[int, int],
+    caption_text: str = "",
+    template: str = DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE,
+) -> str:
+    region_location = _build_region_location_phrase(region_position)
+    region_position_sentence = f"This crop comes from the {region_location}."
+    edge_description = _join_region_edge_descriptions(_describe_region_edges(crop, image_size))
+    region_edges_sentence = f"The crop touches the {edge_description}." if edge_description else ""
+    rendered = str(template or DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE)
+    replacements = {
+        "{region_position}": region_position,
+        "{region_location}": region_location,
+        "{region_position_sentence}": region_position_sentence,
+        "{region_edges}": edge_description,
+        "{region_edges_sentence}": region_edges_sentence,
+        "{caption_text}": str(caption_text or "").strip(),
+    }
+    for placeholder, value in replacements.items():
+        rendered = rendered.replace(placeholder, value)
+    rendered = re.sub(r"[ \t]+\n", "\n", rendered)
+    rendered = re.sub(r"\n{3,}", "\n\n", rendered)
+    rendered = re.sub(r" {2,}", " ", rendered)
+    return rendered.strip()
+
+
+def _has_unresolved_caption_text_placeholder(value: str | None) -> bool:
+    return "{caption_text}" in str(value or "")
+
+
+def _build_region_caption_text(enabled_captions: list[str], free_text: str, sections: list[dict]) -> str:
+    normalized_enabled = [
+        str(caption or "").strip()
+        for caption in enabled_captions or []
+        if str(caption or "").strip()
+    ]
+    formatted_caption_text = str(_build_caption_text(normalized_enabled, free_text, sections) or "").strip()
+    fallback_parts = []
+    if normalized_enabled:
+        fallback_parts.append("\n".join(normalized_enabled))
+    if str(free_text or "").strip():
+        fallback_parts.append(str(free_text).strip())
+    fallback_caption_text = "\n\n".join(fallback_parts).strip()
+    if _has_unresolved_caption_text_placeholder(formatted_caption_text):
+        return fallback_caption_text
+    if fallback_caption_text and (
+        not formatted_caption_text
+        or any(caption not in formatted_caption_text for caption in normalized_enabled)
+    ):
+        return fallback_caption_text
+    return formatted_caption_text or fallback_caption_text
+
+
+def _merge_region_free_text(existing_free_text: str, suggested_text: str) -> tuple[str, list[str]]:
+    existing_text = existing_free_text or ""
+    existing_lines = [line.rstrip() for line in existing_text.splitlines() if line.strip()]
+    added_lines = _extract_free_text_lines(suggested_text)
+
+    merged_lines = list(existing_lines)
+    merged_lines.extend(added_lines)
+    return "\n".join(merged_lines), added_lines
+
+
 def _resolve_caption_targets(
     sections: list[dict],
     target_section_index: int | None = None,
@@ -4317,6 +4564,7 @@ async def auto_caption_describe_region(data: AutoCaptionRegionDescribeRequest):
     model = (data.model or _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL)).strip()
     host = _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
     free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE)
+    region_system_prompt_template = _get_ollama_region_system_prompt_template(cfg, DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE)
     timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS)
     max_output_tokens = data.max_output_tokens or _get_ollama_max_output_tokens(cfg, DEFAULT_OLLAMA_MAX_OUTPUT_TOKENS)
 
@@ -4334,15 +4582,17 @@ async def auto_caption_describe_region(data: AutoCaptionRegionDescribeRequest):
     ]
     enabled = _normalize_enabled_captions(requested_enabled, sections)
     free_text = str(data.free_text or "")
-    caption_text = str(data.caption_text or "").strip()
+    raw_caption_text = str(data.caption_text or "")
+    caption_text = raw_caption_text.strip()
+    caption_text_needs_rebuild = not caption_text or _has_unresolved_caption_text_placeholder(raw_caption_text)
 
-    if not caption_text and not requested_enabled and not free_text:
+    if caption_text_needs_rebuild and not requested_enabled and not free_text:
         enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
         requested_enabled = list(enabled)
         enabled = _normalize_enabled_captions(enabled, sections)
 
-    if not caption_text:
-        caption_text = _build_caption_text(enabled, free_text, sections)
+    if caption_text_needs_rebuild:
+        caption_text = _build_region_caption_text(enabled or requested_enabled, free_text, sections)
         if not caption_text.strip():
             parts = []
             if requested_enabled:
@@ -4357,6 +4607,15 @@ async def auto_caption_describe_region(data: AutoCaptionRegionDescribeRequest):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid crop: {exc}") from exc
 
+    region_position = _describe_region_position(crop, image_size)
+    system_prompt = _build_region_location_system_prompt(
+        region_position,
+        crop,
+        image_size,
+        caption_text=caption_text,
+        template=region_system_prompt_template,
+    )
+
     try:
         answer = _suggest_free_text(
             host,
@@ -4365,7 +4624,8 @@ async def auto_caption_describe_region(data: AutoCaptionRegionDescribeRequest):
             caption_text,
             encode_image_func=partial(_encode_media_for_ollama, crop=crop),
             generate_func=_ollama_generate,
-            prompt_template=free_text_prompt_template,
+            prompt_template=DEFAULT_OLLAMA_REGION_PROMPT_TEMPLATE,
+            system_prompt=system_prompt,
             timeout=timeout_seconds,
             max_output_tokens=max_output_tokens,
         )
@@ -4373,16 +4633,26 @@ async def auto_caption_describe_region(data: AutoCaptionRegionDescribeRequest):
         raise HTTPException(status_code=502, detail=f"Ollama error: {exc}") from exc
 
     merge_known_captions = enabled or requested_enabled
-    merged_free_text, added_lines = _merge_free_text(free_text, answer, merge_known_captions)
+    merged_free_text, added_lines = _merge_region_free_text(free_text, answer)
+    answer_lines = _extract_free_text_lines(answer)
+    ignored_lines: list[str] = []
     return {
         "ok": True,
+        "model": model,
+        "host": host,
+        "timeout_seconds": timeout_seconds,
+        "max_output_tokens": max_output_tokens,
         "path": media_path,
         "crop": crop,
+        "region_position": region_position,
+        "system_prompt": system_prompt,
         "answer": answer,
+        "answer_lines": answer_lines,
         "enabled_captions": merge_known_captions,
         "enabled_sentences": merge_known_captions,
         "free_text": merged_free_text,
         "added_lines": added_lines,
+        "ignored_lines": ignored_lines,
     }
 
 
@@ -4430,9 +4700,11 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
             "count": len(media_paths),
             "model": model,
             "host": host,
+            "prompt_template": prompt_template,
             "group_prompt_template": group_prompt_template,
             "enable_free_text": enable_free_text,
             "free_text_only": free_text_only,
+            "free_text_prompt_template": free_text_prompt_template,
             "timeout_seconds": timeout_seconds,
             "max_output_tokens": max_output_tokens,
         })
@@ -4516,9 +4788,10 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                                 })
                                 continue
                             caption = target["caption"]
+                            caption_prompt = _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), media_path)
                             payload = _build_ollama_generate_payload(
                                 model,
-                                _apply_media_prompt_context(_ollama_prompt_for_caption(caption, prompt_template), media_path),
+                                caption_prompt,
                                 media_payload,
                                 max_output_tokens=max_output_tokens,
                             )
@@ -4551,6 +4824,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                                 "caption": caption,
                                 "sentence": caption,
                                 "enabled": is_match,
+                                "prompt": caption_prompt,
                                 "enabled_captions": enabled,
                                 "enabled_sentences": enabled,
                                 "free_text": free_text,
@@ -4575,9 +4849,10 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                                 **skipped_event,
                             })
                             continue
+                        group_prompt = _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_captions, group_prompt_template), media_path)
                         payload = _build_ollama_generate_payload(
                             model,
-                            _apply_media_prompt_context(_ollama_prompt_for_group(target.get("group_name", ""), group_captions, group_prompt_template), media_path),
+                            group_prompt,
                             media_payload,
                             max_output_tokens=max_output_tokens,
                         )
@@ -4624,6 +4899,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                             "selected_sentence": selected_caption,
                             "selected_hidden": selected_hidden,
                             "selection_index": selection_index,
+                            "prompt": group_prompt,
                             "enabled_captions": enabled,
                             "enabled_sentences": enabled,
                             "free_text": free_text,
@@ -4639,9 +4915,10 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                     is_scoped = bool(target_scope and target_scope.get("type") in {"group", "section", "caption"})
                     enabled, free_text = _read_live_caption_state(media_path, all_captions, headers)
                     caption_text = _build_caption_text(enabled, free_text, sections)
+                    free_text_prompt = _apply_media_prompt_context(_ollama_prompt_for_free_text(caption_text, free_text_prompt_template), media_path)
                     free_payload = _build_ollama_generate_payload(
                         model,
-                        _apply_media_prompt_context(_ollama_prompt_for_free_text(caption_text, free_text_prompt_template), media_path),
+                        free_text_prompt,
                         media_payload,
                         max_output_tokens=max_output_tokens,
                     )
@@ -4660,6 +4937,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                         "type": "free-text",
                         "path": media_path,
                         "answer": free_text_model_output,
+                        "prompt": free_text_prompt,
                         "enabled_captions": enabled,
                         "enabled_sentences": enabled,
                         "free_text": free_text,
@@ -4785,6 +5063,7 @@ class SettingsUpdate(BaseModel):
     ollama_group_prompt_template: Optional[str] = None
     ollama_enable_free_text: Optional[bool] = None
     ollama_free_text_prompt_template: Optional[str] = None
+    ollama_region_system_prompt_template: Optional[str] = None
     comfyui_server: Optional[str] = None
     comfyui_port: Optional[int] = None
     comfyui_workflow_path: Optional[str] = None
@@ -4831,6 +5110,7 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
         "ollama_group_prompt_template": _get_ollama_group_prompt_template(cfg, DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE),
         "ollama_enable_free_text": _get_ollama_enable_free_text(cfg),
         "ollama_free_text_prompt_template": _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE),
+        "ollama_region_system_prompt_template": _get_ollama_region_system_prompt_template(cfg, DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE),
         "comfyui_server": _get_comfyui_server(cfg, DEFAULT_COMFYUI_SERVER),
         "comfyui_port": _get_comfyui_port(cfg, DEFAULT_COMFYUI_PORT),
         "comfyui_workflow_path": str(cfg.get("comfyui_workflow_path") or ""),
@@ -4924,6 +5204,8 @@ async def update_settings(data: SettingsUpdate):
         cfg["ollama_enable_free_text"] = bool(data.ollama_enable_free_text)
     if data.ollama_free_text_prompt_template is not None:
         cfg["ollama_free_text_prompt_template"] = data.ollama_free_text_prompt_template or DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE
+    if data.ollama_region_system_prompt_template is not None:
+        cfg["ollama_region_system_prompt_template"] = data.ollama_region_system_prompt_template or DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE
     if data.comfyui_server is not None:
         cfg["comfyui_server"] = str(data.comfyui_server or "").strip() or DEFAULT_COMFYUI_SERVER
     if data.comfyui_port is not None:

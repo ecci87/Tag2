@@ -287,6 +287,17 @@ function updateImageDimensions(path, cropState) {
   if (cropState.current_height) image.height = cropState.current_height;
 }
 
+async function ensureImageCropScaleReady(path) {
+  if (!path || !isImageMediaPath(path)) return true;
+  const cropState = state.imageCrops[path];
+  if (cropState?.current_width && cropState?.current_height) {
+    return true;
+  }
+  await loadCropData(path);
+  const nextCropState = state.imageCrops[path];
+  return !!(nextCropState?.current_width && nextCropState?.current_height);
+}
+
 function parseAspectRatioEntry(label) {
   const text = String(label || "").trim();
   const match = text.match(/^(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)$/);
@@ -446,7 +457,45 @@ function isAiRegionPickerVisible() {
 }
 
 function canEditAiRegionPicker() {
-  return isAiRegionPickerVisible() && !state.aiRegionPicker.loading;
+  return isAiRegionPickerVisible();
+}
+
+function getAiRegionQueuePendingCount() {
+  return Array.isArray(state.aiRegionPicker.queue) ? state.aiRegionPicker.queue.length : 0;
+}
+
+function updateAiRegionQueueProgress() {
+  if (state.autoCaptioning) {
+    return;
+  }
+  const pending = getAiRegionQueuePendingCount();
+  const running = state.aiRegionPicker.loading && state.aiRegionPicker.currentJob ? 1 : 0;
+  if (!(pending > 0 || running > 0)) {
+    resetAutoCaptionProgress();
+    renderModelLog();
+    return;
+  }
+  const totalJobs = Math.max(
+    Number(state.aiRegionPicker.totalJobs || 0),
+    Number(state.aiRegionPicker.completedJobs || 0) + Number(state.aiRegionPicker.failedJobs || 0) + pending + running,
+  );
+  updateAutoCaptionProgress({
+    visible: true,
+    scopeLabel: "Region Queue",
+    totalImages: Math.max(1, totalJobs),
+    processedImages: Math.max(0, Number(state.aiRegionPicker.completedJobs || 0)),
+    errors: Math.max(0, Number(state.aiRegionPicker.failedJobs || 0)),
+    completedImages: Math.max(0, Number(state.aiRegionPicker.completedJobs || 0) + Number(state.aiRegionPicker.failedJobs || 0)),
+    queuedItems: pending,
+    enableFreeText: false,
+    freeTextOnly: false,
+    currentPath: state.aiRegionPicker.currentJob?.path || state.previewPath || "",
+    currentMessage: state.aiRegionPicker.currentJob
+      ? `Processing${pending > 0 ? ` • ${pending} queued` : ""}`
+      : `${pending} queued`,
+    currentStepIndex: 0,
+    currentStepTotal: state.aiRegionPicker.currentJob ? 1 : 0,
+  });
 }
 
 function canInteractPreviewRect() {
@@ -454,9 +503,6 @@ function canInteractPreviewRect() {
 }
 
 function beginAiRegionPicker() {
-  if (state.aiRegionPicker.loading) {
-    return false;
-  }
   if (!canUseRegionDescription()) {
     const message = state.selectedPaths.size !== 1
       ? "Select a single image first"
@@ -465,6 +511,11 @@ function beginAiRegionPicker() {
     showErrorToast(message);
     return false;
   }
+  const hasBackgroundQueueWork = !!(
+    state.aiRegionPicker.loading
+    || state.aiRegionPicker.currentJob
+    || getAiRegionQueuePendingCount() > 0
+  );
   if (state.cropDraft || state.cropInteraction) {
     const message = "Finish or cancel the current crop edit first";
     statusBar.textContent = message;
@@ -472,36 +523,81 @@ function beginAiRegionPicker() {
     return false;
   }
   state.aiRegionPicker.active = true;
-  state.aiRegionPicker.loading = false;
-  state.aiRegionPicker.abortController = null;
+  if (!hasBackgroundQueueWork) {
+    state.aiRegionPicker.loading = false;
+    state.aiRegionPicker.abortController = null;
+    state.aiRegionPicker.queue = [];
+    state.aiRegionPicker.currentJob = null;
+    state.aiRegionPicker.completedJobs = 0;
+    state.aiRegionPicker.failedJobs = 0;
+    state.aiRegionPicker.totalJobs = 0;
+  }
   state.cropDraft = null;
   state.cropDirty = false;
   state.cropInteraction = null;
   setCropGuideToCenter();
   updateActionButtons();
-  statusBar.textContent = "Drag a rectangle over the image to describe a region";
+  updateAiRegionQueueProgress();
+  statusBar.textContent = "Drag a rectangle over the image to queue a region description";
   return true;
 }
 
 function stopAiRegionPicker(options = {}) {
-  const { abort = true, keepStatus = false } = options;
+  const { abort = false, clearJobs = abort, keepStatus = false } = options;
   const controller = state.aiRegionPicker.abortController;
+  const hasBackgroundQueueWork = !!(
+    (state.aiRegionPicker.loading && state.aiRegionPicker.currentJob)
+    || getAiRegionQueuePendingCount() > 0
+  );
   state.aiRegionPicker.active = false;
-  state.aiRegionPicker.loading = false;
-  state.aiRegionPicker.abortController = null;
   state.cropDraft = null;
   state.cropDirty = false;
   state.cropInteraction = null;
   if (abort && controller) {
     controller.abort();
   }
+  if (clearJobs) {
+    state.aiRegionPicker.queue = [];
+  }
+  if (abort) {
+    state.aiRegionPicker.loading = false;
+    state.aiRegionPicker.abortController = null;
+    state.aiRegionPicker.currentJob = null;
+  }
+  if (clearJobs && !state.aiRegionPicker.loading) {
+    state.aiRegionPicker.completedJobs = 0;
+    state.aiRegionPicker.failedJobs = 0;
+    state.aiRegionPicker.totalJobs = 0;
+  }
   clearCropGuide();
   renderCropOverlay();
   renderVideoEditPanel();
   renderMaskEditorUi();
   updateActionButtons();
+  updateAiRegionQueueProgress();
   if (!keepStatus) {
-    statusBar.textContent = "Region picker cancelled";
+    statusBar.textContent = hasBackgroundQueueWork && !abort && !clearJobs
+      ? "Region picker closed; queued descriptions continue"
+      : "Region picker cancelled";
+  }
+}
+
+function resetAiRegionPickerDraft(options = {}) {
+  const { keepStatus = false } = options;
+  if (!state.aiRegionPicker.active) {
+    return;
+  }
+  state.cropDraft = null;
+  state.cropDirty = false;
+  state.cropInteraction = null;
+  setCropGuideToCenter();
+  renderCropOverlay();
+  renderVideoEditPanel();
+  renderMaskEditorUi();
+  updateActionButtons();
+  updateAiRegionQueueProgress();
+  if (!keepStatus) {
+    statusBar.textContent = "Drag a rectangle over the image to queue a region description";
   }
 }
 
@@ -596,12 +692,182 @@ function updateCropButtons() {
   cropRemoveBtn.classList.toggle("visible", !aiRegionVisible && !videoCrop && cropEditable && !hasDraft && hasAppliedCrop());
   cropCancelBtn.classList.toggle("visible", aiRegionVisible ? overlayVisible : cropEditable && hasDraft);
   cropCancelBtn.textContent = aiRegionVisible ? "Cancel" : (videoCrop ? "Clear Crop" : "Cancel");
-  cropCancelBtn.disabled = !!state.aiRegionPicker.loading;
-  cropApplyBtn.classList.toggle("visible", aiRegionVisible ? overlayVisible && hasDraft : (!videoCrop && cropEditable && hasDraft && state.cropDirty));
+  cropCancelBtn.disabled = false;
+  cropApplyBtn.classList.toggle("visible", !aiRegionVisible && !videoCrop && cropEditable && hasDraft && state.cropDirty);
   cropApplyBtn.textContent = aiRegionVisible ? (state.aiRegionPicker.loading ? "Describing..." : "Describe") : "Apply";
   cropApplyBtn.disabled = aiRegionVisible ? (!hasDraft || !!state.aiRegionPicker.loading) : false;
   rotateControls.classList.toggle("visible", !aiRegionVisible && !videoCrop && cropEditable && !hasDraft);
   renderGifConvertButton();
+}
+
+function clampRegionFraction(value) {
+  return Math.max(0, Math.min(1, Number(value || 0)));
+}
+
+function describeAiRegionCenterOffset(centerX, centerY) {
+  let horizontal = null;
+  let vertical = null;
+  if (centerX < 0.46) {
+    horizontal = "left";
+  } else if (centerX > 0.54) {
+    horizontal = "right";
+  }
+  if (centerY < 0.46) {
+    vertical = "above";
+  } else if (centerY > 0.54) {
+    vertical = "below";
+  }
+
+  if (!horizontal && !vertical) {
+    return "center";
+  }
+  if (horizontal && vertical) {
+    const horizontalPhrase = horizontal === "left" ? "to the left" : "to the right";
+    return `slightly ${vertical} and ${horizontalPhrase} of the center`;
+  }
+  if (horizontal) {
+    const horizontalPhrase = horizontal === "left" ? "to the left" : "to the right";
+    return `slightly ${horizontalPhrase} of the center`;
+  }
+  return `slightly ${vertical} the center`;
+}
+
+function describeAiRegionPosition(crop, imageWidth = imgNatW, imageHeight = imgNatH) {
+  const safeWidth = Math.max(1, Number(imageWidth || 1));
+  const safeHeight = Math.max(1, Number(imageHeight || 1));
+  const left = clampRegionFraction(Number(crop?.x || 0) / safeWidth);
+  const top = clampRegionFraction(Number(crop?.y || 0) / safeHeight);
+  const right = clampRegionFraction((Number(crop?.x || 0) + Number(crop?.w || 0)) / safeWidth);
+  const bottom = clampRegionFraction((Number(crop?.y || 0) + Number(crop?.h || 0)) / safeHeight);
+  const widthFraction = Math.max(0, right - left);
+  const heightFraction = Math.max(0, bottom - top);
+  const centerX = (left + right) / 2;
+  const centerY = (top + bottom) / 2;
+
+  if (widthFraction >= 0.58 && heightFraction >= 0.40) {
+    if (top <= 0.12 && centerY <= 0.34) {
+      return "upper half of the image";
+    }
+    if (bottom >= 0.88 && centerY >= 0.66) {
+      return "lower half of the image";
+    }
+  }
+  if (heightFraction >= 0.58 && widthFraction >= 0.40) {
+    if (left <= 0.12 && centerX <= 0.34) {
+      return "left half of the image";
+    }
+    if (right >= 0.88 && centerX >= 0.66) {
+      return "right half of the image";
+    }
+  }
+
+  const touchesLeft = left <= 0.14;
+  const touchesRight = right >= 0.86;
+  const touchesTop = top <= 0.14;
+  const touchesBottom = bottom >= 0.86;
+  const compactCorner = widthFraction <= 0.38 && heightFraction <= 0.38;
+  if (compactCorner && touchesTop && touchesLeft && centerX <= 0.34 && centerY <= 0.34) {
+    return "upper left corner";
+  }
+  if (compactCorner && touchesTop && touchesRight && centerX >= 0.66 && centerY <= 0.34) {
+    return "upper right corner";
+  }
+  if (compactCorner && touchesBottom && touchesLeft && centerX <= 0.34 && centerY >= 0.66) {
+    return "lower left corner";
+  }
+  if (compactCorner && touchesBottom && touchesRight && centerX >= 0.66 && centerY >= 0.66) {
+    return "lower right corner";
+  }
+
+  const farLeft = touchesLeft && centerX <= 0.18 && widthFraction <= 0.24;
+  const farRight = touchesRight && centerX >= 0.82 && widthFraction <= 0.24;
+  const farTop = touchesTop && centerY <= 0.18 && heightFraction <= 0.24;
+  const farBottom = touchesBottom && centerY >= 0.82 && heightFraction <= 0.24;
+  const tallVerticalBand = heightFraction >= 0.55 && widthFraction <= 0.5;
+  if (tallVerticalBand) {
+    if (farLeft) {
+      return "far left side";
+    }
+    if (farRight) {
+      return "far right side";
+    }
+    if (touchesLeft && widthFraction >= 0.38) {
+      return "left half of the image";
+    }
+    if (touchesRight && widthFraction >= 0.38) {
+      return "right half of the image";
+    }
+    if (centerX <= 0.34) {
+      return "left side";
+    }
+    if (centerX >= 0.66) {
+      return "right side";
+    }
+    return "middle vertical strip";
+  }
+
+  const wideHorizontalBand = widthFraction >= 0.55 && heightFraction <= 0.5;
+  if (wideHorizontalBand) {
+    if (touchesTop && heightFraction >= 0.38) {
+      return "upper half of the image";
+    }
+    if (touchesBottom && heightFraction >= 0.38) {
+      return "lower half of the image";
+    }
+    if (farTop) {
+      return "far upper part of the image";
+    }
+    if (farBottom) {
+      return "far lower part of the image";
+    }
+    if (centerY <= 0.34) {
+      return "upper part of the image";
+    }
+    if (centerY >= 0.66) {
+      return "lower part of the image";
+    }
+    return "middle horizontal strip";
+  }
+
+  if (centerY >= 0.28 && centerY <= 0.72) {
+    if (farLeft) {
+      return "far left center";
+    }
+    if (farRight) {
+      return "far right center";
+    }
+  }
+
+  const horizontal = centerX < 0.34 ? "left" : (centerX > 0.66 ? "right" : "center");
+  const vertical = centerY < 0.34 ? "upper" : (centerY > 0.66 ? "lower" : "center");
+  if (vertical === "center" && horizontal === "center") {
+    return describeAiRegionCenterOffset(centerX, centerY);
+  }
+  if (vertical === "center") {
+    if (touchesLeft && horizontal === "left") {
+      return "left center";
+    }
+    if (touchesRight && horizontal === "right") {
+      return "right center";
+    }
+    return `center ${horizontal} side`;
+  }
+  if (horizontal === "center") {
+    if (farTop) {
+      return "far upper center";
+    }
+    if (farBottom) {
+      return "far lower center";
+    }
+    if (touchesTop && vertical === "upper") {
+      return "upper center";
+    }
+    if (touchesBottom && vertical === "lower") {
+      return "lower center";
+    }
+    return `${vertical} center`;
+  }
+  return `${vertical} ${horizontal}`;
 }
 
 function renderCropOverlay() {
@@ -635,9 +901,15 @@ function renderCropOverlay() {
   cropBox.style.top = (panY + crop.y * zoomLevel) + "px";
   cropBox.style.width = (crop.w * zoomLevel) + "px";
   cropBox.style.height = (crop.h * zoomLevel) + "px";
-  cropLabel.textContent = isAiRegionPickerVisible()
-    ? `region \u2022 ${crop.w}\u00D7${crop.h}`
-    : `${crop.ratio || "custom"} \u2022 ${crop.w}\u00D7${crop.h}`;
+  if (isAiRegionPickerVisible()) {
+    const regionPosition = describeAiRegionPosition(crop);
+    cropLabel.textContent = regionPosition;
+    cropLabel.title = `${regionPosition} \u2022 ${crop.w}\u00D7${crop.h}`;
+  } else {
+    const cropSummary = `${crop.ratio || "custom"} \u2022 ${crop.w}\u00D7${crop.h}`;
+    cropLabel.textContent = cropSummary;
+    cropLabel.title = cropSummary;
+  }
   updateCropButtons();
   if (typeof renderPreviewActionBar === "function") {
     renderPreviewActionBar();
@@ -889,6 +1161,7 @@ async function loadCropData(path) {
     if (!resp.ok) throw new Error("Failed to load crop");
     const data = await resp.json();
     state.imageCrops[path] = data.crop || null;
+    updateImageDimensions(path, data.crop);
     if (state.previewPath === path) {
       updateCropButtons();
     }
@@ -900,7 +1173,7 @@ async function loadCropData(path) {
 function startCropCreate(event) {
   const start = screenToImage(event.clientX, event.clientY);
   const freeform = isAiRegionPickerActive();
-  state.cropInteraction = { mode: "create", anchor: start, stickySnap: null, freeform };
+  state.cropInteraction = { mode: "create", anchor: start, stickySnap: null, freeform, button: event.button };
   const ratio = state.cropAspectRatios[0] || { label: "1:1", value: 1 };
   setCropDraft({ x: start.x, y: start.y, w: 1, h: 1, ratio: freeform ? "freeform" : ratio.label }, true);
 }
@@ -915,6 +1188,7 @@ function startCropResize(handle, event) {
     baseCrop: { ...state.cropDraft },
     stickySnap: null,
     freeform: isAiRegionPickerActive(),
+    button: event.button,
   };
 }
 
@@ -935,6 +1209,10 @@ async function applyCropDraftWithOptions(options = {}) {
   }
   statusBar.textContent = "Applying crop...";
   try {
+    const cropScaleReady = await ensureImageCropScaleReady(path);
+    if (!cropScaleReady) {
+      throw new Error("Image dimensions are not ready yet");
+    }
     const resp = await fetch("/api/crop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1058,7 +1336,7 @@ function updateActionButtons() {
   const canRunStructured = selectionSupportsVision && hasCaptions && !!state.ollamaModel.trim();
   const canRunFreeTextOnly = selectionSupportsVision && !!state.ollamaModel.trim();
   const canRunRegionDescribe = canUseRegionDescription() && !!state.ollamaModel.trim();
-  const hasBlockingWorkspaceAction = !!(state.cloning || state.moving || state.extractingFrame || state.uploading || state.aiRegionPicker.loading);
+  const hasBlockingWorkspaceAction = !!(state.cloning || state.moving || state.extractingFrame || state.uploading);
   const pickerActive = isAiRegionPickerActive();
   cloneFolderBtn.disabled = !state.folder || state.autoCaptioning || pickerActive || hasBlockingWorkspaceAction;
   cloneFolderBtn.textContent = state.cloning ? "Cloning..." : "Clone Folder";
@@ -1075,18 +1353,18 @@ function updateActionButtons() {
   autoCaptionBtn.classList.toggle("running", state.autoCaptioning);
   addFreeTextNowBtn.classList.toggle("running", state.autoCaptioning && state.autoCaptionMode === "free-text-only");
   if (addRegionFreeTextBtn) {
-    addRegionFreeTextBtn.disabled = hasBlockingWorkspaceAction || state.autoCaptioning || (!pickerActive && !canRunRegionDescribe);
-    addRegionFreeTextBtn.classList.toggle("running", !!state.aiRegionPicker.loading);
-    addRegionFreeTextBtn.classList.toggle("picker-active", pickerActive && !state.aiRegionPicker.loading);
+    addRegionFreeTextBtn.disabled = state.autoCaptioning || (!pickerActive && (hasBlockingWorkspaceAction || !canRunRegionDescribe));
+    addRegionFreeTextBtn.classList.toggle("running", !!(state.aiRegionPicker.loading || getAiRegionQueuePendingCount() > 0));
+    addRegionFreeTextBtn.classList.toggle("picker-active", pickerActive);
     setGenerateButtonContent(
       addRegionFreeTextBtn,
       pickerActive
-        ? (state.aiRegionPicker.loading ? "Describing selected region" : "Cancel region picker")
+        ? "Cancel region picker"
         : "Describe a selected image region and append the result to free text",
       { iconOnly: true, iconFactory: createGenerateRegionPickerIcon }
     );
     addRegionFreeTextBtn.title = pickerActive
-      ? (state.aiRegionPicker.loading ? "Describe the selected image region" : "Cancel region picker")
+      ? "Cancel region picker"
       : "Describe a selected image region and append the result to free text";
   }
   setGenerateButtonContent(autoCaptionBtn, state.autoCaptioning && state.autoCaptionMode === "full" ? "Stop Auto Caption" : "Auto Caption");
@@ -1119,6 +1397,7 @@ function resetAutoCaptionProgress() {
     processedImages: 0,
     errors: 0,
     completedImages: 0,
+    queuedItems: 0,
     enableFreeText: false,
     freeTextOnly: false,
     currentPath: "",
@@ -1161,8 +1440,9 @@ function renderAutoCaptionProgress() {
   const currentFraction = currentStepTotal > 0 ? currentStepIndex / currentStepTotal : 0;
   const overallPercent = Math.max(0, Math.min(100, ((completedImages + currentFraction) / totalImages) * 100));
   const currentPercent = Math.max(0, Math.min(100, currentStepTotal > 0 ? (currentStepIndex / currentStepTotal) * 100 : 0));
+  const queuedItems = Math.max(0, Number(progress.queuedItems || 0));
 
-  aiProgressSummary.textContent = `${progress.scopeLabel || "AI"} \u2022 ${progress.processedImages}/${progress.totalImages} done${progress.errors ? ` \u2022 ${progress.errors} error${progress.errors === 1 ? "" : "s"}` : ""}`;
+  aiProgressSummary.textContent = `${progress.scopeLabel || "AI"} \u2022 ${progress.processedImages}/${progress.totalImages} done${progress.errors ? ` \u2022 ${progress.errors} error${progress.errors === 1 ? "" : "s"}` : ""}${queuedItems ? ` \u2022 ${queuedItems} queued` : ""}`;
   aiProgressMetric.textContent = `${Math.round(overallPercent)}%`;
   aiProgressCurrentLabel.textContent = progress.currentPath
     ? `${getFileLabel(progress.currentPath)}${progress.currentMessage ? ` \u2022 ${progress.currentMessage}` : ""}`
@@ -1175,21 +1455,16 @@ function renderAutoCaptionProgress() {
 function renderModelLog() {
   const hasLogUi = state.modelLogLines.length > 0 || !!state.aiProgress.visible;
   renderAutoCaptionProgress();
-  modelLogOpenBtn.hidden = !hasLogUi;
-  modelLogOpenBtn.disabled = !hasLogUi;
-  modelLogOpenBtn.classList.toggle("active", !!state.modelLogOpen && hasLogUi);
+  modelLogOpenBtn.hidden = false;
+  modelLogOpenBtn.disabled = false;
+  modelLogOpenBtn.classList.toggle("active", !!state.modelLogOpen);
   modelLogOpenBtn.textContent = state.modelLogOpen ? "Hide Log" : "Log";
-  modelLogOpenBtn.setAttribute("aria-expanded", state.modelLogOpen && hasLogUi ? "true" : "false");
-  if (!hasLogUi) {
-    state.modelLogOpen = false;
-    modelLog.textContent = "";
-    modelLogOverlay.classList.remove("open");
-    modelLogOverlay.setAttribute("aria-hidden", "true");
-    return;
-  }
+  modelLogOpenBtn.setAttribute("aria-expanded", state.modelLogOpen ? "true" : "false");
   modelLogOverlay.classList.toggle("open", !!state.modelLogOpen);
   modelLogOverlay.setAttribute("aria-hidden", state.modelLogOpen ? "false" : "true");
-  modelLog.innerHTML = state.modelLogLines.join("\n");
+  modelLog.innerHTML = hasLogUi
+    ? state.modelLogLines.join("\n")
+    : '<span class="log-dim">No log entries yet. Run Auto Caption or describe a selected region to inspect prompt and response details.</span>';
   if (state.modelLogOpen) {
     modelLog.scrollTop = modelLog.scrollHeight;
   }
@@ -1205,7 +1480,6 @@ function clearModelLog() {
 }
 
 function toggleModelLogOverlay() {
-  if (state.modelLogLines.length === 0 && !state.aiProgress.visible) return;
   state.modelLogOpen = !state.modelLogOpen;
   renderModelLog();
 }

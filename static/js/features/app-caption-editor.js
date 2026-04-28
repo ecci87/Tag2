@@ -2077,6 +2077,12 @@ function getOllamaAnswerLogSuffix(event) {
   return event.answer_done_reason ? ` [partial: ${event.answer_done_reason}]` : " [partial]";
 }
 
+function logPromptTemplate(label, template) {
+  const normalized = String(template || "").trim();
+  if (!normalized) return;
+  appendModelLog(`${label}:\n${normalized}`, "log-dim");
+}
+
 function getAutoCaptionImageStartLog(scope, event, targetSentence) {
   const fileLabel = getFileLabel(event.path);
   if (scope === "free-text-only") {
@@ -2200,6 +2206,11 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
         if (event.max_output_tokens) {
           appendModelLog(`Max output tokens: ${event.max_output_tokens}`, "log-dim");
         }
+        logPromptTemplate("Caption prompt template", event.prompt_template);
+        logPromptTemplate("Group prompt template", event.group_prompt_template);
+        if (event.enable_free_text || event.free_text_only) {
+          logPromptTemplate("Free-text prompt template", event.free_text_prompt_template);
+        }
         if (state.comfyuiAutoPreviewEnabled) {
           appendModelLog(
             autoPreviewEnabled
@@ -2233,6 +2244,9 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentStepIndex: event.index || state.aiProgress.currentStepIndex,
           currentStepTotal: Math.max(state.aiProgress.currentStepTotal || 0, (event.total || 0) + (state.aiProgress.enableFreeText ? 1 : 0)),
         });
+        if (event.prompt) {
+          appendModelLog(`[${getFileLabel(event.path)}] Rendered prompt:\n${event.prompt}`, "log-dim");
+        }
         if (event.skipped) {
           const reason = event.skip_reason ? ` (${event.skip_reason})` : "";
           appendModelLog(`[${getFileLabel(event.path)}] ${event.index}/${event.total} ${currentCaption} -> SKIP${reason}`, "log-warn");
@@ -2257,6 +2271,9 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentStepIndex: event.index || state.aiProgress.currentStepIndex,
           currentStepTotal: Math.max(state.aiProgress.currentStepTotal || 0, (event.total || 0) + (state.aiProgress.enableFreeText ? 1 : 0)),
         });
+        if (event.prompt) {
+          appendModelLog(`[${getFileLabel(event.path)}] Rendered group prompt:\n${event.prompt}`, "log-dim");
+        }
         if (event.skipped) {
           const reason = event.skip_reason ? ` (${event.skip_reason})` : "";
           appendModelLog(
@@ -2285,6 +2302,9 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
           currentStepIndex: state.aiProgress.currentStepTotal || 1,
           currentStepTotal: state.aiProgress.currentStepTotal || 1,
         });
+        if (event.prompt) {
+          appendModelLog(`[${getFileLabel(event.path)}] Rendered free-text prompt:\n${event.prompt}`, "log-dim");
+        }
         const cache = ensureCaptionCache(event.path);
         state.captionDraftPaths.delete(event.path);
         cache.enabled_sentences = orderEnabledSentences(event.enabled_captions || event.enabled_sentences || cache.enabled_sentences || []);
@@ -2425,10 +2445,6 @@ function buildRegionDescriptionCaptionContext(path) {
 }
 
 async function toggleFreeTextRegionPicker() {
-  if (state.aiRegionPicker.loading) {
-    stopAiRegionPicker();
-    return;
-  }
   if (state.aiRegionPicker.active) {
     stopAiRegionPicker();
     return;
@@ -2441,27 +2457,26 @@ async function toggleFreeTextRegionPicker() {
   beginAiRegionPicker();
 }
 
-async function describeFreeTextRegion() {
-  if (!state.aiRegionPicker.active || state.aiRegionPicker.loading) {
+async function processQueuedFreeTextRegions() {
+  if (state.aiRegionPicker.loading) {
     return;
   }
-  if (state.selectedPaths.size !== 1 || !state.previewPath || !isImageMediaPath(state.previewPath)) {
-    stopAiRegionPicker({ keepStatus: true });
-    statusBar.textContent = "Select a single image first";
+  const nextJob = state.aiRegionPicker.queue.shift();
+  if (!nextJob) {
+    updateAiRegionQueueProgress();
     return;
   }
-  if (!state.cropDraft) {
-    statusBar.textContent = "Draw a region first";
-    return;
-  }
-  const path = state.previewPath;
+  const path = nextJob.path;
   const controller = new AbortController();
   const { enabledSentences, currentFreeText, captionText } = buildRegionDescriptionCaptionContext(path);
   state.aiRegionPicker.loading = true;
   state.aiRegionPicker.abortController = controller;
-  renderCropOverlay();
+  state.aiRegionPicker.currentJob = nextJob;
   updateActionButtons();
+  updateAiRegionQueueProgress();
   statusBar.textContent = "Describing selected region...";
+  appendModelLog(`[${getFileLabel(path)}] Describing selected region using ${state.ollamaModel.trim() || "llava"} @ ${state.ollamaServer}:${state.ollamaPort}`, "log-dim");
+  logPromptTemplate("Regional image system prompt template", state.ollamaRegionSystemPromptTemplate);
 
   try {
     const resp = await fetch("/api/auto-caption/describe-region", {
@@ -2470,12 +2485,11 @@ async function describeFreeTextRegion() {
       signal: controller.signal,
       body: JSON.stringify({
         image_path: path,
-        crop: buildCropPayload(state.cropDraft),
+        crop: nextJob.crop,
         model: state.ollamaModel.trim(),
         caption_text: captionText,
         free_text: currentFreeText,
         enabled_captions: enabledSentences,
-        free_text_prompt_template: state.ollamaFreeTextPromptTemplate,
         timeout_seconds: state.ollamaTimeoutSeconds,
         max_output_tokens: state.ollamaMaxOutputTokens,
       }),
@@ -2484,6 +2498,9 @@ async function describeFreeTextRegion() {
     if (!resp.ok) {
       throw new Error(data.detail || "Failed to describe selected region");
     }
+    if (data.system_prompt) {
+      appendModelLog(`[${getFileLabel(path)}] Rendered regional system prompt:\n${data.system_prompt}`, "log-dim");
+    }
     const nextFreeText = String(data.free_text || currentFreeText);
     if (nextFreeText !== currentFreeText) {
       setFreeTextDraftForPath(path, nextFreeText, {
@@ -2491,20 +2508,88 @@ async function describeFreeTextRegion() {
       });
     }
     const addedCount = Array.isArray(data.added_lines) ? data.added_lines.length : 0;
-    statusBar.textContent = addedCount > 0
-      ? `Added ${addedCount} region detail${addedCount === 1 ? "" : "s"}`
-      : "No new region details found";
+    const ignoredLines = Array.isArray(data.ignored_lines) ? data.ignored_lines : [];
+    appendModelLog(
+      `[${getFileLabel(path)}] Region answer: ${data.answer || "NONE"}`,
+      addedCount > 0 ? "log-ok" : "log-warn"
+    );
+    if (ignoredLines.length > 0) {
+      appendModelLog(
+        `[${getFileLabel(path)}] Ignored already-known region lines: ${ignoredLines.join(" | ")}`,
+        "log-dim"
+      );
+    }
+    state.aiRegionPicker.completedJobs += 1;
+    if (addedCount > 0 && ignoredLines.length > 0) {
+      statusBar.textContent = `Added ${addedCount} region detail${addedCount === 1 ? "" : "s"}, skipped ${ignoredLines.length} duplicate${ignoredLines.length === 1 ? "" : "s"}`;
+    } else if (addedCount > 0) {
+      statusBar.textContent = `Added ${addedCount} region detail${addedCount === 1 ? "" : "s"}`;
+    } else if (ignoredLines.length > 0) {
+      statusBar.textContent = `Skipped ${ignoredLines.length} already-known region line${ignoredLines.length === 1 ? "" : "s"}`;
+    } else {
+      statusBar.textContent = "No new region details found";
+    }
   } catch (err) {
     if (err?.name === "AbortError") {
+      appendModelLog(`[${getFileLabel(path)}] Selected-region description cancelled`, "log-warn");
       statusBar.textContent = "Region description cancelled";
     } else {
+      state.aiRegionPicker.failedJobs += 1;
       const message = err?.message || "Failed to describe selected region";
+      appendModelLog(`[${getFileLabel(path)}] Selected-region description failed: ${message}`, "log-err");
       statusBar.textContent = message;
       showErrorToast(message);
     }
   } finally {
-    stopAiRegionPicker({ abort: false, keepStatus: true });
+    state.aiRegionPicker.loading = false;
+    state.aiRegionPicker.abortController = null;
+    state.aiRegionPicker.currentJob = null;
+    updateActionButtons();
+    updateAiRegionQueueProgress();
+    if (getAiRegionQueuePendingCount() > 0) {
+      processQueuedFreeTextRegions().catch(() => {});
+    }
   }
+}
+
+async function describeFreeTextRegion() {
+  if (!state.aiRegionPicker.active) {
+    return;
+  }
+  if (state.selectedPaths.size !== 1 || !state.previewPath || !isImageMediaPath(state.previewPath)) {
+    stopAiRegionPicker({ keepStatus: true });
+    statusBar.textContent = "Select a single image first";
+    return;
+  }
+  const cropScaleReady = await ensureImageCropScaleReady(state.previewPath);
+  if (!cropScaleReady) {
+    statusBar.textContent = "Image dimensions are not ready yet";
+    return;
+  }
+  if (!state.cropDraft) {
+    statusBar.textContent = "Draw a region first";
+    return;
+  }
+  if (!state.aiRegionPicker.loading && getAiRegionQueuePendingCount() === 0) {
+    state.aiRegionPicker.completedJobs = 0;
+    state.aiRegionPicker.failedJobs = 0;
+    state.aiRegionPicker.totalJobs = 0;
+  }
+  state.aiRegionPicker.queue.push({
+    path: state.previewPath,
+    crop: buildCropPayload(state.cropDraft),
+  });
+  state.aiRegionPicker.totalJobs += 1;
+  appendModelLog(
+    `[${getFileLabel(state.previewPath)}] Queued region description ${state.aiRegionPicker.totalJobs}${state.aiRegionPicker.loading || getAiRegionQueuePendingCount() > 1 ? ` (${getAiRegionQueuePendingCount()} waiting)` : ""}`,
+    "log-dim"
+  );
+  resetAiRegionPickerDraft({ keepStatus: true });
+  updateAiRegionQueueProgress();
+  statusBar.textContent = state.aiRegionPicker.loading
+    ? `Queued region description (${getAiRegionQueuePendingCount()} waiting)`
+    : "Queued region description";
+  processQueuedFreeTextRegions().catch(() => {});
 }
 
 async function refreshGroupCaptions(sectionIndex, groupIndex) {

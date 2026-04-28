@@ -263,6 +263,7 @@ function applySettings(settings) {
   state.ollamaGroupPromptTemplate = settings.ollama_group_prompt_template || state.ollamaGroupPromptTemplate;
   state.ollamaEnableFreeText = settings.ollama_enable_free_text ?? state.ollamaEnableFreeText;
   state.ollamaFreeTextPromptTemplate = settings.ollama_free_text_prompt_template || state.ollamaFreeTextPromptTemplate;
+  state.ollamaRegionSystemPromptTemplate = settings.ollama_region_system_prompt_template || state.ollamaRegionSystemPromptTemplate;
   state.comfyuiServer = (settings.comfyui_server || "127.0.0.1").trim() || "127.0.0.1";
   state.comfyuiPort = Number(settings.comfyui_port || 8188) || 8188;
   state.comfyuiWorkflowPath = String(settings.comfyui_workflow_path || "").trim();
@@ -371,6 +372,7 @@ function fillSettingsForm() {
   settingsGroupPromptInput.value = state.ollamaGroupPromptTemplate;
   settingsAutoFreeTextEnabled.checked = !!state.ollamaEnableFreeText;
   settingsFreeTextPromptInput.value = state.ollamaFreeTextPromptTemplate;
+  settingsRegionSystemPromptInput.value = state.ollamaRegionSystemPromptTemplate;
 }
 
 function setActiveSettingsTab(tabName = "auto-captioning") {
@@ -432,6 +434,7 @@ async function saveOllamaSettingsFromForm() {
   const groupPromptTemplate = settingsGroupPromptInput.value || state.ollamaGroupPromptTemplate;
   const enableFreeText = settingsAutoFreeTextEnabled.checked;
   const freeTextPromptTemplate = settingsFreeTextPromptInput.value || state.ollamaFreeTextPromptTemplate;
+  const regionSystemPromptTemplate = settingsRegionSystemPromptInput.value || state.ollamaRegionSystemPromptTemplate;
   try {
     maskLatentBaseWidthPresets = parseMaskLatentBaseWidthPresetsInput(settingsMaskLatentBaseWidthPresetsInput.value);
   } catch (err) {
@@ -478,6 +481,7 @@ async function saveOllamaSettingsFromForm() {
     ollama_group_prompt_template: groupPromptTemplate,
     ollama_enable_free_text: enableFreeText,
     ollama_free_text_prompt_template: freeTextPromptTemplate,
+    ollama_region_system_prompt_template: regionSystemPromptTemplate,
   };
   if (state.folder) {
     settingsPayload.folder = state.folder;

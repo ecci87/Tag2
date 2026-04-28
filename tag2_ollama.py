@@ -117,6 +117,11 @@ def _get_ollama_free_text_prompt_template(cfg: dict, default_template: str) -> s
     return str(cfg.get("ollama_free_text_prompt_template") or default_template)
 
 
+def _get_ollama_region_system_prompt_template(cfg: dict, default_template: str) -> str:
+    """Get the configured selected-region system prompt template."""
+    return str(cfg.get("ollama_region_system_prompt_template") or default_template)
+
+
 def _ollama_prompt_for_caption(caption: str, template: str) -> str:
     """Build a strict yes/no prompt for one candidate caption."""
     return template.replace("{caption}", caption).replace("{sentence}", caption)
@@ -170,6 +175,7 @@ def _build_ollama_generate_payload(
     prompt: str,
     images: list[str],
     *,
+    system: str | None = None,
     max_output_tokens: int | None = None,
     temperature: float = 0,
 ) -> dict:
@@ -180,13 +186,16 @@ def _build_ollama_generate_payload(
             options["num_predict"] = max(1, int(max_output_tokens))
     except (TypeError, ValueError):
         pass
-    return {
+    payload = {
         "model": model,
         "prompt": prompt,
         "images": images,
         "stream": True,
         "options": options,
     }
+    if system:
+        payload["system"] = str(system)
+    return payload
 
 
 def _ollama_response_meta(response: dict) -> dict:
@@ -511,6 +520,7 @@ def _suggest_free_text(
     encode_image_func,
     generate_func,
     prompt_template: str,
+    system_prompt: str | None = None,
     timeout: int,
     max_output_tokens: int | None = None,
 ) -> str:
@@ -520,6 +530,7 @@ def _suggest_free_text(
         model,
         _apply_media_prompt_context(_ollama_prompt_for_free_text(caption_text, prompt_template), image_path),
         image_payload,
+        system=system_prompt,
         max_output_tokens=max_output_tokens,
     )
     response = generate_func(host, payload, timeout=timeout)

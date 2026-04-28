@@ -1708,9 +1708,50 @@ function hidePreview() {
     await uploadDroppedFiles(e.dataTransfer?.files);
   });
 
+  let suppressPreviewContextMenuUntil = 0;
+
+  const markPreviewContextMenuSuppressed = (durationMs = 400) => {
+    suppressPreviewContextMenuUntil = Math.max(suppressPreviewContextMenuUntil, Date.now() + durationMs);
+  };
+
+  const hasActivePreviewRightClickInteraction = () => (
+    state.cropInteraction?.button === 2
+    || !!state.maskEditor.signalProbeDragging
+    || !!state.maskEditor.painting
+  );
+
+  const shouldSuppressPreviewContextMenu = (event) => {
+    if (!(canEditCrop() || isAiRegionPickerVisible() || isMaskEditorVisible() || state.cropInteraction?.button === 2)) {
+      return false;
+    }
+    if (hasActivePreviewRightClickInteraction() || Date.now() <= suppressPreviewContextMenuUntil) {
+      return true;
+    }
+    const target = event?.target;
+    if (target?.closest?.("#preview-stage, #preview-img, #preview-video, #crop-box, #mask-editor-panel, #mask-canvas, #image-edit-canvas, #mask-latent-preview-panel")) {
+      return true;
+    }
+    if (typeof event?.clientX === "number" && typeof event?.clientY === "number") {
+      return isClientInsidePreviewImage(event.clientX, event.clientY);
+    }
+    return false;
+  };
+
   panel.addEventListener("contextmenu", (e) => {
-    if (canEditCrop() || isAiRegionPickerVisible() || isMaskEditorVisible()) e.preventDefault();
+    if (shouldSuppressPreviewContextMenu(e)) {
+      e.preventDefault();
+    }
   });
+  window.addEventListener("contextmenu", (e) => {
+    if (shouldSuppressPreviewContextMenu(e)) {
+      e.preventDefault();
+    }
+  }, true);
+  window.addEventListener("auxclick", (e) => {
+    if (e.button === 2 && shouldSuppressPreviewContextMenu(e)) {
+      e.preventDefault();
+    }
+  }, true);
 
   // Mouse wheel zoom - zooms toward cursor position
   panel.addEventListener("wheel", (e) => {
@@ -1750,6 +1791,7 @@ function hidePreview() {
       if (!isClientInsidePreviewImage(e.clientX, e.clientY)) {
         return;
       }
+      markPreviewContextMenuSuppressed();
       beginMaskSignalProbeDrag(e);
       e.preventDefault();
       return;
@@ -1761,26 +1803,31 @@ function hidePreview() {
       if (!isClientInsidePreviewImage(e.clientX, e.clientY)) {
         return;
       }
+      markPreviewContextMenuSuppressed();
       beginMaskPaint(e);
       e.preventDefault();
       return;
     }
-    if (e.button === 0 && canEditAiRegionPicker()) {
+    if (e.button === 2 && canEditAiRegionPicker()) {
       if (e.target.closest("#video-edit-panel, #preview-caption-overlay, #mask-editor-panel, #preview-action-bar, #mask-action-bar, #crop-apply-btn, #crop-cancel-btn, #crop-remove-btn, #mask-edit-btn, #image-edit-btn, #duplicate-image-btn, #mask-apply-btn, #mask-cancel-btn, #mask-undo-btn, #mask-redo-btn, #mask-view-mode-btn, #mask-latent-preview-btn, #mask-reset-btn, #rotate-controls")) {
         return;
       }
       if (!isClientInsidePreviewImage(e.clientX, e.clientY)) {
         return;
       }
+      markPreviewContextMenuSuppressed();
       startCropCreate(e);
       updateCropGuideFromClient(e.clientX, e.clientY);
       e.preventDefault();
+      e.stopPropagation();
       return;
     }
-    if (e.button === 2 && canEditCrop()) {
+    if (e.button === 2 && canEditCrop() && !isAiRegionPickerActive()) {
+      markPreviewContextMenuSuppressed();
       startCropCreate(e);
       updateCropGuideFromClient(e.clientX, e.clientY);
       e.preventDefault();
+      e.stopPropagation();
       return;
     }
     if (e.button !== 0) return;
@@ -1878,6 +1925,13 @@ function hidePreview() {
   });
 
   window.addEventListener("mouseup", (e) => {
+    const finishingPreviewRightClickInteraction = !!(
+      e.button === 2
+      && (state.cropInteraction?.button === 2 || state.maskEditor.signalProbeDragging || state.maskEditor.painting)
+    );
+    if (finishingPreviewRightClickInteraction) {
+      markPreviewContextMenuSuppressed();
+    }
     if (videoTimelineInteraction) {
       finishVideoTimelineInteraction(e.clientX);
       return;
@@ -1888,10 +1942,26 @@ function hidePreview() {
     if (state.maskEditor.painting) {
       stopMaskPaint();
     }
-    if (state.cropInteraction) {
+    const finishingCropInteraction = !!(
+      state.cropInteraction
+      && (typeof state.cropInteraction.button !== "number" || state.cropInteraction.button === e.button)
+    );
+    const shouldDescribeAiRegion = !!(
+      finishingCropInteraction
+      && isAiRegionPickerActive()
+      && state.cropInteraction.mode === "create"
+      && state.cropInteraction.freeform
+      && state.cropDraft
+      && state.cropDraft.w > 1
+      && state.cropDraft.h > 1
+    );
+    if (finishingCropInteraction) {
       state.cropInteraction = null;
     }
-    if (isDragging) {
+    if (shouldDescribeAiRegion) {
+      globalThis.describeFreeTextRegion?.().catch(() => {});
+    }
+    if (isDragging && e.button === 0) {
       state.ui.suppressVideoClick = dragMoved;
       isDragging = false;
       panel.classList.remove("dragging");
