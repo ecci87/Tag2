@@ -357,6 +357,7 @@ async function loadFolder(options = {}) {
   state.activeMetaFilters.maskState = "any";
   state.activeMetaFilters.captionState = "any";
   state.mediaSearchQuery = "";
+  state.captionPresenceFilterSnapshot = null;
   state.filterCaptionCacheKey = "";
   state.filterLoadingPromise = null;
   state.imageCrops = {};

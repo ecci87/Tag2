@@ -189,8 +189,44 @@ function getEnabledSentencesForPath(path) {
   return orderEnabledSentences(enabledSentences);
 }
 
+function clearCaptionPresenceFilterSnapshot() {
+  state.captionPresenceFilterSnapshot = null;
+}
+
+function captureCaptionPresenceFilterSnapshot() {
+  state.captionPresenceFilterSnapshot = Object.fromEntries(
+    state.images.map((image) => [image.path, !!image.has_caption])
+  );
+}
+
+function syncCaptionPresenceFilterSnapshot() {
+  if (state.activeMetaFilters.captionState === "any") {
+    clearCaptionPresenceFilterSnapshot();
+    return;
+  }
+  captureCaptionPresenceFilterSnapshot();
+}
+
+function getCaptionPresenceForFiltering(image) {
+  if (!image) return false;
+  const snapshot = state.captionPresenceFilterSnapshot;
+  if (
+    state.activeMetaFilters.captionState !== "any"
+    && snapshot
+    && Object.prototype.hasOwnProperty.call(snapshot, image.path)
+  ) {
+    return !!snapshot[image.path];
+  }
+  return !!image.has_caption;
+}
+
+function captionDataAffectsVisibleFilters() {
+  return hasActiveSearchQuery() || getActiveSentenceFilterEntries().length > 0;
+}
+
 function imageMatchesMetaFilters(image) {
   if (!image) return false;
+  const hasCaption = getCaptionPresenceForFiltering(image);
   if (state.activeMetaFilters.aspectState === "has" && imageConformsToAspectRatios(image)) {
     return false;
   }
@@ -203,10 +239,10 @@ function imageMatchesMetaFilters(image) {
   if (state.activeMetaFilters.maskState === "missing" && image.has_mask) {
     return false;
   }
-  if (state.activeMetaFilters.captionState === "has" && !image.has_caption) {
+  if (state.activeMetaFilters.captionState === "has" && !hasCaption) {
     return false;
   }
-  if (state.activeMetaFilters.captionState === "missing" && image.has_caption) {
+  if (state.activeMetaFilters.captionState === "missing" && hasCaption) {
     return false;
   }
   return true;
@@ -329,13 +365,12 @@ async function ensureCaptionCacheLoadedForFiltering() {
 }
 
 function refreshGridForActiveFilters() {
+  if (!hasAnyActiveFilters()) {
+    return;
+  }
   const preservePath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
   const preserveScrollTop = fileGridContainer?.scrollTop ?? null;
-  if (hasAnyActiveFilters()) {
-    renderGrid({ preservePath, preserveScrollTop });
-  } else {
-    renderGrid({ preservePath, preserveScrollTop });
-  }
+  renderGrid({ preservePath, preserveScrollTop });
 }
 
 function renderFilterActions() {
@@ -387,6 +422,7 @@ function clearSentenceFilters() {
   if (mediaSearchInput) {
     mediaSearchInput.value = "";
   }
+  clearCaptionPresenceFilterSnapshot();
   state.filterCaptionCacheKey = "";
   renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
   renderSentences();
@@ -397,6 +433,7 @@ async function updateMediaSearchQuery(value) {
   const nextQuery = String(value || "");
   if (nextQuery === state.mediaSearchQuery) return;
   state.mediaSearchQuery = nextQuery;
+  syncCaptionPresenceFilterSnapshot();
 
   const preferredPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
   const previousScrollTop = fileGridContainer.scrollTop;
@@ -416,6 +453,7 @@ async function updateMediaSearchQuery(value) {
   try {
     await ensureCaptionCacheLoadedForFiltering();
     if (normalizeMediaSearchQuery(state.mediaSearchQuery) !== normalizedQuery) return;
+    syncCaptionPresenceFilterSnapshot();
     renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
     renderSentences();
     const visibleCount = getVisibleImageEntries().length;
@@ -449,6 +487,7 @@ function applyTriStateFilterButton(button, positiveLabel, negativeLabel, stateVa
 }
 
 function applyFilterUiUpdate(statusMessage) {
+  syncCaptionPresenceFilterSnapshot();
   const preferredPath = state.previewPath || state.lastClickedPath || [...state.selectedPaths][0] || null;
   const previousScrollTop = fileGridContainer.scrollTop;
   renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
@@ -535,6 +574,7 @@ async function toggleSentenceFilter(sentence) {
     statusBar.textContent = `Filter error: ${err.message}`;
   }
 
+  syncCaptionPresenceFilterSnapshot();
   renderGrid({ preservePath: preferredPath, preserveScrollTop: previousScrollTop });
   renderSentences();
 }

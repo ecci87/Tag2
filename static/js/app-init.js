@@ -300,11 +300,16 @@ async function navigateVisiblePreviewSelection(direction, options = {}) {
   }
 
   const nextPath = visibleEntries[nextIndex]?.img?.path;
-  if (!nextPath) {
+  const nextEntry = visibleEntries[nextIndex] || null;
+  if (!nextPath || !nextEntry) {
     return false;
   }
 
-  await selectUploadedImages([nextPath]);
+  await handleThumbClick(nextEntry.index, {
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+  });
   scrollPreviewSelectionIntoView(nextPath);
   return true;
 }

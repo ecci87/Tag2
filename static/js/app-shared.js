@@ -25,6 +25,7 @@ const state = {
   mediaSearchQuery: "",
   captionSearchQuery: "",
   captionSkipFilterActive: false,
+  captionPresenceFilterSnapshot: null,
   filterCaptionCacheKey: "",
   filterLoadingPromise: null,
   captionLibraryLoadingPromise: null,
