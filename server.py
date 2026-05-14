@@ -290,8 +290,17 @@ DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE = (
 DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE = (
     "You are describing a region in a larger source image. "
     "The provided crop comes from the '{region_location}'.\n"
+    "The current caption text is provided separately and already covers known details. Do not repeat details that are already covered there. "
+    "Only add notable, missing details from this selected region.\n"
     "Describe what is visible in the given region. Explicitly mention the actual location of the region in the description using natural wording such as '<thing> is visible in the {region_location}'. For multiple objects inside the given region, mention their positional relation."
 )
+LEGACY_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATES = {
+    (
+        "You are describing a region in a larger source image. "
+        "The provided crop comes from the '{region_location}'.\n"
+        "Describe what is visible in the given region. Explicitly mention the actual location of the region in the description using natural wording such as '<thing> is visible in the {region_location}'. For multiple objects inside the given region, mention their positional relation."
+    ),
+}
 COMFYUI_PROMPT_PLACEHOLDER = "{{TAG2_PROMPT}}"
 COMFYUI_FILENAME_PREFIX_PLACEHOLDER = "{{TAG2_FILENAME_PREFIX}}"
 COMFYUI_SEED_PLACEHOLDER = "{{TAG2_SEED}}"
@@ -836,6 +845,8 @@ def _load_config() -> dict:
             # Merge with defaults so new keys are always present
             for k, v in default.items():
                 data.setdefault(k, v)
+            if data.get("ollama_region_system_prompt_template") in LEGACY_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATES:
+                data["ollama_region_system_prompt_template"] = DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE
             data["mask_latent_base_width_presets"] = _normalize_mask_latent_base_width_presets(
                 data.get("mask_latent_base_width_presets")
             )
@@ -4170,6 +4181,7 @@ def _build_region_location_system_prompt(
     region_position: str,
     crop: dict,
     image_size: tuple[int, int],
+    caption_text: str = "",
     template: str = DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE,
 ) -> str:
     region_location = _build_region_location_phrase(region_position)
@@ -4183,6 +4195,8 @@ def _build_region_location_system_prompt(
         "{region_position_sentence}": region_position_sentence,
         "{region_edges}": edge_description,
         "{region_edges_sentence}": region_edges_sentence,
+        "{caption_text}": str(caption_text or "").strip(),
+        "{current_caption}": str(caption_text or "").strip(),
     }
     for placeholder, value in replacements.items():
         rendered = rendered.replace(placeholder, value)
@@ -4538,7 +4552,13 @@ async def auto_caption_describe_region(data: AutoCaptionRegionDescribeRequest):
         raise HTTPException(status_code=400, detail=f"Invalid crop: {exc}") from exc
 
     region_position = _describe_region_position(crop, image_size)
-    system_prompt = _build_region_location_system_prompt(region_position, crop, image_size, region_system_prompt_template)
+    system_prompt = _build_region_location_system_prompt(
+        region_position,
+        crop,
+        image_size,
+        caption_text,
+        region_system_prompt_template,
+    )
 
     try:
         answer = _suggest_free_text(

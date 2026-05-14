@@ -2669,6 +2669,21 @@ class TestOllamaHelpers:
 
 
 class TestCropAPI:
+    def test_load_config_migrates_legacy_region_system_prompt_template(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "ollama_region_system_prompt_template": (
+                "You are describing a region in a larger source image. "
+                "The provided crop comes from the '{region_location}'.\n"
+                "Describe what is visible in the given region. Explicitly mention the actual location of the region in the description using natural wording such as '<thing> is visible in the {region_location}'. For multiple objects inside the given region, mention their positional relation."
+            )
+        }), encoding="utf-8")
+        monkeypatch.setattr(server, "CONFIG_PATH", str(config_path))
+
+        cfg = server._load_config()
+
+        assert cfg["ollama_region_system_prompt_template"] == server.DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE
+
     def test_auto_caption_describe_region_uses_cropped_image_and_merges_free_text(self, client, single_image, monkeypatch):
         recorded = {}
 
@@ -2745,6 +2760,39 @@ class TestCropAPI:
         assert resp.json()["system_prompt"] == (
             "Region hint: lower right corner of the image\n"
             "Edge hint: The crop touches the right edge and bottom edge."
+        )
+
+    def test_auto_caption_describe_region_renders_caption_text_in_region_system_prompt_template(self, client, single_image, monkeypatch):
+        settings_resp = client.post("/api/settings", json={
+            "ollama_region_system_prompt_template": "Existing caption text:\n{caption_text}\nRegion: {region_location}",
+        })
+        assert settings_resp.status_code == 200
+
+        def fake_encode(path, crop=None, **kwargs):
+            return ["region-bytes"]
+
+        def fake_generate(host, payload, timeout=120):
+            assert payload["system"] == (
+                "Existing caption text:\nMoon\n\nNight sky\n"
+                "Region: lower right corner of the image"
+            )
+            return {"response": "Silver clouds"}
+
+        monkeypatch.setattr(server, "_encode_media_for_ollama", fake_encode)
+        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
+
+        resp = client.post("/api/auto-caption/describe-region", json={
+            "image_path": single_image,
+            "crop": {"x": 80, "y": 90, "w": 40, "h": 20, "ratio": "4:3"},
+            "caption_text": "Moon\n\nNight sky",
+            "enabled_captions": ["Moon"],
+            "free_text": "Night sky",
+        })
+
+        assert resp.status_code == 200
+        assert resp.json()["system_prompt"] == (
+            "Existing caption text:\nMoon\n\nNight sky\n"
+            "Region: lower right corner of the image"
         )
 
     def test_auto_caption_describe_region_uses_configured_timeout_and_token_limit(self, client, single_image, monkeypatch):
