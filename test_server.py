@@ -2158,6 +2158,148 @@ class TestSettingsAPI:
         sections = server._get_folder_sections(cfg, folder)
         assert sections[0]["sentences"] == ["s1"]
 
+    def test_get_settings_creates_folder_config_from_legacy_global_settings(self, client, tmp_path):
+        folder = tmp_path / "migrated-folder"
+        folder.mkdir()
+        server._save_config({
+            "ollama_model": "global-model",
+            "folders": {
+                os.path.normpath(str(folder)): {
+                    "sections": [{"name": "Scene", "sentences": ["bright"]}],
+                    "video_training_profile_key": "wan-40f-16fps",
+                }
+            },
+        })
+
+        resp = client.get("/api/settings", params={"folder": str(folder)})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ollama_model"] == "global-model"
+        assert data["sections"][0]["sentences"] == ["bright"]
+        assert data["video_training_profile_key"] == "wan-40f-16fps"
+
+        folder_config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+        tag2_config = folder_config[server.TAG2_FOLDER_CONFIG_KEY]
+        assert tag2_config["ollama_model"] == "global-model"
+        assert tag2_config["sections"][0]["captions"] == ["bright"]
+        assert "sentences" not in tag2_config["sections"][0]
+        assert tag2_config["video_training_profile_key"] == "wan-40f-16fps"
+
+    def test_folder_config_serializes_captions_only_schema(self, client, tmp_path):
+        folder = tmp_path / "captions-only"
+        folder.mkdir()
+
+        resp = client.post("/api/settings", json={
+            "folder": str(folder),
+            "sections": [{
+                "name": "Scene",
+                "sentences": ["bright"],
+                "groups": [{
+                    "name": "Chair",
+                    "sentences": ["visible", "not visible"],
+                    "hidden_sentences": ["not visible"],
+                }],
+                "item_order": [
+                    {"type": "sentence", "sentence": "bright"},
+                    {"type": "group", "group_id": "group-1"},
+                ],
+            }],
+        })
+
+        assert resp.status_code == 200
+
+        folder_config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+        section = folder_config[server.TAG2_FOLDER_CONFIG_KEY]["sections"][0]
+        group = section["groups"][0]
+
+        assert section["captions"] == ["bright"]
+        assert "sentences" not in section
+        assert section["item_order"][0] == {"type": "caption", "caption": "bright"}
+        assert group["captions"] == ["visible", "not visible"]
+        assert group["hidden_captions"] == ["not visible"]
+        assert "sentences" not in group
+        assert "hidden_sentences" not in group
+        assert "skip_sentences" not in group
+
+    def test_folder_settings_override_global_without_mutating_root_config(self, client, tmp_path):
+        folder = tmp_path / "folder-overrides"
+        folder.mkdir()
+        server._save_config({
+            "ollama_model": "global-model",
+            "thumb_size": 160,
+        })
+
+        resp = client.post("/api/settings", json={
+            "folder": str(folder),
+            "ollama_model": "folder-model",
+            "thumb_size": 224,
+            "sections": [{"name": "Scene", "sentences": ["bright"]}],
+        })
+
+        assert resp.status_code == 200
+        root_cfg = server._load_config()
+        assert root_cfg["ollama_model"] == "global-model"
+        assert root_cfg["thumb_size"] == 160
+        assert os.path.normpath(str(folder)) not in root_cfg.get("folders", {})
+
+        folder_settings = client.get("/api/settings", params={"folder": str(folder)}).json()
+        assert folder_settings["ollama_model"] == "folder-model"
+        assert folder_settings["thumb_size"] == 224
+        assert folder_settings["sections"][0]["sentences"] == ["bright"]
+
+        folder_config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+        assert folder_config[server.TAG2_FOLDER_CONFIG_KEY]["ollama_model"] == "folder-model"
+        assert folder_config[server.TAG2_FOLDER_CONFIG_KEY]["thumb_size"] == 224
+
+    def test_get_settings_preserves_unrelated_folder_config_json(self, client, tmp_path):
+        folder = tmp_path / "shared-config"
+        folder.mkdir()
+        config_path = folder / "config.json"
+        config_path.write_text(json.dumps({"other_tool": {"keep": True}}), encoding="utf-8")
+
+        resp = client.get("/api/settings", params={"folder": str(folder)})
+
+        assert resp.status_code == 200
+        folder_config = json.loads(config_path.read_text(encoding="utf-8"))
+        assert folder_config["other_tool"] == {"keep": True}
+        assert server.TAG2_FOLDER_CONFIG_KEY in folder_config
+        assert folder_config[server.TAG2_FOLDER_CONFIG_KEY]["thumb_size"] == 160
+
+    def test_list_images_creates_folder_config_when_loading_folder(self, client, tmp_path):
+        folder = tmp_path / "load-folder"
+        folder.mkdir()
+        Image.new("RGB", (16, 16), color="navy").save(folder / "photo1.jpg")
+
+        resp = client.get("/api/list-images", params={"folder": str(folder)})
+
+        assert resp.status_code == 200
+        assert (folder / "config.json").exists()
+        folder_config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
+        assert server.TAG2_FOLDER_CONFIG_KEY in folder_config
+
+    def test_list_images_uses_folder_config_comfyui_output_folder(self, client, tmp_path):
+        folder = tmp_path / "preview-folder"
+        folder.mkdir()
+        image_path = folder / "photo1.jpg"
+        Image.new("RGB", (16, 16), color="green").save(image_path)
+        output_dir = tmp_path / "comfy-output"
+        output_dir.mkdir()
+        preview_path = output_dir / "photo1_1.png"
+        Image.new("RGB", (8, 8), color="orange").save(preview_path)
+
+        settings_resp = client.post("/api/settings", json={
+            "folder": str(folder),
+            "comfyui_output_folder": str(output_dir),
+        })
+        assert settings_resp.status_code == 200
+
+        resp = client.get("/api/list-images", params={"folder": str(folder)})
+
+        assert resp.status_code == 200
+        images = resp.json()["images"]
+        assert images[0]["prompt_preview_path"] == str(preview_path)
+
 
 class TestComfyUiPromptPreview:
     def test_replace_comfyui_workflow_placeholders(self):

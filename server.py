@@ -204,6 +204,41 @@ MEDIA_RANGE_HEADER_PATTERN = re.compile(r"bytes=(\d*)-(\d*)$", re.IGNORECASE)
 
 # ===== CONFIG FILE =====
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+FOLDER_CONFIG_FILENAME = "config.json"
+TAG2_FOLDER_CONFIG_KEY = "tag2"
+FOLDER_CONFIG_OVERRIDE_KEYS = (
+    "thumb_size",
+    "crop_aspect_ratios",
+    "mask_latent_base_width_presets",
+    "video_training_presets",
+    "video_training_profile_key",
+    "https_certfile",
+    "https_keyfile",
+    "https_port",
+    "remote_http_mode",
+    "ffmpeg_path",
+    "ffmpeg_threads",
+    "ffmpeg_hwaccel",
+    "processing_reserved_cores",
+    "ollama_host",
+    "ollama_server",
+    "ollama_port",
+    "ollama_timeout_seconds",
+    "ollama_max_output_tokens",
+    "ollama_model",
+    "ollama_prompt_template",
+    "ollama_group_prompt_template",
+    "ollama_enable_free_text",
+    "ollama_free_text_prompt_template",
+    "ollama_region_system_prompt_template",
+    "comfyui_server",
+    "comfyui_port",
+    "comfyui_workflow_path",
+    "comfyui_output_folder",
+    "comfyui_auto_preview",
+    "sections",
+)
+FOLDER_CONFIG_TOP_LEVEL_KEYS = set(FOLDER_CONFIG_OVERRIDE_KEYS) | {"captions", "sentences"}
 DEFAULT_OLLAMA_SERVER = "127.0.0.1"
 DEFAULT_OLLAMA_PORT = 11434
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 20
@@ -879,6 +914,189 @@ def _save_config(cfg: dict):
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
+def _normalize_folder_key(folder: str | None) -> str:
+    raw = str(folder or "").strip()
+    if not raw:
+        return ""
+    return os.path.normpath(raw)
+
+
+def _same_path(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+
+
+def _get_folder_config_path(folder: str | None) -> str:
+    folder_key = _normalize_folder_key(folder)
+    if not folder_key:
+        return ""
+    return os.path.join(os.path.abspath(folder_key), FOLDER_CONFIG_FILENAME)
+
+
+def _load_folder_config_document(folder: str | None) -> dict:
+    config_path = _get_folder_config_path(folder)
+    if not config_path or _same_path(config_path, CONFIG_PATH) or not os.path.isfile(config_path):
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _extract_folder_config_overrides(document: dict | None) -> dict:
+    if not isinstance(document, dict):
+        return {}
+    nested = document.get(TAG2_FOLDER_CONFIG_KEY)
+    source = nested if isinstance(nested, dict) else document
+    overrides: dict = {}
+    for key in FOLDER_CONFIG_TOP_LEVEL_KEYS:
+        if key in source:
+            overrides[key] = copy.deepcopy(source[key])
+    return overrides
+
+
+def _folder_document_has_tag2_overrides(document: dict | None) -> bool:
+    if not isinstance(document, dict):
+        return False
+    if isinstance(document.get(TAG2_FOLDER_CONFIG_KEY), dict):
+        return True
+    return any(key in document for key in FOLDER_CONFIG_TOP_LEVEL_KEYS)
+
+
+def _apply_folder_config_overrides(base_cfg: dict, folder: str, overrides: dict) -> dict:
+    if not overrides:
+        return copy.deepcopy(base_cfg)
+
+    cfg = copy.deepcopy(base_cfg)
+    folder_key = _normalize_folder_key(folder)
+    folders_cfg = cfg.setdefault("folders", {})
+    folder_cfg = copy.deepcopy(folders_cfg.get(folder_key) or {})
+
+    for key in FOLDER_CONFIG_OVERRIDE_KEYS:
+        if key in {"sections", "video_training_profile_key"}:
+            continue
+        if key in overrides:
+            cfg[key] = copy.deepcopy(overrides[key])
+
+    if "ollama_host" in overrides and "ollama_server" not in overrides and "ollama_port" not in overrides:
+        parsed_server, parsed_port = _split_ollama_host(
+            str(overrides.get("ollama_host") or ""),
+            DEFAULT_OLLAMA_SERVER,
+            DEFAULT_OLLAMA_PORT,
+        )
+        cfg["ollama_server"] = parsed_server
+        cfg["ollama_port"] = parsed_port
+
+    if "sections" in overrides:
+        folder_cfg["sections"] = copy.deepcopy(overrides.get("sections") or [])
+        folder_cfg.pop("captions", None)
+        folder_cfg.pop("sentences", None)
+    elif "captions" in overrides:
+        folder_cfg["captions"] = copy.deepcopy(overrides.get("captions") or [])
+        folder_cfg.pop("sections", None)
+        folder_cfg.pop("sentences", None)
+    elif "sentences" in overrides:
+        folder_cfg["sentences"] = copy.deepcopy(overrides.get("sentences") or [])
+        folder_cfg.pop("sections", None)
+        folder_cfg.pop("captions", None)
+
+    if "video_training_profile_key" in overrides:
+        folder_cfg["video_training_profile_key"] = str(overrides.get("video_training_profile_key") or "")
+
+    if folder_cfg:
+        folders_cfg[folder_key] = folder_cfg
+
+    cfg["ollama_host"] = _compose_ollama_host(
+        cfg.get("ollama_server"),
+        cfg.get("ollama_port"),
+        DEFAULT_OLLAMA_SERVER,
+        DEFAULT_OLLAMA_PORT,
+    )
+    return cfg
+
+
+def _load_effective_config(
+    folder: str | None = None,
+    *,
+    media_path: str | None = None,
+    ensure_folder_config: bool = False,
+) -> dict:
+    base_cfg = _load_config()
+    resolved_folder = folder
+    if not resolved_folder and media_path:
+        resolved_folder = str(Path(str(media_path)).parent)
+    folder_key = _normalize_folder_key(resolved_folder)
+    if not folder_key:
+        return base_cfg
+
+    if ensure_folder_config:
+        _ensure_folder_config(folder_key, base_cfg)
+
+    overrides = _extract_folder_config_overrides(_load_folder_config_document(folder_key))
+    if not overrides:
+        return base_cfg
+    return _apply_folder_config_overrides(base_cfg, folder_key, overrides)
+
+
+def _write_folder_config_snapshot(folder: str, cfg: dict) -> bool:
+    folder_key = _normalize_folder_key(folder)
+    config_path = _get_folder_config_path(folder_key)
+    if not folder_key or not config_path or _same_path(config_path, CONFIG_PATH):
+        return False
+    if not os.path.isdir(os.path.abspath(folder_key)):
+        return False
+
+    document = _load_folder_config_document(folder_key)
+    snapshot = _serialize_folder_config(cfg, folder_key)
+    updated_document = copy.deepcopy(document)
+
+    if isinstance(updated_document.get(TAG2_FOLDER_CONFIG_KEY), dict) or not any(
+        key in updated_document for key in FOLDER_CONFIG_TOP_LEVEL_KEYS
+    ):
+        updated_document[TAG2_FOLDER_CONFIG_KEY] = snapshot
+    else:
+        for key in FOLDER_CONFIG_TOP_LEVEL_KEYS:
+            updated_document.pop(key, None)
+        updated_document.update(snapshot)
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(updated_document, f, indent=2, ensure_ascii=False)
+    return True
+
+
+def _ensure_folder_config(folder: str, cfg: dict | None = None) -> bool:
+    folder_key = _normalize_folder_key(folder)
+    config_path = _get_folder_config_path(folder_key)
+    if not folder_key or not config_path or _same_path(config_path, CONFIG_PATH):
+        return False
+    if not os.path.isdir(os.path.abspath(folder_key)):
+        return False
+
+    document = _load_folder_config_document(folder_key)
+    if _folder_document_has_tag2_overrides(document):
+        return False
+    return _write_folder_config_snapshot(folder_key, cfg or _load_config())
+
+
+def _folder_has_tag2_config(folder: str | None) -> bool:
+    return _folder_document_has_tag2_overrides(_load_folder_config_document(folder))
+
+
+_base_get_folder_sections = _get_folder_sections
+
+
+def _get_folder_sections(cfg: dict, folder: str) -> list[dict]:
+    folder_key = _normalize_folder_key(folder)
+    if not folder_key:
+        return _base_get_folder_sections(cfg, folder_key)
+    overrides = _extract_folder_config_overrides(_load_folder_config_document(folder_key))
+    effective_cfg = _apply_folder_config_overrides(cfg, folder_key, overrides) if overrides else cfg
+    return _base_get_folder_sections(effective_cfg, folder_key)
+
+
 def _coalesce_caption_query(captions: str | None, sentences: str | None = None) -> str:
     if captions is not None:
         return captions
@@ -1089,6 +1307,112 @@ def _get_ffmpeg_hwaccel(cfg: dict) -> str:
     return mode if mode in {"auto", "off"} else DEFAULT_FFMPEG_HWACCEL
 
 
+def _build_settings_payload(cfg: dict, folder: str | None = None) -> dict:
+    video_training_presets = _get_video_training_presets(cfg)
+    result = {
+        "last_folder": cfg.get("last_folder", ""),
+        "thumb_size": int(cfg.get("thumb_size", 160) or 160),
+        "crop_aspect_ratios": _get_crop_aspect_ratios(cfg, DEFAULT_CROP_ASPECT_RATIOS),
+        "mask_latent_base_width_presets": _normalize_mask_latent_base_width_presets(cfg.get("mask_latent_base_width_presets")),
+        "video_training_presets": video_training_presets,
+        "https_certfile": str(cfg.get("https_certfile") or ""),
+        "https_keyfile": str(cfg.get("https_keyfile") or ""),
+        "https_port": _get_https_port(cfg, DEFAULT_HTTPS_PORT),
+        "remote_http_mode": _get_remote_http_mode(cfg, DEFAULT_REMOTE_HTTP_MODE),
+        "ffmpeg_path": _get_ffmpeg_path(cfg),
+        "ffmpeg_threads": _get_ffmpeg_threads(cfg),
+        "ffmpeg_hwaccel": _get_ffmpeg_hwaccel(cfg),
+        "processing_reserved_cores": _get_processing_reserved_cores(cfg),
+        "ollama_host": _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
+        "ollama_server": _get_ollama_server(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
+        "ollama_port": _get_ollama_port(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
+        "ollama_timeout_seconds": _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS),
+        "ollama_max_output_tokens": _get_ollama_max_output_tokens(cfg, DEFAULT_OLLAMA_MAX_OUTPUT_TOKENS),
+        "ollama_model": _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL),
+        "ollama_prompt_template": _get_ollama_prompt_template(cfg, DEFAULT_OLLAMA_PROMPT_TEMPLATE),
+        "ollama_group_prompt_template": _get_ollama_group_prompt_template(cfg, DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE),
+        "ollama_enable_free_text": _get_ollama_enable_free_text(cfg),
+        "ollama_free_text_prompt_template": _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE),
+        "ollama_region_system_prompt_template": _get_ollama_region_system_prompt_template(cfg, DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE),
+        "comfyui_server": _get_comfyui_server(cfg, DEFAULT_COMFYUI_SERVER),
+        "comfyui_port": _get_comfyui_port(cfg, DEFAULT_COMFYUI_PORT),
+        "comfyui_workflow_path": str(cfg.get("comfyui_workflow_path") or ""),
+        "comfyui_output_folder": str(cfg.get("comfyui_output_folder") or ""),
+        "comfyui_auto_preview": _get_comfyui_auto_preview(cfg),
+    }
+    if folder:
+        folder_key = _normalize_folder_key(folder)
+        result["sections"] = _get_folder_sections(cfg, folder_key)
+        result["folder"] = folder_key
+        profile_key = _get_folder_video_training_profile_key(cfg, folder_key, video_training_presets)
+        result["video_training_profile_key"] = profile_key
+        result["video_training_profile"] = _get_video_training_profile_by_key(video_training_presets, profile_key)
+    return result
+
+
+def _serialize_folder_config_item_order(item_order) -> list[dict]:
+    serialized: list[dict] = []
+    for raw_item in item_order if isinstance(item_order, list) else []:
+        if not isinstance(raw_item, dict):
+            continue
+        item_type = str(raw_item.get("type") or "").strip().lower()
+        if item_type == "sentence":
+            item_type = "caption"
+        if item_type == "caption":
+            caption = str(raw_item.get("caption") or raw_item.get("sentence") or "").strip()
+            if caption:
+                serialized.append({"type": "caption", "caption": caption})
+            continue
+        if item_type == "group":
+            group_id = str(raw_item.get("group_id") or "").strip()
+            if group_id:
+                serialized.append({"type": "group", "group_id": group_id})
+    return serialized
+
+
+def _serialize_folder_config_group(group: dict | None) -> dict:
+    group = dict(group or {})
+    return {
+        "id": str(group.get("id") or "").strip(),
+        "name": str(group.get("name") or "").strip(),
+        "captions": list(group.get("captions") or group.get("sentences") or []),
+        "hidden_captions": list(group.get("hidden_captions") or group.get("hidden_sentences") or []),
+        "skip_auto_caption": bool(group.get("skip_auto_caption")),
+        "skip_captions": list(group.get("skip_captions") or group.get("skip_sentences") or []),
+    }
+
+
+def _serialize_folder_config_sections(sections) -> list[dict]:
+    serialized: list[dict] = []
+    for raw_section in sections if isinstance(sections, list) else []:
+        if not isinstance(raw_section, dict):
+            continue
+        section = dict(raw_section)
+        serialized.append({
+            "name": str(section.get("name") or "").strip(),
+            "captions": list(section.get("captions") or section.get("sentences") or []),
+            "groups": [
+                _serialize_folder_config_group(group)
+                for group in (section.get("groups") or [])
+                if isinstance(group, dict)
+            ],
+            "item_order": _serialize_folder_config_item_order(section.get("item_order")),
+            "skip_auto_caption": bool(section.get("skip_auto_caption")),
+            "skip_captions": list(section.get("skip_captions") or section.get("skip_sentences") or []),
+        })
+    return serialized
+
+
+def _serialize_folder_config(cfg: dict, folder: str) -> dict:
+    payload = _build_settings_payload(cfg, folder)
+    payload.pop("last_folder", None)
+    payload.pop("folder", None)
+    payload.pop("video_training_profile", None)
+    if "sections" in payload:
+        payload["sections"] = _serialize_folder_config_sections(payload.get("sections"))
+    return payload
+
+
 def _get_tool_binary_name(base_name: str) -> str:
     """Return the platform-appropriate binary file name."""
     if os.name == "nt" and not base_name.lower().endswith(".exe"):
@@ -1232,7 +1556,7 @@ def _run_video_job(job_id: str) -> None:
     if not job:
         return
 
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=str(job.get("video_path") or ""))
     ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
     ffmpeg_threads = _get_ffmpeg_threads(cfg)
     ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
@@ -1572,7 +1896,7 @@ def _build_skipped_group_result(target: dict, enabled: list[str], sections: list
 async def list_images(folder: str = Query(...)):
     """List all supported media files in the given folder."""
     folder_path = _resolve_folder_path(folder)
-    cfg = _load_config()
+    cfg = _load_effective_config(folder=str(folder_path), ensure_folder_config=True)
     preview_output_folder = ""
     try:
         configured_output_folder = _get_comfyui_output_folder(cfg, DEFAULT_COMFYUI_OUTPUT_FOLDER)
@@ -1681,7 +2005,7 @@ async def get_thumbnail(path: str = Query(...), size: int = Query(default=256)):
     # Clamp size to nearest available
     actual_size = min(THUMBNAIL_SIZES, key=lambda s: abs(s - size))
     loop = asyncio.get_event_loop()
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=path)
     ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
     ffmpeg_threads = _get_ffmpeg_threads(cfg)
     ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
@@ -1862,7 +2186,7 @@ async def get_preview(path: str = Query(...), ignore_crop: bool = Query(default=
         raise HTTPException(status_code=400, detail="Unsupported media file")
 
     loop = asyncio.get_event_loop()
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=path)
     ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
     ffmpeg_threads = _get_ffmpeg_threads(cfg)
     ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
@@ -1892,7 +2216,7 @@ async def get_video_meta(path: str = Query(...)):
     if not _is_video_path(path):
         raise HTTPException(status_code=400, detail="Unsupported video file")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=path)
     _, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
     try:
         metadata = _probe_video_info(path, ffprobe_path, cancel_path=path)
@@ -1927,7 +2251,7 @@ async def get_video_frame(
     if not _is_video_path(path):
         raise HTTPException(status_code=400, detail="Unsupported video file")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=path)
     ffmpeg_path, _ = _resolve_ffmpeg_binaries(cfg)
     ffmpeg_threads = _get_ffmpeg_threads(cfg)
     ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
@@ -1974,7 +2298,7 @@ async def extract_video_frame_to_image(data: VideoFrameExtractRequest):
     if not _is_video_path(video_path):
         raise HTTPException(status_code=400, detail="Unsupported video file")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=video_path)
     ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
     ffmpeg_threads = _get_ffmpeg_threads(cfg)
     ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
@@ -2543,16 +2867,14 @@ def _prepare_clone_plan(source_folder: str, requested_name: str, image_paths: li
 
 
 def _copy_folder_config_for_clone(source_folder: str, target_folder: str):
-    cfg = _load_config()
-    folders_cfg = cfg.setdefault("folders", {})
-    source_key = os.path.normpath(source_folder)
-    target_key = os.path.normpath(target_folder)
-    if source_key in folders_cfg:
-        folders_cfg[target_key] = copy.deepcopy(folders_cfg[source_key])
-    else:
-        sections = _get_folder_sections(cfg, source_folder)
-        _set_folder_sections(cfg, target_folder, sections)
-    _save_config(cfg)
+    source_cfg = _load_effective_config(folder=source_folder)
+    target_cfg = copy.deepcopy(source_cfg)
+    sections = _get_folder_sections(source_cfg, source_folder)
+    presets = _get_video_training_presets(source_cfg)
+    profile_key = _get_folder_video_training_profile_key(source_cfg, source_folder, presets)
+    _set_folder_sections(target_cfg, target_folder, sections)
+    _set_folder_video_training_profile_key(target_cfg, target_folder, profile_key, presets)
+    _write_folder_config_snapshot(target_folder, target_cfg)
 
 
 def _normalize_section_merge_name(value: str | None) -> str:
@@ -3002,7 +3324,9 @@ def _prepare_move_plan(source_folder: str, target_folder: str, image_paths: list
         raise HTTPException(status_code=400, detail="Select at least one media file to copy")
 
     image_crops = cfg.get("image_crops") if isinstance(cfg.get("image_crops"), dict) else {}
-    source_sections = _get_folder_sections(cfg, str(source_path))
+    source_cfg = _load_effective_config(folder=str(source_path))
+    target_cfg = _load_effective_config(folder=str(target_path))
+    source_sections = _get_folder_sections(source_cfg, str(source_path))
     source_all_captions = _all_captions_from_sections(source_sections)
     source_headers = _all_headers_from_sections(source_sections)
 
@@ -3053,7 +3377,7 @@ def _prepare_move_plan(source_folder: str, target_folder: str, image_paths: list
             conflict_preview += f"\n- ...and {len(conflicts) - 8} more conflict(s)"
         raise HTTPException(status_code=400, detail=f"Copy blocked by existing target files:\n{conflict_preview}")
 
-    target_sections_before = _get_folder_sections(cfg, str(target_path))
+    target_sections_before = _get_folder_sections(target_cfg, str(target_path))
     target_sections_after = _merge_move_captions_into_target_sections(source_sections, target_sections_before, used_captions)
 
     return {
@@ -3155,7 +3479,7 @@ async def get_mask(
     if frame_index is None:
         raise HTTPException(status_code=400, detail="Frame index is required for video mask editing")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=path)
     _, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
     video_info = await loop.run_in_executor(executor, _probe_video_info, path, ffprobe_path)
     image_width = int(video_info.get("width") or 0)
@@ -3205,7 +3529,7 @@ async def get_mask_image(
     if frame_index is None:
         raise HTTPException(status_code=400, detail="Frame index is required for video mask editing")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=path)
     _, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
     video_info = await loop.run_in_executor(executor, _probe_video_info, path, ffprobe_path)
     image_width = int(video_info.get("width") or 0)
@@ -3256,7 +3580,7 @@ async def save_mask(
         if frame_index is None:
             raise HTTPException(status_code=400, detail="Frame index is required for video mask editing")
 
-        cfg = _load_config()
+        cfg = _load_effective_config(media_path=target_path)
         _, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
         video_info = await loop.run_in_executor(executor, _probe_video_info, target_path, ffprobe_path)
         image_width = int(video_info.get("width") or 0)
@@ -3603,8 +3927,11 @@ async def move_selected_media_stream(data: MoveSelectedMediaRequest):
 
             folders_cfg = cfg.setdefault("folders", {})
             image_crops = cfg.setdefault("image_crops", {}) if isinstance(cfg.get("image_crops"), dict) else {}
-            if sections_changed or os.path.normpath(str(target_path)) in folders_cfg:
-                _set_folder_sections(cfg, str(target_path), target_sections_after)
+            target_has_folder_config = _folder_has_tag2_config(str(target_path))
+            if sections_changed or target_has_folder_config or os.path.normpath(str(target_path)) in folders_cfg:
+                target_cfg = _load_effective_config(folder=str(target_path))
+                _set_folder_sections(target_cfg, str(target_path), target_sections_after)
+                _write_folder_config_snapshot(str(target_path), target_cfg)
 
             moved_target_paths = {str(item["target_path"]) for item in media_entries}
             if sections_changed:
@@ -3681,8 +4008,8 @@ async def get_caption(
         predefined = []
 
     # Load section headers for proper parsing
-    cfg = _load_config()
     folder = str(Path(path).parent)
+    cfg = _load_effective_config(folder=folder)
     sections = _get_folder_sections(cfg, folder)
     headers = _all_headers_from_sections(sections)
 
@@ -3769,8 +4096,8 @@ async def batch_toggle_caption(update: BatchCaptionUpdate):
         raise HTTPException(status_code=400, detail="Caption text is required")
 
     # Load sections config from the folder of the first image
-    cfg = _load_config()
     folder = str(Path(update.image_paths[0]).parent) if update.image_paths else ""
+    cfg = _load_effective_config(folder=folder) if folder else _load_config()
     sections = _get_folder_sections(cfg, folder)
     all_captions = _all_captions_from_sections(sections)
 
@@ -3808,10 +4135,10 @@ async def rename_caption_preset(update: RenameCaptionPresetUpdate):
     if not old_caption or not new_caption:
         raise HTTPException(status_code=400, detail="Both old and new caption text are required")
     if old_caption == new_caption:
-        cfg = _load_config()
+        cfg = _load_effective_config(folder=folder)
         return {"ok": True, "sections": _get_folder_sections(cfg, folder), "touched_caption_files": 0}
 
-    cfg = _load_config()
+    cfg = _load_effective_config(folder=folder)
     sections = _get_folder_sections(cfg, folder)
     all_captions_before = _all_captions_from_sections(sections)
     if old_caption not in all_captions_before:
@@ -3824,7 +4151,7 @@ async def rename_caption_preset(update: RenameCaptionPresetUpdate):
         raise HTTPException(status_code=404, detail="Caption not found")
 
     _set_folder_sections(cfg, folder, sections)
-    _save_config(cfg)
+    _write_folder_config_snapshot(folder, cfg)
 
     headers = _all_headers_from_sections(sections)
     folder_path = Path(folder)
@@ -3858,10 +4185,10 @@ async def rename_section(update: RenameSectionUpdate):
     if not folder or not os.path.isdir(folder):
         raise HTTPException(status_code=400, detail="Folder not found")
     if old_name == new_name:
-        cfg = _load_config()
+        cfg = _load_effective_config(folder=folder)
         return {"ok": True, "sections": _get_folder_sections(cfg, folder), "touched_caption_files": 0}
 
-    cfg = _load_config()
+    cfg = _load_effective_config(folder=folder)
     sections_before = _get_folder_sections(cfg, folder)
     section_names_before = [str(section.get("name") or "") for section in sections_before]
     if old_name not in section_names_before:
@@ -3877,7 +4204,7 @@ async def rename_section(update: RenameSectionUpdate):
         raise HTTPException(status_code=404, detail="Section not found")
 
     _set_folder_sections(cfg, folder, sections)
-    _save_config(cfg)
+    _write_folder_config_snapshot(folder, cfg)
 
     folder_path = Path(folder)
     touched_caption_files = 0
@@ -3905,7 +4232,7 @@ async def delete_caption_preset(update: DeleteCaptionPresetUpdate):
     if not caption:
         raise HTTPException(status_code=400, detail="Caption text is required")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(folder=folder)
     sections_before = _get_folder_sections(cfg, folder)
     if caption not in _all_captions_from_sections(sections_before):
         raise HTTPException(status_code=404, detail="Caption not found")
@@ -3916,7 +4243,7 @@ async def delete_caption_preset(update: DeleteCaptionPresetUpdate):
         raise HTTPException(status_code=404, detail="Caption not found")
 
     _set_folder_sections(cfg, folder, sections)
-    _save_config(cfg)
+    _write_folder_config_snapshot(folder, cfg)
     touched_caption_files = _remove_captions_from_caption_files(folder, sections_before, sections, [caption])
     return {"ok": True, "sections": sections, "removed_captions": [caption], "removed_sentences": [caption], "touched_caption_files": touched_caption_files}
 
@@ -3928,7 +4255,7 @@ async def delete_group(update: DeleteGroupUpdate):
     if not folder or not os.path.isdir(folder):
         raise HTTPException(status_code=400, detail="Folder not found")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(folder=folder)
     sections_before = _get_folder_sections(cfg, folder)
     sections = _get_folder_sections(cfg, folder)
     removed_captions = _remove_group_from_sections(sections, update.section_index, update.group_index)
@@ -3936,7 +4263,7 @@ async def delete_group(update: DeleteGroupUpdate):
         raise HTTPException(status_code=404, detail="Group not found")
 
     _set_folder_sections(cfg, folder, sections)
-    _save_config(cfg)
+    _write_folder_config_snapshot(folder, cfg)
     touched_caption_files = _remove_captions_from_caption_files(folder, sections_before, sections, removed_captions)
     return {"ok": True, "sections": sections, "removed_captions": removed_captions, "removed_sentences": removed_captions, "touched_caption_files": touched_caption_files}
 
@@ -3948,7 +4275,7 @@ async def delete_section(update: DeleteSectionUpdate):
     if not folder or not os.path.isdir(folder):
         raise HTTPException(status_code=400, detail="Folder not found")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(folder=folder)
     sections_before = _get_folder_sections(cfg, folder)
     sections = _get_folder_sections(cfg, folder)
     updated_sections, removed_captions = _remove_section_from_sections(sections, update.section_index)
@@ -3956,7 +4283,7 @@ async def delete_section(update: DeleteSectionUpdate):
         raise HTTPException(status_code=404, detail="Section not found")
 
     _set_folder_sections(cfg, folder, updated_sections)
-    _save_config(cfg)
+    _write_folder_config_snapshot(folder, cfg)
     touched_caption_files = _remove_captions_from_caption_files(folder, sections_before, updated_sections, removed_captions)
     return {"ok": True, "sections": updated_sections, "removed_captions": removed_captions, "removed_sentences": removed_captions, "touched_caption_files": touched_caption_files}
 
@@ -4317,8 +4644,8 @@ async def save_caption(data: SaveCaptionFull):
     if not os.path.isfile(data.image_path):
         raise HTTPException(status_code=404, detail="Media not found")
     # Load sections config for proper formatting
-    cfg = _load_config()
     folder = str(Path(data.image_path).parent)
+    cfg = _load_effective_config(folder=folder)
     sections = _get_folder_sections(cfg, folder)
     enabled_captions = _normalize_enabled_captions(data.resolved_enabled_captions(), sections)
     _write_caption_file(data.image_path, enabled_captions, data.free_text, sections)
@@ -4334,7 +4661,7 @@ async def auto_caption(data: AutoCaptionRequest):
     if _get_media_type_for_path(media_path) not in {"image", "video"}:
         raise HTTPException(status_code=400, detail="Unsupported media file for auto caption")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=media_path)
     model = (data.model or _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL)).strip()
     host = _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
     prompt_template = data.prompt_template or _get_ollama_prompt_template(cfg, DEFAULT_OLLAMA_PROMPT_TEMPLATE)
@@ -4560,7 +4887,7 @@ async def auto_caption_describe_region(data: AutoCaptionRegionDescribeRequest):
     if not _is_image_path(media_path):
         raise HTTPException(status_code=400, detail="Region description is only available for image files")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=media_path)
     model = (data.model or _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL)).strip()
     host = _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
     free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE)
@@ -4663,7 +4990,7 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
     if not media_paths:
         raise HTTPException(status_code=400, detail="No media provided")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=media_paths[0])
     model = (data.model or _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL)).strip()
     host = _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
     prompt_template = data.prompt_template or _get_ollama_prompt_template(cfg, DEFAULT_OLLAMA_PROMPT_TEMPLATE)
@@ -4687,6 +5014,14 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
         thread_count=ffmpeg_threads,
         hwaccel_mode=ffmpeg_hwaccel,
     )
+    start_model = model
+    start_host = host
+    start_prompt_template = prompt_template
+    start_group_prompt_template = group_prompt_template
+    start_enable_free_text = enable_free_text
+    start_free_text_prompt_template = free_text_prompt_template
+    start_timeout_seconds = timeout_seconds
+    start_max_output_tokens = max_output_tokens
 
     def _event_bytes(payload: dict) -> bytes:
         return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
@@ -4698,15 +5033,15 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
         yield _event_bytes({
             "type": "start",
             "count": len(media_paths),
-            "model": model,
-            "host": host,
-            "prompt_template": prompt_template,
-            "group_prompt_template": group_prompt_template,
-            "enable_free_text": enable_free_text,
+            "model": start_model,
+            "host": start_host,
+            "prompt_template": start_prompt_template,
+            "group_prompt_template": start_group_prompt_template,
+            "enable_free_text": start_enable_free_text,
             "free_text_only": free_text_only,
-            "free_text_prompt_template": free_text_prompt_template,
-            "timeout_seconds": timeout_seconds,
-            "max_output_tokens": max_output_tokens,
+            "free_text_prompt_template": start_free_text_prompt_template,
+            "timeout_seconds": start_timeout_seconds,
+            "max_output_tokens": start_max_output_tokens,
         })
 
         for media_path in media_paths:
@@ -4720,6 +5055,31 @@ async def auto_caption_stream(data: AutoCaptionRequest, request: Request):
                 total_errors += 1
                 yield _event_bytes({"type": "error", "path": media_path, "message": "Unsupported media file for auto caption"})
                 continue
+
+            cfg = _load_effective_config(media_path=media_path)
+            model = (data.model or _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL)).strip()
+            host = _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
+            prompt_template = data.prompt_template or _get_ollama_prompt_template(cfg, DEFAULT_OLLAMA_PROMPT_TEMPLATE)
+            group_prompt_template = data.group_prompt_template or _get_ollama_group_prompt_template(cfg, DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE)
+            enable_free_text = _get_ollama_enable_free_text(cfg) if data.enable_free_text is None else data.enable_free_text
+            free_text_prompt_template = data.free_text_prompt_template or _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE)
+            timeout_seconds = data.timeout_seconds or _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+            max_output_tokens = data.max_output_tokens or _get_ollama_max_output_tokens(cfg, DEFAULT_OLLAMA_MAX_OUTPUT_TOKENS)
+            if not model:
+                total_errors += 1
+                yield _event_bytes({"type": "error", "path": media_path, "message": "No Ollama model configured"})
+                continue
+
+            ffmpeg_path, ffprobe_path = _resolve_ffmpeg_binaries(cfg)
+            ffmpeg_threads = _get_ffmpeg_threads(cfg)
+            ffmpeg_hwaccel = _get_ffmpeg_hwaccel(cfg)
+            encode_media_call = partial(
+                _encode_media_for_ollama,
+                ffmpeg_path=ffmpeg_path,
+                ffprobe_path=ffprobe_path,
+                thread_count=ffmpeg_threads,
+                hwaccel_mode=ffmpeg_hwaccel,
+            )
 
             folder = str(Path(media_path).parent)
             sections = _get_folder_sections(cfg, folder)
@@ -4999,9 +5359,9 @@ def _get_bulk_caption_results(image_paths: list[str], predefined_captions: list[
     """Load caption data for multiple images."""
 
     # Load section headers (assume all images in same folder)
-    cfg = _load_config()
     if image_paths:
         folder = str(Path(image_paths[0]).parent)
+        cfg = _load_effective_config(folder=folder)
         sections = _get_folder_sections(cfg, folder)
         headers = _all_headers_from_sections(sections)
     else:
@@ -5084,46 +5444,9 @@ class ComfyUiPromptPreviewRequest(BaseModel):
 @app.get("/api/settings")
 async def get_settings(folder: Optional[str] = Query(default=None)):
     """Get full settings. If folder is specified, include sections for that folder."""
-    cfg = _load_config()
-    video_training_presets = _get_video_training_presets(cfg)
-    result = {
-        "last_folder": cfg.get("last_folder", ""),
-        "thumb_size": int(cfg.get("thumb_size", 160) or 160),
-        "crop_aspect_ratios": _get_crop_aspect_ratios(cfg, DEFAULT_CROP_ASPECT_RATIOS),
-        "mask_latent_base_width_presets": _normalize_mask_latent_base_width_presets(cfg.get("mask_latent_base_width_presets")),
-        "video_training_presets": video_training_presets,
-        "https_certfile": str(cfg.get("https_certfile") or ""),
-        "https_keyfile": str(cfg.get("https_keyfile") or ""),
-        "https_port": _get_https_port(cfg, DEFAULT_HTTPS_PORT),
-        "remote_http_mode": _get_remote_http_mode(cfg, DEFAULT_REMOTE_HTTP_MODE),
-        "ffmpeg_path": _get_ffmpeg_path(cfg),
-        "ffmpeg_threads": _get_ffmpeg_threads(cfg),
-        "ffmpeg_hwaccel": _get_ffmpeg_hwaccel(cfg),
-        "processing_reserved_cores": _get_processing_reserved_cores(cfg),
-        "ollama_host": _get_ollama_host(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
-        "ollama_server": _get_ollama_server(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
-        "ollama_port": _get_ollama_port(cfg, DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT),
-        "ollama_timeout_seconds": _get_ollama_timeout_seconds(cfg, DEFAULT_OLLAMA_TIMEOUT_SECONDS),
-        "ollama_max_output_tokens": _get_ollama_max_output_tokens(cfg, DEFAULT_OLLAMA_MAX_OUTPUT_TOKENS),
-        "ollama_model": _get_ollama_model(cfg, DEFAULT_OLLAMA_MODEL),
-        "ollama_prompt_template": _get_ollama_prompt_template(cfg, DEFAULT_OLLAMA_PROMPT_TEMPLATE),
-        "ollama_group_prompt_template": _get_ollama_group_prompt_template(cfg, DEFAULT_OLLAMA_GROUP_PROMPT_TEMPLATE),
-        "ollama_enable_free_text": _get_ollama_enable_free_text(cfg),
-        "ollama_free_text_prompt_template": _get_ollama_free_text_prompt_template(cfg, DEFAULT_OLLAMA_FREE_TEXT_PROMPT_TEMPLATE),
-        "ollama_region_system_prompt_template": _get_ollama_region_system_prompt_template(cfg, DEFAULT_OLLAMA_REGION_SYSTEM_PROMPT_TEMPLATE),
-        "comfyui_server": _get_comfyui_server(cfg, DEFAULT_COMFYUI_SERVER),
-        "comfyui_port": _get_comfyui_port(cfg, DEFAULT_COMFYUI_PORT),
-        "comfyui_workflow_path": str(cfg.get("comfyui_workflow_path") or ""),
-        "comfyui_output_folder": str(cfg.get("comfyui_output_folder") or ""),
-        "comfyui_auto_preview": _get_comfyui_auto_preview(cfg),
-    }
-    if folder:
-        result["sections"] = _get_folder_sections(cfg, folder)
-        result["folder"] = os.path.normpath(folder)
-        profile_key = _get_folder_video_training_profile_key(cfg, folder, video_training_presets)
-        result["video_training_profile_key"] = profile_key
-        result["video_training_profile"] = _get_video_training_profile_by_key(video_training_presets, profile_key)
-    return result
+    folder_key = _normalize_folder_key(folder)
+    cfg = _load_effective_config(folder=folder_key, ensure_folder_config=bool(folder_key)) if folder_key else _load_config()
+    return _build_settings_payload(cfg, folder_key or None)
 
 
 @app.get("/api/ollama/models")
@@ -5150,13 +5473,15 @@ async def get_ollama_models(
 @app.post("/api/settings")
 async def update_settings(data: SettingsUpdate):
     """Update settings. Saves last_folder and/or per-folder sections."""
-    cfg = _load_config()
+    folder_key = _normalize_folder_key(data.folder)
+    global_cfg = _load_config()
+    cfg = _load_effective_config(folder=folder_key) if folder_key else global_cfg
     sections_before = None
     sections_after = None
     touched_caption_files = None
     should_rewrite_caption_files = data.rewrite_caption_files is not False
     if data.last_folder is not None:
-        cfg["last_folder"] = data.last_folder
+        global_cfg["last_folder"] = data.last_folder
     if data.video_training_presets is not None:
         cfg["video_training_presets"] = _normalize_video_training_presets(data.video_training_presets)
     if data.thumb_size is not None:
@@ -5217,22 +5542,29 @@ async def update_settings(data: SettingsUpdate):
     if data.comfyui_auto_preview is not None:
         cfg["comfyui_auto_preview"] = bool(data.comfyui_auto_preview)
     cfg["ollama_host"] = _compose_ollama_host(cfg.get("ollama_server"), cfg.get("ollama_port"), DEFAULT_OLLAMA_SERVER, DEFAULT_OLLAMA_PORT)
-    if data.video_training_profile_key is not None and data.folder:
+    if data.video_training_profile_key is not None and folder_key:
         presets = _get_video_training_presets(cfg)
-        _set_folder_video_training_profile_key(cfg, data.folder, data.video_training_profile_key, presets)
-    if data.sections is not None and data.folder:
-        sections_before = _get_folder_sections(cfg, data.folder)
-        _set_folder_sections(cfg, data.folder, data.sections)
-        sections_after = _get_folder_sections(cfg, data.folder)
-    _save_config(cfg)
+        _set_folder_video_training_profile_key(cfg, folder_key, data.video_training_profile_key, presets)
+    if data.sections is not None and folder_key:
+        sections_before = _get_folder_sections(cfg, folder_key)
+        _set_folder_sections(cfg, folder_key, data.sections)
+        sections_after = _get_folder_sections(cfg, folder_key)
+
+    if not folder_key:
+        _save_config(cfg)
+    else:
+        if data.last_folder is not None:
+            _save_config(global_cfg)
+        _write_folder_config_snapshot(folder_key, cfg)
+
     if sections_before is not None and sections_after is not None:
         if should_rewrite_caption_files:
-            touched_caption_files = len(_rewrite_caption_files_for_section_change(data.folder, sections_before, sections_after))
+            touched_caption_files = len(_rewrite_caption_files_for_section_change(folder_key, sections_before, sections_after))
         else:
             touched_caption_files = 0
     response = {"ok": True}
-    if sections_after is not None and data.folder:
-        response["folder"] = os.path.normpath(data.folder)
+    if sections_after is not None and folder_key:
+        response["folder"] = folder_key
         response["sections"] = sections_after
         response["touched_caption_files"] = touched_caption_files if touched_caption_files is not None else 0
     return response
@@ -5244,7 +5576,7 @@ async def get_comfyui_prompt_preview_status(image_path: str = Query(...)):
     normalized_path = _normalize_existing_media_path(image_path)
     if not _is_image_path(normalized_path):
         raise HTTPException(status_code=400, detail="Prompt preview currently supports images only")
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=normalized_path)
     try:
         snapshot = _refresh_comfyui_jobs_for_image(cfg, normalized_path)
     except RuntimeError as exc:
@@ -5263,7 +5595,7 @@ async def get_comfyui_prompt_preview_files(image_path: str = Query(...)):
     normalized_path = _normalize_existing_media_path(image_path)
     if not _is_image_path(normalized_path):
         raise HTTPException(status_code=400, detail="Prompt preview currently supports images only")
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=normalized_path)
     try:
         files = _scan_comfyui_preview_files(_get_comfyui_output_folder(cfg), normalized_path)
     except RuntimeError as exc:
@@ -5282,7 +5614,7 @@ async def post_comfyui_prompt_preview(data: ComfyUiPromptPreviewRequest):
     if not _is_image_path(normalized_path):
         raise HTTPException(status_code=400, detail="Prompt preview currently supports images only")
 
-    cfg = _load_config()
+    cfg = _load_effective_config(media_path=normalized_path)
     host = _get_comfyui_host(cfg, DEFAULT_COMFYUI_SERVER, DEFAULT_COMFYUI_PORT)
     workflow_path = _get_comfyui_workflow_path(cfg, DEFAULT_COMFYUI_WORKFLOW_PATH)
     output_folder = _get_comfyui_output_folder(cfg, DEFAULT_COMFYUI_OUTPUT_FOLDER)
