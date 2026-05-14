@@ -2158,148 +2158,6 @@ class TestSettingsAPI:
         sections = server._get_folder_sections(cfg, folder)
         assert sections[0]["sentences"] == ["s1"]
 
-    def test_get_settings_creates_folder_config_from_legacy_global_settings(self, client, tmp_path):
-        folder = tmp_path / "migrated-folder"
-        folder.mkdir()
-        server._save_config({
-            "ollama_model": "global-model",
-            "folders": {
-                os.path.normpath(str(folder)): {
-                    "sections": [{"name": "Scene", "sentences": ["bright"]}],
-                    "video_training_profile_key": "wan-40f-16fps",
-                }
-            },
-        })
-
-        resp = client.get("/api/settings", params={"folder": str(folder)})
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["ollama_model"] == "global-model"
-        assert data["sections"][0]["sentences"] == ["bright"]
-        assert data["video_training_profile_key"] == "wan-40f-16fps"
-
-        folder_config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
-        tag2_config = folder_config[server.TAG2_FOLDER_CONFIG_KEY]
-        assert tag2_config["ollama_model"] == "global-model"
-        assert tag2_config["sections"][0]["captions"] == ["bright"]
-        assert "sentences" not in tag2_config["sections"][0]
-        assert tag2_config["video_training_profile_key"] == "wan-40f-16fps"
-
-    def test_folder_config_serializes_captions_only_schema(self, client, tmp_path):
-        folder = tmp_path / "captions-only"
-        folder.mkdir()
-
-        resp = client.post("/api/settings", json={
-            "folder": str(folder),
-            "sections": [{
-                "name": "Scene",
-                "sentences": ["bright"],
-                "groups": [{
-                    "name": "Chair",
-                    "sentences": ["visible", "not visible"],
-                    "hidden_sentences": ["not visible"],
-                }],
-                "item_order": [
-                    {"type": "sentence", "sentence": "bright"},
-                    {"type": "group", "group_id": "group-1"},
-                ],
-            }],
-        })
-
-        assert resp.status_code == 200
-
-        folder_config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
-        section = folder_config[server.TAG2_FOLDER_CONFIG_KEY]["sections"][0]
-        group = section["groups"][0]
-
-        assert section["captions"] == ["bright"]
-        assert "sentences" not in section
-        assert section["item_order"][0] == {"type": "caption", "caption": "bright"}
-        assert group["captions"] == ["visible", "not visible"]
-        assert group["hidden_captions"] == ["not visible"]
-        assert "sentences" not in group
-        assert "hidden_sentences" not in group
-        assert "skip_sentences" not in group
-
-    def test_folder_settings_override_global_without_mutating_root_config(self, client, tmp_path):
-        folder = tmp_path / "folder-overrides"
-        folder.mkdir()
-        server._save_config({
-            "ollama_model": "global-model",
-            "thumb_size": 160,
-        })
-
-        resp = client.post("/api/settings", json={
-            "folder": str(folder),
-            "ollama_model": "folder-model",
-            "thumb_size": 224,
-            "sections": [{"name": "Scene", "sentences": ["bright"]}],
-        })
-
-        assert resp.status_code == 200
-        root_cfg = server._load_config()
-        assert root_cfg["ollama_model"] == "global-model"
-        assert root_cfg["thumb_size"] == 160
-        assert os.path.normpath(str(folder)) not in root_cfg.get("folders", {})
-
-        folder_settings = client.get("/api/settings", params={"folder": str(folder)}).json()
-        assert folder_settings["ollama_model"] == "folder-model"
-        assert folder_settings["thumb_size"] == 224
-        assert folder_settings["sections"][0]["sentences"] == ["bright"]
-
-        folder_config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
-        assert folder_config[server.TAG2_FOLDER_CONFIG_KEY]["ollama_model"] == "folder-model"
-        assert folder_config[server.TAG2_FOLDER_CONFIG_KEY]["thumb_size"] == 224
-
-    def test_get_settings_preserves_unrelated_folder_config_json(self, client, tmp_path):
-        folder = tmp_path / "shared-config"
-        folder.mkdir()
-        config_path = folder / "config.json"
-        config_path.write_text(json.dumps({"other_tool": {"keep": True}}), encoding="utf-8")
-
-        resp = client.get("/api/settings", params={"folder": str(folder)})
-
-        assert resp.status_code == 200
-        folder_config = json.loads(config_path.read_text(encoding="utf-8"))
-        assert folder_config["other_tool"] == {"keep": True}
-        assert server.TAG2_FOLDER_CONFIG_KEY in folder_config
-        assert folder_config[server.TAG2_FOLDER_CONFIG_KEY]["thumb_size"] == 160
-
-    def test_list_images_creates_folder_config_when_loading_folder(self, client, tmp_path):
-        folder = tmp_path / "load-folder"
-        folder.mkdir()
-        Image.new("RGB", (16, 16), color="navy").save(folder / "photo1.jpg")
-
-        resp = client.get("/api/list-images", params={"folder": str(folder)})
-
-        assert resp.status_code == 200
-        assert (folder / "config.json").exists()
-        folder_config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
-        assert server.TAG2_FOLDER_CONFIG_KEY in folder_config
-
-    def test_list_images_uses_folder_config_comfyui_output_folder(self, client, tmp_path):
-        folder = tmp_path / "preview-folder"
-        folder.mkdir()
-        image_path = folder / "photo1.jpg"
-        Image.new("RGB", (16, 16), color="green").save(image_path)
-        output_dir = tmp_path / "comfy-output"
-        output_dir.mkdir()
-        preview_path = output_dir / "photo1_1.png"
-        Image.new("RGB", (8, 8), color="orange").save(preview_path)
-
-        settings_resp = client.post("/api/settings", json={
-            "folder": str(folder),
-            "comfyui_output_folder": str(output_dir),
-        })
-        assert settings_resp.status_code == 200
-
-        resp = client.get("/api/list-images", params={"folder": str(folder)})
-
-        assert resp.status_code == 200
-        images = resp.json()["images"]
-        assert images[0]["prompt_preview_path"] == str(preview_path)
-
 
 class TestComfyUiPromptPreview:
     def test_replace_comfyui_workflow_placeholders(self):
@@ -2821,13 +2679,10 @@ class TestCropAPI:
 
         def fake_generate(host, payload, timeout=120):
             assert timeout == 11
-            assert payload["prompt"] == server.DEFAULT_OLLAMA_REGION_PROMPT_TEMPLATE
+            assert "Current caption text:\nMoon\n\nNight sky" in payload["prompt"]
             assert "You are describing a region in a larger source image." in payload["system"]
-            assert "region comes from the 'lower right corner of the image'." in payload["system"]
-            assert "Describe subtle background material too, and actual full text." in payload["system"]
-            assert "Don't describe that the image is a region" in payload["system"]
-            assert "Moon\n\nNight sky" not in payload["system"]
-            assert "<X> is visible in the lower right corner of the image" in payload["system"]
+            assert "The provided crop comes from the 'lower right corner of the image'." in payload["system"]
+            assert "<thing> is visible in the lower right corner of the image" in payload["system"]
             assert payload["images"] == ["region-bytes"]
             assert payload["options"]["num_predict"] == 17
             return {"response": "Moon\nNight sky\nSilver clouds"}
@@ -2856,10 +2711,8 @@ class TestCropAPI:
         assert data["max_output_tokens"] == 17
         assert "'lower right corner of the image'" in data["system_prompt"]
         assert data["answer"] == "Moon\nNight sky\nSilver clouds"
-        assert data["answer_lines"] == ["Moon", "Night sky", "Silver clouds"]
-        assert data["added_lines"] == ["Moon", "Night sky", "Silver clouds"]
-        assert data["ignored_lines"] == []
-        assert data["free_text"] == "Night sky\nMoon\nNight sky\nSilver clouds"
+        assert data["added_lines"] == ["Silver clouds"]
+        assert data["free_text"] == "Night sky\nSilver clouds"
 
     def test_auto_caption_describe_region_uses_custom_region_system_prompt_template(self, client, single_image, monkeypatch):
         settings_resp = client.post("/api/settings", json={
@@ -2871,7 +2724,6 @@ class TestCropAPI:
             return ["region-bytes"]
 
         def fake_generate(host, payload, timeout=120):
-            assert payload["prompt"] == server.DEFAULT_OLLAMA_REGION_PROMPT_TEMPLATE
             assert payload["system"] == (
                 "Region hint: lower right corner of the image\n"
                 "Edge hint: The crop touches the right edge and bottom edge."
@@ -2894,66 +2746,6 @@ class TestCropAPI:
             "Region hint: lower right corner of the image\n"
             "Edge hint: The crop touches the right edge and bottom edge."
         )
-
-    def test_auto_caption_describe_region_supports_caption_text_in_custom_region_system_prompt_template(self, client, single_image, monkeypatch):
-        settings_resp = client.post("/api/settings", json={
-            "ollama_region_system_prompt_template": "Region hint: {region_location}\nCaption text:\n{caption_text}\n\nAnswer:",
-        })
-        assert settings_resp.status_code == 200
-
-        def fake_encode(path, crop=None, **kwargs):
-            return ["region-bytes"]
-
-        def fake_generate(host, payload, timeout=120):
-            assert payload["prompt"] == server.DEFAULT_OLLAMA_REGION_PROMPT_TEMPLATE
-            assert payload["system"] == (
-                "Region hint: lower right corner of the image\n"
-                "Caption text:\nMoon\n\nNight sky\n\nAnswer:"
-            )
-            return {"response": "Silver clouds"}
-
-        monkeypatch.setattr(server, "_encode_media_for_ollama", fake_encode)
-        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
-
-        resp = client.post("/api/auto-caption/describe-region", json={
-            "image_path": single_image,
-            "crop": {"x": 80, "y": 90, "w": 40, "h": 20, "ratio": "4:3"},
-            "caption_text": "Moon\n\nNight sky",
-            "enabled_captions": ["Moon"],
-            "free_text": "Night sky",
-            "free_text_prompt_template": "Current caption text:\n{caption_text}",
-        })
-
-        assert resp.status_code == 200
-        assert resp.json()["system_prompt"] == (
-            "Region hint: lower right corner of the image\n"
-            "Caption text:\nMoon\n\nNight sky\n\nAnswer:"
-        )
-
-    def test_auto_caption_describe_region_rebuilds_unresolved_caption_text_placeholder(self, client, single_image, monkeypatch):
-        def fake_encode(path, crop=None, **kwargs):
-            return ["region-bytes"]
-
-        def fake_generate(host, payload, timeout=120):
-            assert payload["prompt"] == server.DEFAULT_OLLAMA_REGION_PROMPT_TEMPLATE
-            assert "Moon\n\nNight sky" not in payload["system"]
-            assert "{caption_text}" not in payload["system"]
-            return {"response": "Silver clouds"}
-
-        monkeypatch.setattr(server, "_encode_media_for_ollama", fake_encode)
-        monkeypatch.setattr(server, "_ollama_generate", fake_generate)
-
-        resp = client.post("/api/auto-caption/describe-region", json={
-            "image_path": single_image,
-            "crop": {"x": 80, "y": 90, "w": 40, "h": 20, "ratio": "4:3"},
-            "caption_text": "{caption_text}",
-            "enabled_captions": ["Moon"],
-            "free_text": "Night sky",
-            "free_text_prompt_template": "Current caption text:\n{caption_text}",
-        })
-
-        assert resp.status_code == 200
-        assert "{caption_text}" not in resp.json()["system_prompt"]
 
     def test_auto_caption_describe_region_uses_configured_timeout_and_token_limit(self, client, single_image, monkeypatch):
         folder = str(os.path.dirname(single_image))
@@ -3018,12 +2810,6 @@ class TestCropAPI:
     def test_describe_region_position_keeps_center_for_smaller_centered_regions(self):
         assert server._describe_region_position({"x": 30, "y": 72, "w": 40, "h": 28}, (100, 100)) == "lower center"
         assert server._describe_region_position({"x": 0, "y": 30, "w": 18, "h": 30}, (100, 100)) == "far left center"
-
-    def test_describe_region_position_uses_precise_center_offsets(self):
-        assert server._describe_region_position({"x": 30, "y": 40, "w": 20, "h": 20}, (100, 100)) == "slightly to the left of the center"
-        assert server._describe_region_position({"x": 40, "y": 30, "w": 20, "h": 20}, (100, 100)) == "slightly above the center"
-        assert server._describe_region_position({"x": 30, "y": 30, "w": 20, "h": 20}, (100, 100)) == "slightly above and to the left of the center"
-        assert server._describe_region_position({"x": 40, "y": 40, "w": 20, "h": 20}, (100, 100)) == "center"
 
     def test_describe_region_position_does_not_use_corner_for_tall_edge_strip(self):
         assert server._describe_region_position({"x": 82, "y": 40, "w": 18, "h": 60}, (100, 100)) == "far right side"

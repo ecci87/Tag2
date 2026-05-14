@@ -143,7 +143,13 @@ addSafeClickListener(metadataSaveBtn, "saveMetadataForSelection");
 addSafeClickListener(videoClipBtn, "queueCurrentVideoClip");
 addSafeClickListener(videoExtractFrameBtn, "extractCurrentVideoFrame");
 addSafeClickListener(gifConvertBtn, "queueCurrentGifConversion");
+addSafeClickListener(imageDownloadBtn, "downloadCurrentImage");
 addSafeClickListener(videoDownloadBtn, "downloadCurrentVideo");
+if (fileGridContainer) {
+  fileGridContainer.addEventListener("scroll", () => {
+    invokeGlobalFunction("scheduleVisibleThumbnailMaskOverlaySync");
+  }, { passive: true });
+}
 [metadataSeedInput, metadataSamplingFrequencyInput, metadataMinTInput, metadataMaxTInput].forEach((inputEl) => {
   if (!inputEl) return;
   inputEl.addEventListener("input", handleMetadataEditorInputChange);

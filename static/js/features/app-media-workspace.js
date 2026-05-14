@@ -287,17 +287,6 @@ function updateImageDimensions(path, cropState) {
   if (cropState.current_height) image.height = cropState.current_height;
 }
 
-async function ensureImageCropScaleReady(path) {
-  if (!path || !isImageMediaPath(path)) return true;
-  const cropState = state.imageCrops[path];
-  if (cropState?.current_width && cropState?.current_height) {
-    return true;
-  }
-  await loadCropData(path);
-  const nextCropState = state.imageCrops[path];
-  return !!(nextCropState?.current_width && nextCropState?.current_height);
-}
-
 function parseAspectRatioEntry(label) {
   const text = String(label || "").trim();
   const match = text.match(/^(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)$/);
@@ -704,34 +693,6 @@ function clampRegionFraction(value) {
   return Math.max(0, Math.min(1, Number(value || 0)));
 }
 
-function describeAiRegionCenterOffset(centerX, centerY) {
-  let horizontal = null;
-  let vertical = null;
-  if (centerX < 0.46) {
-    horizontal = "left";
-  } else if (centerX > 0.54) {
-    horizontal = "right";
-  }
-  if (centerY < 0.46) {
-    vertical = "above";
-  } else if (centerY > 0.54) {
-    vertical = "below";
-  }
-
-  if (!horizontal && !vertical) {
-    return "center";
-  }
-  if (horizontal && vertical) {
-    const horizontalPhrase = horizontal === "left" ? "to the left" : "to the right";
-    return `slightly ${vertical} and ${horizontalPhrase} of the center`;
-  }
-  if (horizontal) {
-    const horizontalPhrase = horizontal === "left" ? "to the left" : "to the right";
-    return `slightly ${horizontalPhrase} of the center`;
-  }
-  return `slightly ${vertical} the center`;
-}
-
 function describeAiRegionPosition(crop, imageWidth = imgNatW, imageHeight = imgNatH) {
   const safeWidth = Math.max(1, Number(imageWidth || 1));
   const safeHeight = Math.max(1, Number(imageHeight || 1));
@@ -841,7 +802,7 @@ function describeAiRegionPosition(crop, imageWidth = imgNatW, imageHeight = imgN
   const horizontal = centerX < 0.34 ? "left" : (centerX > 0.66 ? "right" : "center");
   const vertical = centerY < 0.34 ? "upper" : (centerY > 0.66 ? "lower" : "center");
   if (vertical === "center" && horizontal === "center") {
-    return describeAiRegionCenterOffset(centerX, centerY);
+    return "center";
   }
   if (vertical === "center") {
     if (touchesLeft && horizontal === "left") {
@@ -1161,7 +1122,6 @@ async function loadCropData(path) {
     if (!resp.ok) throw new Error("Failed to load crop");
     const data = await resp.json();
     state.imageCrops[path] = data.crop || null;
-    updateImageDimensions(path, data.crop);
     if (state.previewPath === path) {
       updateCropButtons();
     }
@@ -1209,10 +1169,6 @@ async function applyCropDraftWithOptions(options = {}) {
   }
   statusBar.textContent = "Applying crop...";
   try {
-    const cropScaleReady = await ensureImageCropScaleReady(path);
-    if (!cropScaleReady) {
-      throw new Error("Image dimensions are not ready yet");
-    }
     const resp = await fetch("/api/crop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -22,9 +22,7 @@ async function loadCaptionData(path) {
       if (state.previewPath === path) {
         scheduleUiRender({ preview: true });
       }
-      if (captionDataAffectsVisibleFilters()) {
-        refreshGridForActiveFilters();
-      }
+      refreshGridForActiveFilters();
     }
   } catch (err) {
     console.error("Failed to load caption:", err);
@@ -74,9 +72,7 @@ async function loadMultiCaptionState() {
     if (state.activeSentenceFilters.size > 0) {
       state.filterCaptionCacheKey = getActiveSentenceFilterKey();
     }
-    if (captionDataAffectsVisibleFilters()) {
-      refreshGridForActiveFilters();
-    }
+    refreshGridForActiveFilters();
     scheduleUiRender({ sentences: true, preview: true });
   } catch (err) {
     console.error("Failed to load bulk captions:", err);
@@ -2481,6 +2477,7 @@ async function processQueuedFreeTextRegions() {
   statusBar.textContent = "Describing selected region...";
   appendModelLog(`[${getFileLabel(path)}] Describing selected region using ${state.ollamaModel.trim() || "llava"} @ ${state.ollamaServer}:${state.ollamaPort}`, "log-dim");
   logPromptTemplate("Regional image system prompt template", state.ollamaRegionSystemPromptTemplate);
+  logPromptTemplate("Free-text prompt template", state.ollamaFreeTextPromptTemplate);
 
   try {
     const resp = await fetch("/api/auto-caption/describe-region", {
@@ -2494,6 +2491,7 @@ async function processQueuedFreeTextRegions() {
         caption_text: captionText,
         free_text: currentFreeText,
         enabled_captions: enabledSentences,
+        free_text_prompt_template: state.ollamaFreeTextPromptTemplate,
         timeout_seconds: state.ollamaTimeoutSeconds,
         max_output_tokens: state.ollamaMaxOutputTokens,
       }),
@@ -2512,27 +2510,14 @@ async function processQueuedFreeTextRegions() {
       });
     }
     const addedCount = Array.isArray(data.added_lines) ? data.added_lines.length : 0;
-    const ignoredLines = Array.isArray(data.ignored_lines) ? data.ignored_lines : [];
     appendModelLog(
       `[${getFileLabel(path)}] Region answer: ${data.answer || "NONE"}`,
       addedCount > 0 ? "log-ok" : "log-warn"
     );
-    if (ignoredLines.length > 0) {
-      appendModelLog(
-        `[${getFileLabel(path)}] Ignored already-known region lines: ${ignoredLines.join(" | ")}`,
-        "log-dim"
-      );
-    }
     state.aiRegionPicker.completedJobs += 1;
-    if (addedCount > 0 && ignoredLines.length > 0) {
-      statusBar.textContent = `Added ${addedCount} region detail${addedCount === 1 ? "" : "s"}, skipped ${ignoredLines.length} duplicate${ignoredLines.length === 1 ? "" : "s"}`;
-    } else if (addedCount > 0) {
-      statusBar.textContent = `Added ${addedCount} region detail${addedCount === 1 ? "" : "s"}`;
-    } else if (ignoredLines.length > 0) {
-      statusBar.textContent = `Skipped ${ignoredLines.length} already-known region line${ignoredLines.length === 1 ? "" : "s"}`;
-    } else {
-      statusBar.textContent = "No new region details found";
-    }
+    statusBar.textContent = addedCount > 0
+      ? `Added ${addedCount} region detail${addedCount === 1 ? "" : "s"}`
+      : "No new region details found";
   } catch (err) {
     if (err?.name === "AbortError") {
       appendModelLog(`[${getFileLabel(path)}] Selected-region description cancelled`, "log-warn");
@@ -2563,11 +2548,6 @@ async function describeFreeTextRegion() {
   if (state.selectedPaths.size !== 1 || !state.previewPath || !isImageMediaPath(state.previewPath)) {
     stopAiRegionPicker({ keepStatus: true });
     statusBar.textContent = "Select a single image first";
-    return;
-  }
-  const cropScaleReady = await ensureImageCropScaleReady(state.previewPath);
-  if (!cropScaleReady) {
-    statusBar.textContent = "Image dimensions are not ready yet";
     return;
   }
   if (!state.cropDraft) {
@@ -2623,43 +2603,13 @@ function stopAutoCaption() {
   state.autoCaptionAbortController.abort();
 }
 
-let toggleSentenceRequestToken = 0;
-
-function doEnabledSentenceListsMatch(left, right) {
-  const normalizedLeft = Array.isArray(left) ? left : [];
-  const normalizedRight = Array.isArray(right) ? right : [];
-  if (normalizedLeft.length !== normalizedRight.length) {
-    return false;
-  }
-  return normalizedLeft.every((sentence, index) => sentence === normalizedRight[index]);
-}
-
 async function toggleSentence(sentence, wasChecked, wasPartial) {
   const selectedPaths = [...state.selectedPaths];
   if (selectedPaths.length === 0) return;
 
   const shouldEnable = !wasChecked && !wasPartial;
-  const previousEnabledByPath = new Map();
-  const appliedEnabledByPath = new Map();
-
-  for (const path of selectedPaths) {
-    const cap = ensureCaptionCache(path);
-    const previousEnabled = Array.isArray(cap.enabled_sentences) ? [...cap.enabled_sentences] : [];
-    const nextEnabled = applySentenceSelectionToList(previousEnabled, sentence, shouldEnable);
-    previousEnabledByPath.set(path, previousEnabled);
-    appliedEnabledByPath.set(path, nextEnabled);
-    cap.enabled_sentences = nextEnabled;
-  }
-
-  refreshGridForActiveFilters();
-  scheduleUiRender({ sentences: true, preview: true });
-  for (const path of selectedPaths) {
-    const cap = state.captionCache[path];
-    markCaptionIndicator(path, hasEffectiveCaptionContent(cap));
-  }
 
   statusBar.textContent = "Saving...";
-  const requestToken = ++toggleSentenceRequestToken;
 
   try {
     const resp = await fetch("/api/caption/batch-toggle", {
@@ -2671,27 +2621,25 @@ async function toggleSentence(sentence, wasChecked, wasPartial) {
         enabled: shouldEnable,
       }),
     });
-    if (!resp.ok) {
-      const data = await resp.json().catch(() => ({}));
-      throw new Error(data.detail || "Failed to save caption selection");
-    }
-    if (requestToken === toggleSentenceRequestToken) {
+    if (resp.ok) {
+      // Update local cache
+      for (const path of selectedPaths) {
+        const cap = ensureCaptionCache(path);
+        cap.enabled_sentences = applySentenceSelectionToList(cap.enabled_sentences, sentence, shouldEnable);
+      }
+      refreshGridForActiveFilters();
+      renderSentences();
+      renderPreviewCaptionOverlay();
+      // Update caption indicators on thumbnails
+      for (const path of selectedPaths) {
+        const cap = state.captionCache[path];
+        const hasContent = hasEffectiveCaptionContent(cap);
+        markCaptionIndicator(path, hasContent);
+      }
       statusBar.textContent = "Saved";
     }
   } catch (err) {
-    for (const path of selectedPaths) {
-      const cap = ensureCaptionCache(path);
-      const appliedEnabled = appliedEnabledByPath.get(path) || [];
-      if (doEnabledSentenceListsMatch(cap.enabled_sentences, appliedEnabled)) {
-        cap.enabled_sentences = previousEnabledByPath.get(path) || [];
-      }
-      markCaptionIndicator(path, hasEffectiveCaptionContent(cap));
-    }
-    refreshGridForActiveFilters();
-    scheduleUiRender({ sentences: true, preview: true });
-    if (requestToken === toggleSentenceRequestToken) {
-      statusBar.textContent = `Error: ${err.message}`;
-    }
+    statusBar.textContent = `Error: ${err.message}`;
   }
 }
 

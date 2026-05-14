@@ -357,7 +357,6 @@ async function loadFolder(options = {}) {
   state.activeMetaFilters.maskState = "any";
   state.activeMetaFilters.captionState = "any";
   state.mediaSearchQuery = "";
-  state.captionPresenceFilterSnapshot = null;
   state.filterCaptionCacheKey = "";
   state.filterLoadingPromise = null;
   state.imageCrops = {};
@@ -1709,24 +1708,9 @@ function hidePreview() {
     await uploadDroppedFiles(e.dataTransfer?.files);
   });
 
-  let suppressPreviewContextMenuUntil = 0;
-
-  const markPreviewContextMenuSuppressed = (durationMs = 400) => {
-    suppressPreviewContextMenuUntil = Math.max(suppressPreviewContextMenuUntil, Date.now() + durationMs);
-  };
-
-  const hasActivePreviewRightClickInteraction = () => (
-    state.cropInteraction?.button === 2
-    || !!state.maskEditor.signalProbeDragging
-    || !!state.maskEditor.painting
-  );
-
   const shouldSuppressPreviewContextMenu = (event) => {
     if (!(canEditCrop() || isAiRegionPickerVisible() || isMaskEditorVisible() || state.cropInteraction?.button === 2)) {
       return false;
-    }
-    if (hasActivePreviewRightClickInteraction() || Date.now() <= suppressPreviewContextMenuUntil) {
-      return true;
     }
     const target = event?.target;
     if (target?.closest?.("#preview-stage, #preview-img, #preview-video, #crop-box, #mask-editor-panel, #mask-canvas, #image-edit-canvas, #mask-latent-preview-panel")) {
@@ -1792,7 +1776,6 @@ function hidePreview() {
       if (!isClientInsidePreviewImage(e.clientX, e.clientY)) {
         return;
       }
-      markPreviewContextMenuSuppressed();
       beginMaskSignalProbeDrag(e);
       e.preventDefault();
       return;
@@ -1804,7 +1787,6 @@ function hidePreview() {
       if (!isClientInsidePreviewImage(e.clientX, e.clientY)) {
         return;
       }
-      markPreviewContextMenuSuppressed();
       beginMaskPaint(e);
       e.preventDefault();
       return;
@@ -1816,7 +1798,6 @@ function hidePreview() {
       if (!isClientInsidePreviewImage(e.clientX, e.clientY)) {
         return;
       }
-      markPreviewContextMenuSuppressed();
       startCropCreate(e);
       updateCropGuideFromClient(e.clientX, e.clientY);
       e.preventDefault();
@@ -1824,7 +1805,6 @@ function hidePreview() {
       return;
     }
     if (e.button === 2 && canEditCrop() && !isAiRegionPickerActive()) {
-      markPreviewContextMenuSuppressed();
       startCropCreate(e);
       updateCropGuideFromClient(e.clientX, e.clientY);
       e.preventDefault();
@@ -1926,13 +1906,6 @@ function hidePreview() {
   });
 
   window.addEventListener("mouseup", (e) => {
-    const finishingPreviewRightClickInteraction = !!(
-      e.button === 2
-      && (state.cropInteraction?.button === 2 || state.maskEditor.signalProbeDragging || state.maskEditor.painting)
-    );
-    if (finishingPreviewRightClickInteraction) {
-      markPreviewContextMenuSuppressed();
-    }
     if (videoTimelineInteraction) {
       finishVideoTimelineInteraction(e.clientX);
       return;

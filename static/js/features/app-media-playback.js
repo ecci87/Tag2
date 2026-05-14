@@ -829,16 +829,29 @@ function renderVideoEditPanel() {
   syncPreviewVideoPlaybackState();
 }
 
-function downloadCurrentVideo() {
-  if (!state.previewPath || !isVideoMediaPath(state.previewPath)) return;
-  const path = state.previewPath;
+function downloadMediaPath(path) {
+  const resolvedPath = String(path || "").trim();
+  if (!resolvedPath) return;
   const link = document.createElement("a");
-  link.href = buildImageApiUrl("media", path);
-  link.download = getFileLabel(path);
+  link.href = buildImageApiUrl("media", resolvedPath);
+  link.download = getFileLabel(resolvedPath);
   document.body.appendChild(link);
   link.click();
   link.remove();
-  statusBar.textContent = `Downloading ${getFileLabel(path)}...`;
+  statusBar.textContent = `Downloading ${getFileLabel(resolvedPath)}...`;
+}
+
+function downloadCurrentImage() {
+  if (!state.previewPath || state.previewMediaType !== "image" || state.selectedPaths.size !== 1) return;
+  const path = typeof getPromptPreviewCurrentDisplayPath === "function"
+    ? getPromptPreviewCurrentDisplayPath(state.previewPath)
+    : state.previewPath;
+  downloadMediaPath(path);
+}
+
+function downloadCurrentVideo() {
+  if (!state.previewPath || !isVideoMediaPath(state.previewPath)) return;
+  downloadMediaPath(state.previewPath);
 }
 
 async function extractCurrentVideoFrame() {
