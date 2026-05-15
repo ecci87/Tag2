@@ -341,6 +341,7 @@ const cropApplyBtn = $("#crop-apply-btn");
 const cropCancelBtn = $("#crop-cancel-btn");
 const cropRemoveBtn = $("#crop-remove-btn");
 const previewActionBar = $("#preview-action-bar");
+const imageDownloadBtn = $("#image-download-btn");
 const duplicateImageBtn = $("#duplicate-image-btn");
 const imageEditBtn = $("#image-edit-btn");
 const promptPreviewBtn = $("#prompt-preview-btn");

@@ -138,18 +138,18 @@ function persistSectionsToStorage(requestToken, options = {}) {
     savingMessage = "Saving caption library...",
     successMessage = "Caption library saved",
   } = options;
-  if (!state.folder) {
-    return Promise.resolve({ ok: false, skipped: true });
-  }
   statusBar.textContent = savingMessage;
+  const payload = {
+    sections: serializeSectionsForSave(),
+    rewrite_caption_files: rewriteCaptionFiles,
+  };
+  if (state.folder) {
+    payload.folder = state.folder;
+  }
   return fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      sections: serializeSectionsForSave(),
-      folder: state.folder,
-      rewrite_caption_files: rewriteCaptionFiles,
-    }),
+    body: JSON.stringify(payload),
   })
     .then(async (resp) => {
       const data = await resp.json().catch(() => ({}));

@@ -884,6 +884,29 @@ def _save_config(cfg: dict):
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 
+def _get_default_sections(cfg: dict) -> list[dict]:
+    """Return normalized global default sections without resolving a real folder."""
+    default_cfg = {"folders": {}}
+    if cfg.get("default_sections"):
+        default_cfg["default_sections"] = copy.deepcopy(cfg.get("default_sections") or [])
+    elif cfg.get("default_captions"):
+        default_cfg["default_captions"] = list(cfg.get("default_captions") or [])
+    elif cfg.get("default_sentences"):
+        default_cfg["default_sentences"] = list(cfg.get("default_sentences") or [])
+    return _get_folder_sections(default_cfg, "__tag2_default_sections__")
+
+
+def _set_default_sections(cfg: dict, sections: list[dict]) -> list[dict]:
+    """Persist normalized global default sections."""
+    normalized_sections = _get_folder_sections(
+        {"folders": {"__tag2_default_sections__": {"sections": sections}}},
+        "__tag2_default_sections__",
+    )
+    cfg["default_sections"] = normalized_sections
+    cfg["default_captions"] = []
+    return normalized_sections
+
+
 def _coalesce_caption_query(captions: str | None, sentences: str | None = None) -> str:
     if captions is not None:
         return captions
@@ -5056,6 +5079,7 @@ async def get_settings(folder: Optional[str] = Query(default=None)):
         "comfyui_workflow_path": str(cfg.get("comfyui_workflow_path") or ""),
         "comfyui_output_folder": str(cfg.get("comfyui_output_folder") or ""),
         "comfyui_auto_preview": _get_comfyui_auto_preview(cfg),
+        "sections": _get_default_sections(cfg),
     }
     if folder:
         result["sections"] = _get_folder_sections(cfg, folder)
@@ -5160,19 +5184,24 @@ async def update_settings(data: SettingsUpdate):
     if data.video_training_profile_key is not None and data.folder:
         presets = _get_video_training_presets(cfg)
         _set_folder_video_training_profile_key(cfg, data.folder, data.video_training_profile_key, presets)
-    if data.sections is not None and data.folder:
-        sections_before = _get_folder_sections(cfg, data.folder)
-        _set_folder_sections(cfg, data.folder, data.sections)
-        sections_after = _get_folder_sections(cfg, data.folder)
+    if data.sections is not None:
+        if data.folder:
+            sections_before = _get_folder_sections(cfg, data.folder)
+            _set_folder_sections(cfg, data.folder, data.sections)
+            sections_after = _get_folder_sections(cfg, data.folder)
+        else:
+            sections_before = _get_default_sections(cfg)
+            sections_after = _set_default_sections(cfg, data.sections)
     _save_config(cfg)
     if sections_before is not None and sections_after is not None:
-        if should_rewrite_caption_files:
+        if should_rewrite_caption_files and data.folder:
             touched_caption_files = len(_rewrite_caption_files_for_section_change(data.folder, sections_before, sections_after))
         else:
             touched_caption_files = 0
     response = {"ok": True}
-    if sections_after is not None and data.folder:
-        response["folder"] = os.path.normpath(data.folder)
+    if sections_after is not None:
+        if data.folder:
+            response["folder"] = os.path.normpath(data.folder)
         response["sections"] = sections_after
         response["touched_caption_files"] = touched_caption_files if touched_caption_files is not None else 0
     return response

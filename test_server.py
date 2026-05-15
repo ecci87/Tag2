@@ -1915,6 +1915,28 @@ class TestSettingsAPI:
         assert "{group_name}" in data["ollama_group_prompt_template"]
         assert data["ollama_enable_free_text"] is True
         assert "{caption_text}" in data["ollama_free_text_prompt_template"]
+        assert "sections" in data
+        assert data["sections"] == [{"name": "", "captions": [], "sentences": [], "groups": [], "item_order": [], "skip_auto_caption": False, "skip_captions": [], "skip_sentences": []}]
+
+    def test_save_and_load_global_sections_without_folder(self, client):
+        sections = [
+            {"name": "## Lighting", "sentences": ["bright"], "groups": []},
+        ]
+
+        save_resp = client.post("/api/settings", json={"sections": sections})
+
+        assert save_resp.status_code == 200
+        save_data = save_resp.json()
+        assert save_data["touched_caption_files"] == 0
+        assert save_data["sections"][0]["captions"] == ["bright"]
+
+        load_resp = client.get("/api/settings")
+
+        assert load_resp.status_code == 200
+        load_data = load_resp.json()
+        assert load_data["sections"][0]["name"] == "## Lighting"
+        assert load_data["sections"][0]["captions"] == ["bright"]
+        assert load_data["sections"][0]["sentences"] == ["bright"]
 
     def test_save_and_load_last_folder(self, client):
         client.post("/api/settings", json={"last_folder": "/my/folder"})
