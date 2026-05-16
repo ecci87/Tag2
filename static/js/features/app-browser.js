@@ -29,6 +29,30 @@ function getFolderAutocompleteBinding(kind = "main") {
   };
 }
 
+function applyFolderAutocompletePreviewFor(kind = "main") {
+  const { autocomplete, input } = getFolderAutocompleteBinding(kind);
+  const item = autocomplete.items?.[autocomplete.highlightedIndex];
+  if (!item?.path || document.activeElement !== input) return;
+
+  const selectionStart = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
+  const selectionEnd = Number.isInteger(input.selectionEnd) ? input.selectionEnd : input.value.length;
+  if (selectionEnd !== input.value.length) return;
+
+  const typedPrefix = input.value.slice(0, Math.max(0, selectionStart));
+  if (!typedPrefix) return;
+
+  const normalizedPrefix = typedPrefix.replace(/[\\/]+/g, "/").toLowerCase();
+  const candidatePath = String(item.path || "");
+  const normalizedCandidate = candidatePath.replace(/[\\/]+/g, "/").toLowerCase();
+  if (!normalizedCandidate.startsWith(normalizedPrefix)) return;
+
+  input.value = candidatePath;
+  const caretStart = normalizeFolderPathForCompare(typedPrefix) === normalizeFolderPathForCompare(candidatePath)
+    ? candidatePath.length
+    : typedPrefix.length;
+  input.setSelectionRange(caretStart, candidatePath.length);
+}
+
 function renderFolderAutocompleteFor(kind = "main") {
   const { autocomplete, input, list, optionIdPrefix } = getFolderAutocompleteBinding(kind);
   const items = Array.isArray(autocomplete.items) ? autocomplete.items : [];
@@ -90,6 +114,7 @@ function renderFolderAutocompleteFor(kind = "main") {
   if (activeOption) {
     activeOption.scrollIntoView({ block: "nearest" });
   }
+  applyFolderAutocompletePreviewFor(kind);
 }
 
 function hideFolderAutocompleteFor(kind = "main") {

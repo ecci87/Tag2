@@ -1056,24 +1056,36 @@ function renderPreviewActionBar() {
   const imageAvailable = isImageEditAvailable();
   const maskAvailable = isMaskEditAvailable();
   const videoKeyAddVisible = !active && !regionPickerActive && !cropEditActive && isVideoMaskEditAvailable();
-  imageDownloadBtn.classList.toggle("visible", imageAvailable && !active && !regionPickerActive && !cropEditActive);
-  duplicateImageBtn.classList.toggle("visible", imageAvailable && !active && !regionPickerActive && !cropEditActive);
-  imageEditBtn.classList.toggle("visible", imageAvailable && !active && !regionPickerActive && !cropEditActive);
+  const imageButtonVisible = imageAvailable && !active && !regionPickerActive && !cropEditActive;
+  imageDownloadBtn?.classList.toggle("visible", imageButtonVisible);
+  duplicateImageBtn?.classList.toggle("visible", imageButtonVisible);
+  imageEditBtn?.classList.toggle("visible", imageButtonVisible);
   renderPromptPreviewButton();
-  maskEditBtn.classList.toggle("visible", maskAvailable && !active && !regionPickerActive && !cropEditActive);
-  imageDownloadBtn.disabled = !imageAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
-  duplicateImageBtn.disabled = !imageAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
-  imageEditBtn.disabled = !imageAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
-  maskEditBtn.disabled = !maskAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
-  imageDownloadBtn.title = "Download the currently displayed image";
-  duplicateImageBtn.textContent = state.duplicatingImage ? "Duplicating..." : "Duplicate";
-  duplicateImageBtn.title = "Duplicate this image with its caption and mask sidecars";
-  imageEditBtn.title = "Paint a color overlay that preserves the image detail and shading";
+  maskEditBtn?.classList.toggle("visible", maskAvailable && !active && !regionPickerActive && !cropEditActive);
+  const imageActionDisabled = !imageAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
+  const maskActionDisabled = !maskAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
+  if (imageDownloadBtn) {
+    imageDownloadBtn.disabled = imageActionDisabled;
+    imageDownloadBtn.title = "Download the currently displayed image";
+  }
+  if (duplicateImageBtn) {
+    duplicateImageBtn.disabled = imageActionDisabled;
+    duplicateImageBtn.textContent = state.duplicatingImage ? "Duplicating..." : "Duplicate";
+    duplicateImageBtn.title = "Duplicate this image with its caption and mask sidecars";
+  }
+  if (imageEditBtn) {
+    imageEditBtn.disabled = imageActionDisabled;
+    imageEditBtn.title = "Paint a color overlay that preserves the image detail and shading";
+  }
+  if (maskEditBtn) {
+    maskEditBtn.disabled = maskActionDisabled;
+  }
   renderGifConvertButton();
+  const previewButtons = [imageDownloadBtn, duplicateImageBtn, imageEditBtn, promptPreviewBtn, maskEditBtn, gifConvertBtn].filter(Boolean);
   const visible = !active
     && !regionPickerActive
     && !cropEditActive
-    && [imageDownloadBtn, duplicateImageBtn, imageEditBtn, promptPreviewBtn, maskEditBtn, gifConvertBtn].some((button) => button.classList.contains("visible"));
+    && previewButtons.some((button) => button.classList.contains("visible"));
   previewActionBar.classList.toggle("visible", visible);
   previewActionBar.classList.toggle("with-video-key-add", visible && videoKeyAddVisible);
 }

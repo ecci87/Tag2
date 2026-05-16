@@ -424,6 +424,7 @@
   max-width: calc(100% - 82px);
 }
 #duplicate-image-btn,
+#image-download-btn,
 #image-edit-btn,
 #prompt-preview-btn,
 #mask-edit-btn,
@@ -452,10 +453,16 @@
   color: #f4f6ff;
   border: 1px solid #434a64;
 }
-#image-edit-btn {
-  background: #233247;
-  color: #d6e8ff;
-  border: 1px solid #5c84b8;
+#image-download-btn {
+  background: #272b3c;
+  color: #f4f6ff;
+  border: 1px solid #434a64;
+}
+#image-edit-btn,
+#mask-edit-btn {
+  background: #fadc8c;
+  color: #181822;
+  border: 1px solid #d3b764;
 }
 #prompt-preview-btn {
   background: #233247;
@@ -471,11 +478,7 @@
   color: #181822;
   border-color: #6f9de0;
 }
-#mask-edit-btn {
-  background: #fadc8c;
-  color: #181822;
-  border: 1px solid #d3b764;
-}
+#image-download-btn.visible,
 #duplicate-image-btn.visible,
 #image-edit-btn.visible,
 #prompt-preview-btn.visible,
@@ -568,6 +571,7 @@
 #mask-reset-btn.visible {
   display: block;
 }
+#image-download-btn:hover,
 #duplicate-image-btn:hover,
 #image-edit-btn:hover,
 #prompt-preview-btn:hover,
@@ -583,6 +587,7 @@
 #mask-reset-btn:hover {
   filter: brightness(1.08);
 }
+#image-download-btn:disabled,
 #duplicate-image-btn:disabled,
 #image-edit-btn:disabled,
 #prompt-preview-btn:disabled,
