@@ -29,30 +29,6 @@ function getFolderAutocompleteBinding(kind = "main") {
   };
 }
 
-function applyFolderAutocompletePreviewFor(kind = "main") {
-  const { autocomplete, input } = getFolderAutocompleteBinding(kind);
-  const item = autocomplete.items?.[autocomplete.highlightedIndex];
-  if (!item?.path || document.activeElement !== input) return;
-
-  const selectionStart = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
-  const selectionEnd = Number.isInteger(input.selectionEnd) ? input.selectionEnd : input.value.length;
-  if (selectionEnd !== input.value.length) return;
-
-  const typedPrefix = input.value.slice(0, Math.max(0, selectionStart));
-  if (!typedPrefix) return;
-
-  const normalizedPrefix = typedPrefix.replace(/[\\/]+/g, "/").toLowerCase();
-  const candidatePath = String(item.path || "");
-  const normalizedCandidate = candidatePath.replace(/[\\/]+/g, "/").toLowerCase();
-  if (!normalizedCandidate.startsWith(normalizedPrefix)) return;
-
-  input.value = candidatePath;
-  const caretStart = normalizeFolderPathForCompare(typedPrefix) === normalizeFolderPathForCompare(candidatePath)
-    ? candidatePath.length
-    : typedPrefix.length;
-  input.setSelectionRange(caretStart, candidatePath.length);
-}
-
 function renderFolderAutocompleteFor(kind = "main") {
   const { autocomplete, input, list, optionIdPrefix } = getFolderAutocompleteBinding(kind);
   const items = Array.isArray(autocomplete.items) ? autocomplete.items : [];
@@ -114,7 +90,6 @@ function renderFolderAutocompleteFor(kind = "main") {
   if (activeOption) {
     activeOption.scrollIntoView({ block: "nearest" });
   }
-  applyFolderAutocompletePreviewFor(kind);
 }
 
 function hideFolderAutocompleteFor(kind = "main") {
@@ -171,14 +146,28 @@ function moveFolderAutocompleteHighlightFor(kind = "main", delta) {
   return true;
 }
 
-function applyFolderAutocompleteSelectionFor(kind = "main", index) {
+function appendFolderSeparatorForAutocomplete(path) {
+  const value = String(path || "");
+  if (!value) return value;
+  if (/[\\/]$/.test(value)) return value;
+  return `${value}${navigator.platform.startsWith("Win") ? "\\" : "/"}`;
+}
+
+function applyFolderAutocompleteSelectionFor(kind = "main", index, options = {}) {
+  const { descend = false } = options;
   const { autocomplete, input, onSelectionApplied } = getFolderAutocompleteBinding(kind);
   const item = autocomplete.items[index];
   if (!item?.path) return false;
-  input.value = item.path;
-  hideFolderAutocompleteFor(kind);
+  input.value = descend ? appendFolderSeparatorForAutocomplete(item.path) : item.path;
   input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
   onSelectionApplied?.(item);
+  if (descend) {
+    autocomplete.visible = true;
+    scheduleFolderAutocompleteRefreshFor(kind, { immediate: true });
+    return true;
+  }
+  hideFolderAutocompleteFor(kind);
   return true;
 }
 
@@ -237,6 +226,7 @@ function scheduleFolderAutocompleteRefreshFor(kind = "main", options = {}) {
 }
 
 function handleFolderAutocompleteInputFor(kind = "main") {
+  clearFolderAutocompleteFor(kind, { cancelPending: true });
   scheduleFolderAutocompleteRefreshFor(kind);
 }
 
@@ -285,7 +275,8 @@ function handleFolderAutocompleteKeydownFor(kind = "main", event, onEnter) {
   if (event.key === "Tab") {
     const highlightedItem = autocomplete.items[autocomplete.highlightedIndex];
     if (autocomplete.visible && highlightedItem) {
-      applyFolderAutocompleteSelectionFor(kind, autocomplete.highlightedIndex);
+      event.preventDefault();
+      applyFolderAutocompleteSelectionFor(kind, autocomplete.highlightedIndex, { descend: true });
     }
     return;
   }
@@ -293,16 +284,6 @@ function handleFolderAutocompleteKeydownFor(kind = "main", event, onEnter) {
   if (event.key !== "Enter") return;
 
   event.preventDefault();
-  const highlightedItem = autocomplete.items[autocomplete.highlightedIndex];
-  if (autocomplete.visible && highlightedItem) {
-    const currentValue = normalizeFolderPathForCompare(input.value);
-    const highlightedValue = normalizeFolderPathForCompare(highlightedItem.path);
-    if (currentValue !== highlightedValue) {
-      applyFolderAutocompleteSelectionFor(kind, autocomplete.highlightedIndex);
-      return;
-    }
-  }
-
   clearFolderAutocompleteFor(kind, { cancelPending: true });
   if (typeof onEnter === "function") {
     onEnter();
