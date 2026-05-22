@@ -84,6 +84,7 @@ setupVerticalResize(rightHorizontalResize, captionsSection, freeTextSection, cap
 
 // ===== EVENT LISTENERS =====
 loadBtn.addEventListener("click", loadFolder);
+newFolderBtn.addEventListener("click", createNewFolder);
 cloneFolderBtn.addEventListener("click", cloneCurrentFolder);
 moveSelectedBtn.addEventListener("click", openMoveSelectedDialog);
 folderInput.addEventListener("input", handleFolderInputInput);
@@ -93,6 +94,10 @@ folderInput.addEventListener("keydown", handleFolderInputKeydown);
 moveSelectedForm.addEventListener("submit", submitMoveSelectedDialog);
 moveSelectedCloseBtn.addEventListener("click", closeMoveSelectedDialog);
 moveSelectedCancelBtn.addEventListener("click", closeMoveSelectedDialog);
+newFolderForm.addEventListener("submit", submitNewFolderDialog);
+newFolderCloseBtn.addEventListener("click", closeNewFolderDialog);
+newFolderCancelBtn.addEventListener("click", closeNewFolderDialog);
+newFolderInput.addEventListener("input", () => setNewFolderDialogStatus(""));
 moveTargetFolderInput.addEventListener("input", handleMoveTargetFolderInput);
 moveTargetFolderInput.addEventListener("focus", handleMoveTargetFolderFocus);
 moveTargetFolderInput.addEventListener("blur", handleMoveTargetFolderBlur);
@@ -266,6 +271,9 @@ settingsModal.addEventListener("click", (e) => {
 moveSelectedModal.addEventListener("click", (e) => {
   if (e.target === moveSelectedModal) closeMoveSelectedDialog();
 });
+newFolderModal.addEventListener("click", (e) => {
+  if (e.target === newFolderModal) closeNewFolderDialog();
+});
 document.addEventListener("mousedown", (e) => {
   if (folderInputWrap?.contains(e.target)) return;
   if (moveTargetFolderInputWrap?.contains(e.target)) return;
@@ -348,6 +356,10 @@ document.addEventListener("keydown", (e) => {
     closeMoveSelectedDialog();
     return;
   }
+  if (e.key === "Escape" && newFolderModal.classList.contains("open")) {
+    closeNewFolderDialog();
+    return;
+  }
   if (e.key === "Escape" && state.maskEditor.active) {
     e.preventDefault();
     cancelMaskEdit();
@@ -358,7 +370,7 @@ document.addEventListener("keydown", (e) => {
     cancelCropEdit();
     return;
   }
-  if (settingsModal.classList.contains("open") || moveSelectedModal.classList.contains("open")) return;
+  if (settingsModal.classList.contains("open") || moveSelectedModal.classList.contains("open") || newFolderModal.classList.contains("open")) return;
   if (e.key === " " && !isEditableElement(document.activeElement) && state.previewMediaType === "video" && state.previewPath) {
     e.preventDefault();
     togglePreviewVideoPlayback();

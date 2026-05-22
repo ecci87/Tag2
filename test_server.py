@@ -1197,6 +1197,47 @@ class TestCloneFolder:
         assert (target_folder / mask_b.name).exists()
 
 
+class TestCreateFolder:
+    def test_create_folder_copies_loaded_folder_settings(self, client, img_dir, tmp_path):
+        source_folder = str(img_dir)
+        client.post("/api/settings", json={
+            "folder": source_folder,
+            "sections": [{"name": "Scene", "sentences": ["studio"], "groups": []}],
+            "video_training_profile_key": "wan-81f-16fps",
+        })
+
+        target_folder = tmp_path / "fresh-folder"
+        response = client.post("/api/folder/create", json={
+            "source_folder": source_folder,
+            "target_folder": str(target_folder),
+        })
+
+        assert response.status_code == 200
+        assert target_folder.exists()
+
+        created_settings = client.get("/api/settings", params={"folder": str(target_folder)}).json()
+        assert created_settings["sections"][0]["sentences"] == ["studio"]
+        assert created_settings["video_training_profile_key"] == "wan-81f-16fps"
+
+    def test_create_folder_without_source_uses_empty_caption_library(self, client, tmp_path):
+        client.post("/api/settings", json={
+            "sections": [{"name": "", "sentences": ["global-caption"], "groups": []}],
+        })
+
+        target_folder = tmp_path / "blank-folder"
+        response = client.post("/api/folder/create", json={
+            "target_folder": str(target_folder),
+        })
+
+        assert response.status_code == 200
+        assert target_folder.exists()
+
+        created_settings = client.get("/api/settings", params={"folder": str(target_folder)}).json()
+        assert created_settings["sections"]
+        assert all(not section.get("sentences") for section in created_settings["sections"])
+        assert all(not section.get("groups") for section in created_settings["sections"])
+
+
 class TestMoveSelectedMedia:
     def test_move_selected_media_moves_sidecars_and_merges_captions(self, client, img_dir, tmp_path):
         source_folder = str(img_dir)

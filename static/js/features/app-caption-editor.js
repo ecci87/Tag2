@@ -2131,7 +2131,7 @@ async function runAutoCaptionStream({ freeTextOnly = false, targetSectionIndex =
     stopAutoCaption();
     return;
   }
-  if (state.uploading || state.cloning || state.moving || state.extractingFrame) {
+  if (state.uploading || state.creatingFolder || state.cloning || state.moving || state.extractingFrame) {
     showErrorToast("Finish the current operation before starting auto captioning.");
     return;
   }

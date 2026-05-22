@@ -2286,6 +2286,11 @@ class CloneFolderRequest(BaseModel):
     image_paths: list[str] = []
 
 
+class CreateFolderRequest(BaseModel):
+    target_folder: str
+    source_folder: Optional[str] = None
+
+
 class MoveSelectedMediaRequest(BaseModel):
     source_folder: str
     target_folder: str
@@ -2570,8 +2575,7 @@ def _prepare_clone_plan(source_folder: str, requested_name: str, image_paths: li
     }
 
 
-def _copy_folder_config_for_clone(source_folder: str, target_folder: str):
-    cfg = _load_config()
+def _copy_folder_config_snapshot(cfg: dict, source_folder: str, target_folder: str):
     folders_cfg = cfg.setdefault("folders", {})
     source_key = os.path.normpath(source_folder)
     target_key = os.path.normpath(target_folder)
@@ -2580,6 +2584,48 @@ def _copy_folder_config_for_clone(source_folder: str, target_folder: str):
     else:
         sections = _get_folder_sections(cfg, source_folder)
         _set_folder_sections(cfg, target_folder, sections)
+
+
+def _copy_folder_config_for_clone(source_folder: str, target_folder: str):
+    cfg = _load_config()
+    _copy_folder_config_snapshot(cfg, source_folder, target_folder)
+    _save_config(cfg)
+
+
+def _resolve_new_folder_path(target_folder: str) -> Path:
+    raw_target = str(target_folder or "").strip()
+    if not raw_target:
+        raise HTTPException(status_code=400, detail="Target folder is required")
+    normalized_target = os.path.abspath(os.path.normpath(raw_target))
+    target_path = Path(normalized_target)
+    if target_path.exists():
+        raise HTTPException(status_code=400, detail="Target folder already exists")
+    if not target_path.parent.is_dir():
+        raise HTTPException(status_code=400, detail="Target folder parent is not a valid directory")
+    return target_path
+
+
+def _prepare_create_folder_plan(source_folder: str | None, target_folder: str) -> dict:
+    target_path = _resolve_new_folder_path(target_folder)
+    source_path: Path | None = None
+    normalized_source = str(source_folder or "").strip()
+    if normalized_source:
+        source_path = _resolve_folder_path(normalized_source, detail="Source folder is not a valid directory")
+        if os.path.normcase(str(source_path)) == os.path.normcase(str(target_path)):
+            raise HTTPException(status_code=400, detail="Target folder must be different from the current folder")
+    return {
+        "source_path": source_path,
+        "target_path": target_path,
+    }
+
+
+def _initialize_folder_config_for_create(source_folder: str | None, target_folder: str):
+    cfg = _load_config()
+    normalized_source = str(source_folder or "").strip()
+    if normalized_source:
+        _copy_folder_config_snapshot(cfg, normalized_source, target_folder)
+    else:
+        _set_folder_sections(cfg, target_folder, [{"name": "", "captions": [], "groups": []}])
     _save_config(cfg)
 
 
@@ -3576,6 +3622,29 @@ async def clone_folder_stream(data: CloneFolderRequest):
             yield _event_bytes({"type": "error", "message": str(exc)})
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+
+
+@app.post("/api/folder/create")
+async def create_folder(data: CreateFolderRequest):
+    """Create an empty folder and initialize its per-folder settings."""
+    plan = _prepare_create_folder_plan(data.source_folder, data.target_folder)
+    source_path: Path | None = plan["source_path"]
+    target_path: Path = plan["target_path"]
+
+    try:
+        target_path.mkdir(parents=False, exist_ok=False)
+        _initialize_folder_config_for_create(str(source_path) if source_path is not None else None, str(target_path))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        shutil.rmtree(target_path, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"Could not create folder: {exc}") from exc
+
+    return {
+        "ok": True,
+        "folder": str(target_path),
+        "source_folder": str(source_path) if source_path is not None else "",
+    }
 
 
 @app.post("/api/media/copy/stream")

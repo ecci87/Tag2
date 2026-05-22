@@ -154,6 +154,7 @@ const state = {
   ollamaAvailableModels: [],
   modelLogLines: [],
   modelLogOpen: false,
+  creatingFolder: false,
   cloning: false,
   moving: false,
   extractingFrame: false,
@@ -267,6 +268,7 @@ const folderInput = $("#folder-input");
 const folderInputWrap = $("#folder-input-wrap");
 const folderSuggestionsList = $("#folder-suggestions");
 const loadBtn = $("#load-btn");
+const newFolderBtn = $("#new-folder-btn");
 const cloneFolderBtn = $("#clone-folder-btn");
 const moveSelectedBtn = $("#move-selected-btn");
 const settingsBtn = $("#settings-btn");
@@ -446,6 +448,17 @@ const moveSelectedStatus = $("#move-selected-status");
 const moveTargetFolderInputWrap = $("#move-target-folder-input-wrap");
 const moveTargetFolderInput = $("#move-target-folder-input");
 const moveTargetFolderSuggestions = $("#move-target-folder-suggestions");
+const newFolderModal = $("#new-folder-modal");
+const newFolderDialog = $("#new-folder-dialog");
+const newFolderForm = $("#new-folder-form");
+const newFolderCloseBtn = $("#new-folder-close-btn");
+const newFolderCancelBtn = $("#new-folder-cancel-btn");
+const newFolderConfirmBtn = $("#new-folder-confirm-btn");
+const newFolderTitle = $("#new-folder-title");
+const newFolderSummary = $("#new-folder-summary");
+const newFolderInputLabel = $("#new-folder-input-label");
+const newFolderInput = $("#new-folder-input");
+const newFolderStatus = $("#new-folder-status");
 const settingsForm = $("#settings-form");
 const settingsCloseBtn = $("#settings-close-btn");
 const settingsCancelBtn = $("#settings-cancel-btn");

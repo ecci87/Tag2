@@ -10,7 +10,7 @@ function renderGifConvertButton() {
     && !state.maskEditor.active;
   const hasVideoJobs = !!(state.videoJobs?.activeJob || state.videoJobs?.queuedJobs?.length);
   gifConvertBtn.classList.toggle("visible", visible);
-  gifConvertBtn.disabled = !visible || !!state.cropDraft || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading || hasVideoJobs;
+  gifConvertBtn.disabled = !visible || !!state.cropDraft || state.extractingFrame || state.autoCaptioning || state.creatingFolder || state.cloning || state.moving || state.uploading || hasVideoJobs;
   gifConvertBtn.title = hasVideoJobs
     ? "Wait for queued video jobs to finish before converting this GIF"
     : "Convert this GIF into an MP4 beside the original GIF";
@@ -202,6 +202,7 @@ function renderCreatePromptPreviewButton() {
     || state.duplicatingImage
     || state.extractingFrame
     || state.autoCaptioning
+    || state.creatingFolder
     || state.cloning
     || state.moving
     || state.uploading
@@ -245,6 +246,7 @@ function renderPromptPreviewButton() {
     || state.duplicatingImage
     || state.extractingFrame
     || state.autoCaptioning
+    || state.creatingFolder
     || state.cloning
     || state.moving
     || state.uploading

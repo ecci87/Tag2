@@ -1062,8 +1062,8 @@ function renderPreviewActionBar() {
   imageEditBtn?.classList.toggle("visible", imageButtonVisible);
   renderPromptPreviewButton();
   maskEditBtn?.classList.toggle("visible", maskAvailable && !active && !regionPickerActive && !cropEditActive);
-  const imageActionDisabled = !imageAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
-  const maskActionDisabled = !maskAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading;
+  const imageActionDisabled = !imageAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.creatingFolder || state.cloning || state.moving || state.uploading;
+  const maskActionDisabled = !maskAvailable || state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.creatingFolder || state.cloning || state.moving || state.uploading;
   if (imageDownloadBtn) {
     imageDownloadBtn.disabled = imageActionDisabled;
     imageDownloadBtn.title = "Download the currently displayed image";

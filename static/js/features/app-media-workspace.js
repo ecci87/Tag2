@@ -1292,8 +1292,17 @@ function updateActionButtons() {
   const canRunStructured = selectionSupportsVision && hasCaptions && !!state.ollamaModel.trim();
   const canRunFreeTextOnly = selectionSupportsVision && !!state.ollamaModel.trim();
   const canRunRegionDescribe = canUseRegionDescription() && !!state.ollamaModel.trim();
-  const hasBlockingWorkspaceAction = !!(state.cloning || state.moving || state.extractingFrame || state.uploading);
+  const hasBlockingWorkspaceAction = !!(state.creatingFolder || state.cloning || state.moving || state.extractingFrame || state.uploading);
   const pickerActive = isAiRegionPickerActive();
+  loadBtn.disabled = !!state.creatingFolder;
+  loadBtn.title = state.creatingFolder
+    ? "Wait for the new folder to finish creating"
+    : "Load the folder shown in the path field";
+  newFolderBtn.disabled = state.autoCaptioning || pickerActive || hasBlockingWorkspaceAction;
+  newFolderBtn.textContent = state.creatingFolder ? "Creating..." : "New";
+  newFolderBtn.title = state.folder
+    ? "Create an empty sibling folder using the current folder settings"
+    : "Create a new empty folder using global settings and an empty caption library";
   cloneFolderBtn.disabled = !state.folder || state.autoCaptioning || pickerActive || hasBlockingWorkspaceAction;
   cloneFolderBtn.textContent = state.cloning ? "Cloning..." : "Clone Folder";
   cloneFolderBtn.title = state.selectedPaths.size > 1

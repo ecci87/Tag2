@@ -719,6 +719,7 @@ function updateVideoActionButtons(path = state.previewPath, options = {}) {
     state.duplicatingImage
     || state.extractingFrame
     || state.autoCaptioning
+    || state.creatingFolder
     || state.cloning
     || state.moving
     || state.uploading
@@ -859,7 +860,7 @@ async function extractCurrentVideoFrame() {
     showErrorToast("Select a single video first.");
     return;
   }
-  if (state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.cloning || state.moving || state.uploading || state.maskEditor.active) {
+  if (state.duplicatingImage || state.extractingFrame || state.autoCaptioning || state.creatingFolder || state.cloning || state.moving || state.uploading || state.maskEditor.active) {
     showErrorToast("Finish the current operation before extracting a frame.");
     return;
   }
@@ -1256,7 +1257,7 @@ function getNextSelectionPathAfterDelete(paths) {
 
 async function deleteSelectedImages() {
   if (state.selectedPaths.size === 0) return;
-  if (state.autoCaptioning || state.cloning || state.moving || state.extractingFrame || state.uploading) {
+  if (state.autoCaptioning || state.creatingFolder || state.cloning || state.moving || state.extractingFrame || state.uploading) {
     showErrorToast("Finish the current operation before deleting media.");
     return;
   }

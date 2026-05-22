@@ -11,6 +11,21 @@ function getDefaultCloneFolderName() {
   return `${baseName}-copy`;
 }
 
+function getDefaultNewFolderName() {
+  const baseName = getFileLabel(state.folder || "folder") || "folder";
+  return `${baseName}-new`;
+}
+
+function getCurrentFolderParentPath() {
+  const folder = String(state.folder || "").trim().replace(/[\\/]+$/, "");
+  if (!folder) return "";
+  if (/^[A-Za-z]:$/.test(folder)) return `${folder}\\`;
+
+  const separatorIndex = Math.max(folder.lastIndexOf("\\"), folder.lastIndexOf("/"));
+  if (separatorIndex < 0) return "";
+  return folder.slice(0, separatorIndex + 1);
+}
+
 function getDefaultDuplicateImageName(path = state.previewPath) {
   const fileName = getFileLabel(path || "image") || "image";
   const extension = getImageExtension(fileName);
@@ -35,10 +50,20 @@ function isMoveDialogOpen() {
   return !!moveSelectedModal?.classList.contains("open");
 }
 
+function isNewFolderDialogOpen() {
+  return !!newFolderModal?.classList.contains("open");
+}
+
 function setMoveDialogStatus(message = "") {
   const text = String(message || "").trim();
   moveSelectedStatus.textContent = text;
   moveSelectedStatus.hidden = !text;
+}
+
+function setNewFolderDialogStatus(message = "") {
+  const text = String(message || "").trim();
+  newFolderStatus.textContent = text;
+  newFolderStatus.hidden = !text;
 }
 
 function renderMoveDialogSummary(selectedPaths = getMoveSelectionPaths()) {
@@ -91,7 +116,7 @@ function openMoveSelectedDialog() {
     showErrorToast("Load a folder first.");
     return;
   }
-  if (state.autoCaptioning || state.cloning || state.moving || state.extractingFrame || state.uploading || state.duplicatingImage) {
+  if (state.autoCaptioning || state.creatingFolder || state.cloning || state.moving || state.extractingFrame || state.uploading || state.duplicatingImage) {
     showErrorToast("Finish the current operation before copying media.");
     return;
   }
@@ -124,9 +149,124 @@ function closeMoveSelectedDialog() {
   clearMoveFolderAutocomplete({ cancelPending: true });
 }
 
+function renderNewFolderDialog() {
+  const sourceFolder = String(state.folder || "").trim();
+  const usingCurrentFolder = !!sourceFolder;
+  if (newFolderTitle) {
+    newFolderTitle.textContent = usingCurrentFolder ? "New Folder" : "New Folder Path";
+  }
+  if (newFolderInputLabel) {
+    newFolderInputLabel.textContent = usingCurrentFolder ? "Folder Name" : "Folder Path";
+  }
+  if (newFolderSummary) {
+    newFolderSummary.textContent = usingCurrentFolder
+      ? `Create an empty sibling folder beside ${getFileLabel(sourceFolder)}. The new folder will reuse the current folder settings without copying any media files.`
+      : "Create an empty folder at the given path. The new folder will start with global settings only and an empty caption library.";
+  }
+  if (newFolderInput) {
+    newFolderInput.value = usingCurrentFolder ? getDefaultNewFolderName() : String(folderInput?.value || "").trim();
+    newFolderInput.placeholder = usingCurrentFolder ? "new-folder-name" : "C:\\path\\to\\folder";
+  }
+  if (newFolderConfirmBtn) {
+    newFolderConfirmBtn.textContent = "Create";
+  }
+  setNewFolderDialogStatus("");
+}
+
+function openNewFolderDialog() {
+  renderNewFolderDialog();
+  newFolderModal.classList.add("open");
+  newFolderModal.setAttribute("aria-hidden", "false");
+  window.requestAnimationFrame(() => {
+    newFolderInput.focus();
+    newFolderInput.select();
+  });
+}
+
+function closeNewFolderDialog() {
+  newFolderModal.classList.remove("open");
+  newFolderModal.setAttribute("aria-hidden", "true");
+  setNewFolderDialogStatus("");
+}
+
+function resolveNewFolderTargetFromDialog() {
+  const sourceFolder = String(state.folder || "").trim();
+  const rawValue = String(newFolderInput?.value || "").trim();
+  if (!rawValue) {
+    setNewFolderDialogStatus(sourceFolder ? "Folder name is required." : "Folder path is required.");
+    newFolderInput.focus();
+    return "";
+  }
+
+  if (!sourceFolder) {
+    return rawValue;
+  }
+
+  if (/[\\/]/.test(rawValue)) {
+    setNewFolderDialogStatus("Folder name must not include path separators.");
+    newFolderInput.focus();
+    newFolderInput.select();
+    return "";
+  }
+
+  const parentFolder = getCurrentFolderParentPath();
+  if (!parentFolder) {
+    setNewFolderDialogStatus("Could not resolve the current folder parent.");
+    return "";
+  }
+
+  return `${parentFolder}${rawValue}`;
+}
+
 async function submitMoveSelectedDialog(event) {
   if (event) event.preventDefault();
   await moveSelectedMediaToFolder(moveTargetFolderInput.value);
+}
+
+async function submitNewFolderDialog(event) {
+  if (event) event.preventDefault();
+
+  const sourceFolder = String(state.folder || "").trim();
+  const targetFolder = resolveNewFolderTargetFromDialog();
+  if (!targetFolder) {
+    return;
+  }
+
+  closeNewFolderDialog();
+  state.creatingFolder = true;
+  updateActionButtons();
+  statusBar.textContent = `Creating ${getFileLabel(targetFolder)}...`;
+
+  try {
+    const resp = await fetch("/api/folder/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        source_folder: sourceFolder || null,
+        target_folder: targetFolder,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.detail || "Failed to create folder");
+    }
+
+    const createdFolder = String(data.folder || targetFolder).trim();
+    if (!createdFolder) {
+      throw new Error("Folder creation finished without a target folder");
+    }
+
+    folderInput.value = createdFolder;
+    await loadFolder();
+    statusBar.textContent = `Created ${getFileLabel(createdFolder)}`;
+  } catch (err) {
+    const message = err?.message || "Failed to create folder";
+    statusBar.textContent = `Create folder error: ${message}`;
+    showErrorToast(`Create folder error: ${message}`);
+  } finally {
+    state.creatingFolder = false;
+    updateActionButtons();
+  }
 }
 
 async function moveSelectedMediaToFolder(rawTargetFolder) {
@@ -134,7 +274,7 @@ async function moveSelectedMediaToFolder(rawTargetFolder) {
     showErrorToast("Load a folder first.");
     return;
   }
-  if (state.autoCaptioning || state.cloning || state.moving || state.extractingFrame || state.uploading || state.duplicatingImage) {
+  if (state.autoCaptioning || state.creatingFolder || state.cloning || state.moving || state.extractingFrame || state.uploading || state.duplicatingImage) {
     showErrorToast("Finish the current operation before copying media.");
     return;
   }
@@ -270,12 +410,22 @@ async function moveSelectedMediaToFolder(rawTargetFolder) {
   }
 }
 
+function createNewFolder() {
+  if (state.autoCaptioning || state.creatingFolder || state.cloning || state.moving || state.extractingFrame || state.uploading || state.duplicatingImage) {
+    showErrorToast("Finish the current operation before creating a folder.");
+    return;
+  }
+
+  if (isNewFolderDialogOpen()) return;
+  openNewFolderDialog();
+}
+
 async function cloneCurrentFolder() {
   if (!state.folder) {
     showErrorToast("Load a folder first.");
     return;
   }
-  if (state.cloning || state.moving || state.extractingFrame || state.autoCaptioning || state.uploading) {
+  if (state.creatingFolder || state.cloning || state.moving || state.extractingFrame || state.autoCaptioning || state.uploading) {
     showErrorToast("Finish the current operation before cloning.");
     return;
   }
@@ -410,7 +560,7 @@ async function duplicateCurrentImage() {
     showErrorToast("Select a single image first.");
     return;
   }
-  if (state.duplicatingImage || state.autoCaptioning || state.cloning || state.moving || state.extractingFrame || state.uploading) {
+  if (state.duplicatingImage || state.autoCaptioning || state.creatingFolder || state.cloning || state.moving || state.extractingFrame || state.uploading) {
     showErrorToast("Finish the current operation before duplicating an image.");
     return;
   }
