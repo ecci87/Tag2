@@ -6,7 +6,7 @@
 <title>Image Captioning Tool</title>
 <link rel="stylesheet" href="/static/css/app-shell.css?v=20260521a">
 <link rel="stylesheet" href="/static/css/app-preview.css?v=20260419b">
-<link rel="stylesheet" href="/static/css/app-captions.css?v=20260428c">
+<link rel="stylesheet" href="/static/css/app-captions.css?v=20260525d">
 <link rel="stylesheet" href="/static/css/app-dialogs.css?v=20260522a">
 </head>
 <body>
@@ -335,7 +335,10 @@
             </label>
             <label class="metadata-field metadata-field-wide">
               <span>Caption Dropout Caption</span>
-              <input id="metadata-caption-dropout-input" type="text" placeholder="Not set" spellcheck="false" disabled>
+              <div id="metadata-caption-dropout-editor" class="metadata-inline-editor">
+                <div id="metadata-caption-dropout-highlight" aria-hidden="true"></div>
+                <input id="metadata-caption-dropout-input" type="text" placeholder="Not set" spellcheck="false" disabled>
+              </div>
               <span class="metadata-field-help">Optional caption text written to the metadata sidecar when caption dropout is enabled for the sample.</span>
             </label>
             <label class="metadata-checkbox-field metadata-field-wide">
@@ -589,9 +592,9 @@
   </div>
 </div>
 
-<script defer src="/static/js/app-shared.js?v=20260525c"></script>
+<script defer src="/static/js/app-shared.js?v=20260525d"></script>
 <script defer src="/static/js/features/app-file-actions.js?v=20260522a"></script>
-<script defer src="/static/js/features/app-caption-data.js?v=20260414d"></script>
+<script defer src="/static/js/features/app-caption-data.js?v=20260525d"></script>
 <script defer src="/static/js/features/app-filters-ui.js?v=20260426a"></script>
 <script defer src="/static/js/features/app-mask-editor.js?v=20260525f"></script>
 <script defer src="/static/js/features/app-media-workspace.js?v=20260521a"></script>
@@ -599,7 +602,7 @@
 <script defer src="/static/js/features/app-preview-tools.js?v=20260521a"></script>
 <script defer src="/static/js/features/app-media-playback.js?v=20260521a"></script>
 <script defer src="/static/js/features/app-browser.js?v=20260525d"></script>
-<script defer src="/static/js/features/app-caption-editor.js?v=20260521a"></script>
-<script defer src="/static/js/app-init.js?v=20260522a"></script>
+<script defer src="/static/js/features/app-caption-editor.js?v=20260525d"></script>
+<script defer src="/static/js/app-init.js?v=20260525d"></script>
 </body>
 </html>

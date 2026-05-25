@@ -1148,10 +1148,18 @@ function createSentenceListItem(sentence, selectedPaths, options = {}) {
   if (isPartial) textSpan.classList.add("partial");
   if (autoCaptionSkipped) textSpan.classList.add("skip-auto-caption");
   if (allowSuppressToggle && isSentenceHiddenOnExport(sentence)) textSpan.classList.add("hidden-export");
-  textSpan.textContent = sentence;
-  textSpan.title = "Click to rename caption";
+  const sentenceMarkup = buildCaptionChoiceAwareMarkup(sentence);
+  if (sentenceMarkup.hasChoices) {
+    textSpan.innerHTML = sentenceMarkup.html;
+    textSpan.classList.add("has-special-syntax");
+    textSpan.setAttribute("aria-label", `Rename caption: ${sentence}`);
+  } else {
+    textSpan.textContent = sentence;
+    textSpan.title = "Click to rename caption";
+  }
   textSpan.addEventListener("click", (e) => {
     e.stopPropagation();
+    textSpan.textContent = sentence;
     beginEditableRename(textSpan, sentence, (newName) => {
       renameSentence(sentence, newName);
     });
@@ -2773,11 +2781,7 @@ const freeTextResolvedColorCache = new Map();
 const freeTextColorSupportProbe = document.createElement("span");
 
 function escapeFreeTextHtml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;");
+  return escapeCaptionChoiceHtml(value);
 }
 
 function parseCssColorToRgb(value) {
@@ -2938,7 +2942,7 @@ function buildFreeTextColorTokenMarkup(word, backgroundRgb, resolvedColor = null
   return `<span${classAttribute}${styleAttribute}>${escapeFreeTextHtml(word)}</span>`;
 }
 
-function buildFreeTextHighlightMarkup(value) {
+function buildFreeTextPlainHighlightMarkup(value) {
   const text = String(value || "");
   const backgroundRgb = getFreeTextEditorBackgroundRgb();
   const wordMatches = getFreeTextWordMatches(text);
@@ -2970,10 +2974,20 @@ function buildFreeTextHighlightMarkup(value) {
   }
 
   html += escapeFreeTextHtml(text.slice(lastIndex));
-  if (text.endsWith("\n")) {
-    html += "&#8203;";
-  }
   return html;
+}
+
+function buildFreeTextHighlightMarkup(value) {
+  const text = String(value || "");
+  return buildCaptionChoiceAwareMarkup(text, {
+    renderPlainText: (segment) => buildFreeTextPlainHighlightMarkup(segment),
+    tokenClassName: "caption-choice-token",
+    buildTokenDataAttributes: (choiceMatch) => {
+      const choiceStart = Number.isFinite(choiceMatch?.start) ? choiceMatch.start : 0;
+      return ` data-caption-choice-start="${choiceStart}" data-caption-choice-length="${String(choiceMatch?.raw || "").length}"`;
+    },
+    appendTrailingNewlineSentinel: true,
+  }).html;
 }
 
 function wrapFreeTextHighlightMarkup(markup) {
@@ -3048,6 +3062,19 @@ freeText.addEventListener("input", () => {
   setFreeTextDraftForPath(path, freeText.value);
 });
 freeText.addEventListener("scroll", syncFreeTextHighlightScroll);
+if (freeTextHighlight) {
+  freeTextHighlight.addEventListener("mousedown", (event) => {
+    const choiceToken = event.target.closest(".caption-choice-token[data-caption-choice-start]");
+    if (!choiceToken || freeText.disabled) return;
+    event.preventDefault();
+    const choiceStart = Number.parseInt(choiceToken.dataset.captionChoiceStart || "", 10);
+    const choiceLength = Number.parseInt(choiceToken.dataset.captionChoiceLength || "", 10);
+    const nextCaretPosition = Number.isFinite(choiceStart) && Number.isFinite(choiceLength)
+      ? choiceStart + choiceLength
+      : null;
+    focusTextInputAtPosition(freeText, nextCaretPosition);
+  });
+}
 syncFreeTextHighlightState();
 
 async function saveFreeText(path) {

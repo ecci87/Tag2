@@ -208,6 +208,55 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+.metadata-inline-editor {
+  position: relative;
+  --metadata-caption-dropout-scrollbar-gutter: 0px;
+  --metadata-caption-dropout-scroll-left: 0px;
+}
+.metadata-inline-editor input,
+#metadata-caption-dropout-highlight {
+  margin: 0;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: pre;
+}
+#metadata-caption-dropout-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--fg);
+  background: transparent;
+  padding-right: calc(10px + var(--metadata-caption-dropout-scrollbar-gutter));
+}
+.metadata-inline-highlight-content {
+  min-height: 100%;
+  transform: translate3d(calc(var(--metadata-caption-dropout-scroll-left) * -1), 0, 0);
+}
+#metadata-caption-dropout-highlight.placeholder {
+  color: var(--fg-dim);
+  opacity: 0.55;
+}
+.metadata-inline-editor input#metadata-caption-dropout-input {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--fg);
+  text-shadow: none;
+  overflow-x: auto;
+}
+.metadata-inline-editor.is-disabled #metadata-caption-dropout-highlight {
+  opacity: 0.4;
+}
+.metadata-inline-editor input#metadata-caption-dropout-input:disabled {
+  opacity: 1;
+}
 .metadata-field-help {
   color: var(--fg-dim);
   font-size: 11px;
@@ -347,6 +396,10 @@
 .section-sentences li .check-box.radio.checked::after { content: "●"; font-size: 8px; }
 .section-sentences li .check-box.radio.partial::after { content: "◐"; font-size: 9px; }
 .section-sentences li .sentence-text { flex: 1; }
+.section-sentences li .sentence-text.has-special-syntax {
+  display: inline-flex;
+  flex-wrap: wrap;
+}
 .section-sentences li .sentence-text.partial { color: var(--fg-dim); font-style: italic; }
 .section-sentences li .sentence-text.skip-auto-caption {
   color: #f5a3ba;
@@ -963,6 +1016,7 @@
 #free-text-highlight {
   position: absolute;
   inset: 0;
+  z-index: 2;
   padding-right: calc(10px + var(--free-text-scrollbar-gutter));
   overflow: hidden;
   pointer-events: none;
@@ -983,6 +1037,18 @@
 }
 .free-text-color-token {
   font-weight: 700;
+}
+.caption-choice-token {
+  border-radius: 4px;
+  background: rgba(137,180,250,0.12);
+  box-shadow: inset 0 -1px 0 rgba(137,180,250,0.42);
+  color: inherit;
+  cursor: help;
+  pointer-events: auto;
+}
+.caption-choice-token:hover {
+  background: rgba(137,180,250,0.18);
+  box-shadow: inset 0 -1px 0 rgba(137,180,250,0.62);
 }
 #free-text {
   position: relative;

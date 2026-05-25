@@ -67,6 +67,9 @@ function addSafeClickListener(element, functionName) {
 }
 
 function handleMetadataEditorInputChange() {
+  if (typeof syncMetadataCaptionDropoutHighlightState === "function") {
+    syncMetadataCaptionDropoutHighlightState();
+  }
   if (typeof updateMetadataEditorDirtyState === "function") {
     updateMetadataEditorDirtyState();
   }
@@ -164,10 +167,26 @@ if (fileGridContainer) {
 if (metadataCaptionDropoutInput) {
   metadataCaptionDropoutInput.addEventListener("input", handleMetadataEditorInputChange);
   metadataCaptionDropoutInput.addEventListener("change", handleMetadataEditorInputChange);
+  metadataCaptionDropoutInput.addEventListener("scroll", () => {
+    invokeGlobalFunction("syncMetadataCaptionDropoutHighlightScroll");
+  });
   metadataCaptionDropoutInput.addEventListener("keydown", (event) => {
     if (!(event.ctrlKey || event.metaKey) || event.key !== "Enter") return;
     event.preventDefault();
     invokeGlobalFunction("saveMetadataForSelection");
+  });
+}
+if (metadataCaptionDropoutHighlight) {
+  metadataCaptionDropoutHighlight.addEventListener("mousedown", (event) => {
+    const choiceToken = event.target.closest(".caption-choice-token[data-caption-choice-start]");
+    if (!choiceToken || !metadataCaptionDropoutInput || metadataCaptionDropoutInput.disabled) return;
+    event.preventDefault();
+    const choiceStart = Number.parseInt(choiceToken.dataset.captionChoiceStart || "", 10);
+    const choiceLength = Number.parseInt(choiceToken.dataset.captionChoiceLength || "", 10);
+    const nextCaretPosition = Number.isFinite(choiceStart) && Number.isFinite(choiceLength)
+      ? choiceStart + choiceLength
+      : null;
+    focusTextInputAtPosition(metadataCaptionDropoutInput, nextCaretPosition);
   });
 }
 if (metadataCaptionDropoutEnabledInput) {

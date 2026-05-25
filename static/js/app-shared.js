@@ -424,6 +424,8 @@ const metadataSeedInput = $("#metadata-seed-input");
 const metadataSamplingFrequencyInput = $("#metadata-sampling-frequency-input");
 const metadataMinTInput = $("#metadata-min-t-input");
 const metadataMaxTInput = $("#metadata-max-t-input");
+const metadataCaptionDropoutEditor = $("#metadata-caption-dropout-editor");
+const metadataCaptionDropoutHighlight = $("#metadata-caption-dropout-highlight");
 const metadataCaptionDropoutInput = $("#metadata-caption-dropout-input");
 const metadataCaptionDropoutEnabledInput = $("#metadata-caption-dropout-enabled-input");
 const metadataCancelBtn = $("#metadata-cancel-btn");
@@ -468,6 +470,157 @@ const newFolderInputLabel = $("#new-folder-input-label");
 const newFolderInput = $("#new-folder-input");
 const newFolderStatus = $("#new-folder-status");
 const settingsForm = $("#settings-form");
+
+const CAPTION_CHOICE_PATTERN = /\{([^{}]+)\}/g;
+
+function escapeCaptionChoiceHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function normalizeCaptionChoiceWeight(value) {
+  const numericWeight = Number(value);
+  if (!Number.isFinite(numericWeight)) return 1;
+  return numericWeight >= 0 ? numericWeight : 0;
+}
+
+function parseCaptionChoiceOption(optionText) {
+  const rawText = String(optionText ?? "");
+  const trimmedText = rawText.trim();
+  const match = trimmedText.match(/^(.*?)(?:\s*:\s*([-+]?(?:\d+(?:\.\d+)?|\.\d+)))?$/);
+  if (!match) {
+    return {
+      label: trimmedText,
+      weight: 1,
+      hasExplicitWeight: false,
+    };
+  }
+  const label = String(match[1] ?? "").trim();
+  const hasExplicitWeight = match[2] !== undefined;
+  return {
+    label,
+    weight: hasExplicitWeight ? normalizeCaptionChoiceWeight(match[2]) : 1,
+    hasExplicitWeight,
+  };
+}
+
+function formatCaptionChoicePercentage(share) {
+  if (!Number.isFinite(share)) return "0.0%";
+  return `${(share * 100).toFixed(1)}%`;
+}
+
+function parseCaptionChoiceMatches(text) {
+  const sourceText = String(text ?? "");
+  const matches = [];
+  CAPTION_CHOICE_PATTERN.lastIndex = 0;
+
+  for (let rawMatch = CAPTION_CHOICE_PATTERN.exec(sourceText); rawMatch; rawMatch = CAPTION_CHOICE_PATTERN.exec(sourceText)) {
+    const rawOptions = String(rawMatch[1] ?? "").split("|");
+    if (rawOptions.length < 2) {
+      continue;
+    }
+    const options = rawOptions.map(parseCaptionChoiceOption);
+    const effectiveTotalWeight = options.reduce((sum, option) => sum + option.weight, 0);
+    const totalWeight = effectiveTotalWeight > 0 ? effectiveTotalWeight : options.length;
+    const normalizedOptions = options.map((option) => {
+      const normalizedWeight = effectiveTotalWeight > 0 ? option.weight : 1;
+      const probability = totalWeight > 0 ? normalizedWeight / totalWeight : 0;
+      return {
+        ...option,
+        normalizedWeight,
+        probability,
+      };
+    });
+    const tooltipLines = ["Random choice"];
+    normalizedOptions.forEach((option) => {
+      const label = option.label || "(empty)";
+      const weightSuffix = option.hasExplicitWeight ? `, weight ${option.weight}` : "";
+      tooltipLines.push(`${formatCaptionChoicePercentage(option.probability)}  ${label}${weightSuffix}`);
+    });
+    matches.push({
+      start: rawMatch.index,
+      end: rawMatch.index + rawMatch[0].length,
+      raw: rawMatch[0],
+      options: normalizedOptions,
+      tooltip: tooltipLines.join("\n"),
+    });
+  }
+
+  return matches;
+}
+
+function buildCaptionChoiceTokenMarkup(choiceMatch, options = {}) {
+  const {
+    className = "caption-choice-token",
+    dataAttributes = "",
+  } = options;
+  const classAttribute = className ? ` class="${escapeCaptionChoiceHtml(className)}"` : "";
+  const tooltipAttribute = choiceMatch?.tooltip
+    ? ` title="${escapeCaptionChoiceHtml(choiceMatch.tooltip).replace(/\n/g, "&#10;")}"`
+    : "";
+  return `<span${classAttribute}${tooltipAttribute}${dataAttributes}>${escapeCaptionChoiceHtml(choiceMatch?.raw || "")}</span>`;
+}
+
+function buildCaptionChoiceAwareMarkup(text, options = {}) {
+  const {
+    renderPlainText = (segment) => escapeCaptionChoiceHtml(segment),
+    tokenClassName = "caption-choice-token",
+    buildTokenDataAttributes = null,
+    appendTrailingNewlineSentinel = false,
+  } = options;
+  const sourceText = String(text ?? "");
+  const choiceMatches = parseCaptionChoiceMatches(sourceText);
+  if (!choiceMatches.length) {
+    let plainMarkup = renderPlainText(sourceText);
+    if (appendTrailingNewlineSentinel && sourceText.endsWith("\n")) {
+      plainMarkup += "&#8203;";
+    }
+    return {
+      html: plainMarkup,
+      hasChoices: false,
+      matches: [],
+    };
+  }
+
+  let html = "";
+  let lastIndex = 0;
+  choiceMatches.forEach((choiceMatch) => {
+    html += renderPlainText(sourceText.slice(lastIndex, choiceMatch.start));
+    const dataAttributes = typeof buildTokenDataAttributes === "function"
+      ? buildTokenDataAttributes(choiceMatch)
+      : "";
+    html += buildCaptionChoiceTokenMarkup(choiceMatch, {
+      className: tokenClassName,
+      dataAttributes,
+    });
+    lastIndex = choiceMatch.end;
+  });
+  html += renderPlainText(sourceText.slice(lastIndex));
+  if (appendTrailingNewlineSentinel && sourceText.endsWith("\n")) {
+    html += "&#8203;";
+  }
+
+  return {
+    html,
+    hasChoices: true,
+    matches: choiceMatches,
+  };
+}
+
+function focusTextInputAtPosition(inputEl, position = null) {
+  if (!inputEl) return;
+  inputEl.focus();
+  const resolvedPosition = Number.isFinite(position)
+    ? Math.max(0, Math.min(String(inputEl.value || "").length, Number(position)))
+    : String(inputEl.value || "").length;
+  if (typeof inputEl.setSelectionRange === "function") {
+    inputEl.setSelectionRange(resolvedPosition, resolvedPosition);
+  }
+}
 const settingsCloseBtn = $("#settings-close-btn");
 const settingsCancelBtn = $("#settings-cancel-btn");
 const settingsSaveBtn = $("#settings-save-btn");
