@@ -1,9 +1,11 @@
 function isMaskEditAvailable() {
-  return state.selectedPaths.size === 1
-    && !!state.previewPath
-    && (state.previewMediaType === "image" || state.previewMediaType === "video")
-    && !!imgNatW
-    && !!imgNatH;
+  return (
+    state.selectedPaths.size === 1
+      && !!state.previewPath
+      && (state.previewMediaType === "image" || state.previewMediaType === "video")
+      && !!imgNatW
+      && !!imgNatH
+  ) || canBatchMaskEditSelection();
 }
 
 function isImageEditAvailable() {
@@ -32,6 +34,165 @@ function isMaskEditorMaskMode() {
 
 function isMaskEditorImageMode() {
   return state.maskEditor.active && state.maskEditor.mode === "image";
+}
+
+function isMaskEditorImagePath(path) {
+  if (!path) {
+    return false;
+  }
+  if (typeof getMediaType === "function") {
+    return getMediaType(path) === "image";
+  }
+  const normalizedPath = String(path || "").toLowerCase();
+  const extensionIndex = normalizedPath.lastIndexOf(".");
+  return extensionIndex >= 0 && IMAGE_FILE_EXTENSIONS.has(normalizedPath.slice(extensionIndex));
+}
+
+function getMaskBatchLiveSelectionPaths() {
+  if (!state.previewPath || state.previewMediaType !== "image") {
+    return [];
+  }
+  const selectedPaths = [...state.selectedPaths].filter((path) => isMaskEditorImagePath(path));
+  if (selectedPaths.length !== state.selectedPaths.size) {
+    return [];
+  }
+  if (!selectedPaths.length) {
+    return [];
+  }
+  return selectedPaths.includes(state.previewPath)
+    ? [state.previewPath, ...selectedPaths.filter((path) => path !== state.previewPath)]
+    : selectedPaths;
+}
+
+function canBatchMaskEditSelection() {
+  return getMaskBatchLiveSelectionPaths().length > 1
+    && !!imgNatW
+    && !!imgNatH;
+}
+
+function isMaskEditorBatchMode() {
+  return state.maskEditor.active
+    && state.maskEditor.mode === "mask"
+    && !!state.maskEditor.batchMode;
+}
+
+function getMaskEditorSharedHistoryPaths() {
+  const sessionPaths = Array.isArray(state.maskEditor.historySessionPaths)
+    ? state.maskEditor.historySessionPaths.filter((path) => isMaskEditorImagePath(path))
+    : [];
+  if (sessionPaths.length > 1) {
+    return [...new Set(sessionPaths)];
+  }
+  if (state.maskEditor.batchMode) {
+    const livePaths = getMaskBatchLiveSelectionPaths();
+    if (livePaths.length > 1) {
+      return livePaths;
+    }
+  }
+  return [];
+}
+
+function getMaskEditorTargetPaths() {
+  const pendingPaths = Array.isArray(state.maskEditor.batchPendingPaths)
+    ? state.maskEditor.batchPendingPaths.filter((path) => isMaskEditorImagePath(path))
+    : [];
+  if (pendingPaths.length) {
+    return [...new Set(pendingPaths)];
+  }
+  const sharedPaths = getMaskEditorSharedHistoryPaths();
+  if (sharedPaths.length) {
+    return sharedPaths;
+  }
+  const targetPath = state.maskEditor.path || state.previewPath;
+  return targetPath ? [targetPath] : [];
+}
+
+function shouldUseBatchMaskSave() {
+  if (!isMaskEditorMaskMode()) {
+    return false;
+  }
+  const targetPaths = getMaskEditorTargetPaths();
+  const currentPath = state.maskEditor.path || state.previewPath;
+  return targetPaths.length > 1 || (targetPaths.length === 1 && targetPaths[0] !== currentPath);
+}
+
+function getMaskEditorBatchCount() {
+  const targetPaths = getMaskEditorTargetPaths();
+  return targetPaths.length > 1 ? targetPaths.length : 0;
+}
+
+function resetMaskEditorBatchState() {
+  state.maskEditor.batchMode = false;
+  state.maskEditor.batchPendingPaths = [];
+  state.maskEditor.batchBaseCanvases = {};
+  state.maskEditor.historySessionPaths = [];
+  state.maskEditor.selectionBeforePreviewSwitch = null;
+}
+
+function syncMaskEditorBatchModeFromSelection() {
+  if (!state.maskEditor.active || state.maskEditor.mode !== "mask") {
+    return;
+  }
+  if (state.maskEditor.loading || state.maskEditor.saving || state.maskEditor.resuming) {
+    return;
+  }
+
+  const nextBatchMode = canBatchMaskEditSelection();
+  if (state.maskEditor.batchMode === nextBatchMode) {
+    if (nextBatchMode) {
+      state.maskEditor.historySessionPaths = getMaskBatchLiveSelectionPaths();
+    }
+    if (!nextBatchMode && state.maskEditor.batchPendingPaths.length) {
+      state.maskEditor.batchPendingPaths = [];
+    }
+    return;
+  }
+
+  if (nextBatchMode) {
+    state.maskEditor.batchMode = true;
+    state.maskEditor.historySessionPaths = getMaskBatchLiveSelectionPaths();
+    renderMaskEditorUi();
+    return;
+  }
+
+  const targetPaths = getMaskEditorTargetPaths();
+  state.maskEditor.batchMode = false;
+  state.maskEditor.batchPendingPaths = [];
+  if (state.maskEditor.dirty && targetPaths.length > 1) {
+    state.maskEditor.historySessionPaths = targetPaths;
+  } else {
+    state.maskEditor.batchBaseCanvases = {};
+    state.maskEditor.historySessionPaths = [];
+  }
+  state.maskEditor.selectionBeforePreviewSwitch = null;
+  if (state.previewMediaType === "image" && state.previewPath) {
+    statusBar.textContent = `Editing mask for ${getFileLabel(state.previewPath)}`;
+  }
+  renderMaskEditorUi();
+}
+
+function getMaskEditorBatchBaseEntry(path) {
+  return path ? state.maskEditor.batchBaseCanvases[path] || null : null;
+}
+
+function setMaskEditorBatchBaseEntry(path, entry) {
+  if (!path || !entry) return;
+  state.maskEditor.batchBaseCanvases[path] = entry;
+}
+
+function captureMaskEditorBaseEntry(path = state.maskEditor.path || state.previewPath) {
+  const sourceCanvas = state.maskEditor.baseCanvas;
+  if (!path || !sourceCanvas?.width || !sourceCanvas?.height) {
+    return null;
+  }
+  return {
+    canvas: cloneMaskCanvasSnapshot(sourceCanvas),
+    sourceWidth: Math.max(1, Number(state.maskEditor.sourceWidth || sourceCanvas.width)),
+    sourceHeight: Math.max(1, Number(state.maskEditor.sourceHeight || sourceCanvas.height)),
+    imageWidth: Math.max(1, Number(state.maskEditor.imageWidth || sourceCanvas.width)),
+    imageHeight: Math.max(1, Number(state.maskEditor.imageHeight || sourceCanvas.height)),
+    version: getMaskVersion(path) || Date.now(),
+  };
 }
 
 function getActiveEditCanvas() {
@@ -687,6 +848,7 @@ function syncMaskLatentBaseWidthFromPresets() {
 
 function updateMaskControlLabels() {
   const imageMode = isMaskEditorImageMode();
+  const batchCount = getMaskEditorBatchCount();
   const brushSizePercent = clamp(Number(state.maskEditor.brushSizePercent || 6), 0.2, 100);
   const brushValue = Math.max(0, Math.min(100, Number(state.maskEditor.brushValue || 0)));
   const brushCore = clamp(Number(state.maskEditor.brushCore || 30), 0, 95);
@@ -728,7 +890,9 @@ function updateMaskControlLabels() {
   }
 
   maskResetBtn.textContent = `Reset ${Math.round(brushValue)}%`;
-  maskResetBtn.title = `Fill the full mask with ${Math.round(brushValue)}%`;
+  maskResetBtn.title = batchCount > 1
+    ? `Fill the full mask with ${Math.round(brushValue)}% on ${batchCount} selected images`
+    : `Fill the full mask with ${Math.round(brushValue)}%`;
   maskLatentBaseWidthLabel.textContent = `${latentMetrics.baseWidth}px`;
   maskLatentDividerLabel.textContent = `/${latentMetrics.divider}`;
   maskLatentBaseSizeLabel.textContent = `Base ${latentMetrics.baseWidth}\u00D7${latentMetrics.baseHeight}`;
@@ -737,7 +901,7 @@ function updateMaskControlLabels() {
   maskLatentReductionLabel.textContent = `Reduction ${state.maskEditor.latentReductionPercent.toFixed(1)}%`;
   maskEditorStatus.textContent = state.maskEditor.loading
     ? "Loading..."
-    : (state.maskEditor.saving ? "Saving..." : `${Math.round(brushValue)}%`);
+    : (state.maskEditor.saving ? "Saving..." : `${Math.round(brushValue)}%${batchCount > 1 ? ` (${batchCount} images)` : ""}`);
 }
 
 function getMaskLatentPreviewMetrics() {
@@ -915,6 +1079,20 @@ function refreshMaskBaseCanvas() {
   state.maskEditor.baseCanvas = cloneMaskCanvasSnapshot(getActiveEditCanvas());
 }
 
+function syncCurrentMaskEditorBatchBaseEntry(path = state.maskEditor.path) {
+  if (!state.maskEditor.batchMode || !path || !previewMaskCanvas.width || !previewMaskCanvas.height) {
+    return;
+  }
+  setMaskEditorBatchBaseEntry(path, {
+    canvas: cloneMaskCanvasSnapshot(previewMaskCanvas),
+    sourceWidth: state.maskEditor.sourceWidth,
+    sourceHeight: state.maskEditor.sourceHeight,
+    imageWidth: state.maskEditor.imageWidth,
+    imageHeight: state.maskEditor.imageHeight,
+    version: getMaskVersion(path) || Date.now(),
+  });
+}
+
 function syncMaskEditorDirtyState() {
   state.maskEditor.dirty = state.maskEditor.historyIndex !== state.maskEditor.cleanHistoryIndex;
 }
@@ -950,10 +1128,166 @@ function collectEditorHistoryTiles(beforeCanvas, afterCanvas, tileKeys) {
   return tiles;
 }
 
+function captureMaskStrokeOperation() {
+  if (!isMaskEditorMaskMode()) {
+    return null;
+  }
+  const activeCanvas = getActiveEditCanvas();
+  const tileRects = getEditorTileRects(state.maskEditor.strokeDirtyTiles, activeCanvas.width, activeCanvas.height);
+  const influenceValues = state.maskEditor.strokeInfluenceValues;
+  if (!tileRects.length || !influenceValues?.length) {
+    return null;
+  }
+
+  let minLeft = activeCanvas.width;
+  let minTop = activeCanvas.height;
+  let maxRight = 0;
+  let maxBottom = 0;
+  tileRects.forEach((tileRect) => {
+    minLeft = Math.min(minLeft, tileRect.left);
+    minTop = Math.min(minTop, tileRect.top);
+    maxRight = Math.max(maxRight, tileRect.left + tileRect.width);
+    maxBottom = Math.max(maxBottom, tileRect.top + tileRect.height);
+  });
+  if (maxRight <= minLeft || maxBottom <= minTop) {
+    return null;
+  }
+
+  const bounds = {
+    x: minLeft,
+    y: minTop,
+    width: maxRight - minLeft,
+    height: maxBottom - minTop,
+  };
+  const influenceCanvas = document.createElement("canvas");
+  influenceCanvas.width = bounds.width;
+  influenceCanvas.height = bounds.height;
+  const influenceCtx = influenceCanvas.getContext("2d");
+  const influenceImage = influenceCtx.createImageData(bounds.width, bounds.height);
+  const influenceData = influenceImage.data;
+  let hasInfluence = false;
+
+  for (let y = 0; y < bounds.height; y += 1) {
+    for (let x = 0; x < bounds.width; x += 1) {
+      const sourceIndex = ((bounds.y + y) * activeCanvas.width) + (bounds.x + x);
+      const influenceByte = Math.round(clamp(Number(influenceValues[sourceIndex] || 0), 0, 1) * 255);
+      if (influenceByte <= 0) {
+        continue;
+      }
+      hasInfluence = true;
+      const dataIndex = (y * bounds.width + x) * 4;
+      influenceData[dataIndex] = influenceByte;
+      influenceData[dataIndex + 1] = influenceByte;
+      influenceData[dataIndex + 2] = influenceByte;
+      influenceData[dataIndex + 3] = 255;
+    }
+  }
+
+  if (!hasInfluence) {
+    return null;
+  }
+
+  influenceCtx.putImageData(influenceImage, 0, 0);
+  return {
+    type: "paint",
+    sourceWidth: activeCanvas.width,
+    sourceHeight: activeCanvas.height,
+    bounds,
+    targetValue: clamp(Number(state.maskEditor.brushValue || 0), 0, 100),
+    influenceCanvas,
+  };
+}
+
+function applyMaskOperationToCanvas(operation, targetCanvas) {
+  if (!operation || !targetCanvas?.width || !targetCanvas?.height) {
+    return;
+  }
+  const targetCtx = targetCanvas.getContext("2d", { willReadFrequently: true });
+  if (!targetCtx) {
+    return;
+  }
+
+  if (operation.type === "fill") {
+    const fillValue = Math.round(clamp(Number(operation.valuePercent || 0), 0, 100) * 2.55);
+    targetCtx.save();
+    targetCtx.fillStyle = `rgb(${fillValue}, ${fillValue}, ${fillValue})`;
+    targetCtx.fillRect(0, 0, targetCanvas.width, targetCanvas.height);
+    targetCtx.restore();
+    return;
+  }
+
+  if (operation.type !== "paint" || !operation.influenceCanvas) {
+    return;
+  }
+
+  const sourceWidth = Math.max(1, Number(operation.sourceWidth || targetCanvas.width));
+  const sourceHeight = Math.max(1, Number(operation.sourceHeight || targetCanvas.height));
+  const bounds = operation.bounds || {
+    x: 0,
+    y: 0,
+    width: sourceWidth,
+    height: sourceHeight,
+  };
+  const scaleX = targetCanvas.width / sourceWidth;
+  const scaleY = targetCanvas.height / sourceHeight;
+  const scaledLeft = clamp(Math.floor(bounds.x * scaleX), 0, Math.max(0, targetCanvas.width - 1));
+  const scaledTop = clamp(Math.floor(bounds.y * scaleY), 0, Math.max(0, targetCanvas.height - 1));
+  const scaledRight = clamp(Math.ceil((bounds.x + bounds.width) * scaleX), scaledLeft + 1, targetCanvas.width);
+  const scaledBottom = clamp(Math.ceil((bounds.y + bounds.height) * scaleY), scaledTop + 1, targetCanvas.height);
+  const scaledWidth = Math.max(1, scaledRight - scaledLeft);
+  const scaledHeight = Math.max(1, scaledBottom - scaledTop);
+
+  const influenceCanvas = document.createElement("canvas");
+  influenceCanvas.width = scaledWidth;
+  influenceCanvas.height = scaledHeight;
+  const influenceCtx = influenceCanvas.getContext("2d", { willReadFrequently: true });
+  influenceCtx.imageSmoothingEnabled = true;
+  influenceCtx.clearRect(0, 0, scaledWidth, scaledHeight);
+  influenceCtx.drawImage(operation.influenceCanvas, 0, 0, scaledWidth, scaledHeight);
+
+  const influenceData = influenceCtx.getImageData(0, 0, scaledWidth, scaledHeight).data;
+  const targetImage = targetCtx.getImageData(scaledLeft, scaledTop, scaledWidth, scaledHeight);
+  const targetData = targetImage.data;
+  const targetValue = Math.round(clamp(Number(operation.targetValue || 0), 0, 100) * 2.55);
+
+  for (let index = 0; index < scaledWidth * scaledHeight; index += 1) {
+    const dataIndex = index * 4;
+    const influence = (influenceData[dataIndex] || 0) / 255;
+    if (influence <= 0) {
+      continue;
+    }
+    const baseValue = targetData[dataIndex];
+    const nextValue = Math.round(baseValue * (1 - influence) + targetValue * influence);
+    targetData[dataIndex] = nextValue;
+    targetData[dataIndex + 1] = nextValue;
+    targetData[dataIndex + 2] = nextValue;
+    targetData[dataIndex + 3] = 255;
+  }
+
+  targetCtx.putImageData(targetImage, scaledLeft, scaledTop);
+}
+
+function rebuildMaskCanvasFromHistory() {
+  if (!isMaskEditorMaskMode() || !state.maskEditor.baseCanvas || !previewMaskCanvas.width || !previewMaskCanvas.height) {
+    return;
+  }
+  const ctx = previewMaskCanvas.getContext("2d");
+  ctx.clearRect(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
+  ctx.drawImage(state.maskEditor.baseCanvas, 0, 0);
+  for (let index = 0; index < state.maskEditor.historyIndex; index += 1) {
+    const operation = state.maskEditor.history[index]?.operation;
+    if (!operation) {
+      continue;
+    }
+    applyMaskOperationToCanvas(operation, previewMaskCanvas);
+  }
+}
+
 function pushMaskHistorySnapshot(options = {}) {
   const {
     beforeCanvas = state.maskEditor.strokeBaseCanvas,
     tileKeys = state.maskEditor.strokeDirtyTiles,
+    operation = null,
   } = options;
   const activeCanvas = getActiveEditCanvas();
   if (!beforeCanvas || !activeCanvas.width || !activeCanvas.height || !tileKeys?.size) {
@@ -965,6 +1299,7 @@ function pushMaskHistorySnapshot(options = {}) {
   const nextHistory = state.maskEditor.history.slice(0, state.maskEditor.historyIndex);
   const nextEntry = {
     tiles: collectEditorHistoryTiles(beforeCanvas, activeCanvas, tileKeys),
+    operation,
   };
   if (!nextEntry.tiles.length) {
     return;
@@ -997,8 +1332,12 @@ function finalizeHistoryPlayback() {
 function undoMaskEdit() {
   if (!state.maskEditor.active || state.maskEditor.painting || state.maskEditor.historyIndex <= 0) return;
   const entry = state.maskEditor.history[state.maskEditor.historyIndex - 1];
-  applyEditorHistoryEntry(entry, "before");
   state.maskEditor.historyIndex -= 1;
+  if (isMaskEditorBatchMode() && isMaskEditorMaskMode()) {
+    rebuildMaskCanvasFromHistory();
+  } else {
+    applyEditorHistoryEntry(entry, "before");
+  }
   syncMaskEditorDirtyState();
   finalizeHistoryPlayback();
   statusBar.textContent = "Undid brush stroke";
@@ -1007,8 +1346,12 @@ function undoMaskEdit() {
 function redoMaskEdit() {
   if (!state.maskEditor.active || state.maskEditor.painting || state.maskEditor.historyIndex >= state.maskEditor.history.length) return;
   const entry = state.maskEditor.history[state.maskEditor.historyIndex];
-  applyEditorHistoryEntry(entry, "after");
   state.maskEditor.historyIndex += 1;
+  if (isMaskEditorBatchMode() && isMaskEditorMaskMode()) {
+    rebuildMaskCanvasFromHistory();
+  } else {
+    applyEditorHistoryEntry(entry, "after");
+  }
   syncMaskEditorDirtyState();
   finalizeHistoryPlayback();
   statusBar.textContent = "Redid brush stroke";
@@ -1055,6 +1398,7 @@ function renderPreviewActionBar() {
   const cropEditActive = typeof isCropEditActive === "function" && isCropEditActive();
   const imageAvailable = isImageEditAvailable();
   const maskAvailable = isMaskEditAvailable();
+  const batchMaskCount = getMaskBatchLiveSelectionPaths().length;
   const videoKeyAddVisible = !active && !regionPickerActive && !cropEditActive && isVideoMaskEditAvailable();
   const imageButtonVisible = imageAvailable && !active && !regionPickerActive && !cropEditActive;
   imageDownloadBtn?.classList.toggle("visible", imageButtonVisible);
@@ -1079,6 +1423,9 @@ function renderPreviewActionBar() {
   }
   if (maskEditBtn) {
     maskEditBtn.disabled = maskActionDisabled;
+    maskEditBtn.title = batchMaskCount > 1
+      ? `Edit the mask for ${batchMaskCount} selected images`
+      : maskEditBtn.title;
   }
   renderGifConvertButton();
   const previewButtons = [imageDownloadBtn, duplicateImageBtn, imageEditBtn, promptPreviewBtn, maskEditBtn, gifConvertBtn].filter(Boolean);
@@ -1127,6 +1474,7 @@ function renderMaskEditorUi() {
   const active = isMaskEditorVisible();
   const imageMode = isMaskEditorImageMode();
   const maskMode = isMaskEditorMaskMode();
+  const batchCount = getMaskEditorBatchCount();
   const interactive = active && !state.maskEditor.loading && !state.maskEditor.saving;
   const showLatentPreview = maskMode && !!state.maskEditor.latentPreviewEnabled;
   const currentVideoFrameIndex = videoAvailable ? getCurrentVideoMaskFrameIndex() : null;
@@ -1148,8 +1496,8 @@ function renderMaskEditorUi() {
   maskLatentBaseWidthInput.disabled = !interactive || !showLatentPreview || !maskMode;
   maskLatentDividerInput.disabled = !interactive || !showLatentPreview || !maskMode;
   maskLatentNoiseInput.disabled = !interactive || !showLatentPreview || !maskMode;
-  maskApplyBtn.textContent = imageMode ? "Save Image" : "Save Mask";
-  maskCancelBtn.textContent = imageMode ? "Cancel Edit" : "Cancel Mask";
+  maskApplyBtn.textContent = imageMode ? "Save Image" : (batchCount > 1 ? "Save Masks" : "Save Mask");
+  maskCancelBtn.textContent = imageMode ? "Cancel Edit" : (batchCount > 1 ? "Cancel Batch" : "Cancel Mask");
   videoMaskAddBtn.classList.toggle("visible", videoAvailable);
   videoMaskAddBtn.classList.toggle("in-editor", active && videoAvailable);
   videoMaskAddBtn.disabled = !canCreateVideoKeyframe;
@@ -1176,7 +1524,9 @@ function renderMaskEditorUi() {
       : "Add a new key-frame mask at the current video frame";
   } else {
     maskEditBtn.textContent = "Mask";
-    maskEditBtn.title = "Edit the image mask";
+    maskEditBtn.title = batchCount > 1
+      ? `Edit the mask for ${batchCount} selected images`
+      : "Edit the image mask";
     videoMaskAddBtn.title = "Add a new key-frame mask at the current video frame";
   }
   imageEditBtn.textContent = "Edit Image";
@@ -1482,7 +1832,7 @@ function stopMaskPaint() {
   if (state.maskEditor.painting) {
     const historyIndexBefore = state.maskEditor.historyIndex;
     renderMaskStrokePreview();
-    pushMaskHistorySnapshot();
+    pushMaskHistorySnapshot({ operation: captureMaskStrokeOperation() });
     if (state.maskEditor.historyIndex === historyIndexBefore) {
       syncMaskEditorDirtyState();
     }
@@ -1497,6 +1847,30 @@ function snapshotMaskBaseCanvas() {
   refreshMaskBaseCanvas();
 }
 
+async function fetchWithNetworkRetry(resource, options = {}, retryCount = 1) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+    try {
+      return await fetch(resource, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= retryCount) {
+        throw error;
+      }
+    }
+  }
+  throw lastError || new Error("Failed to fetch");
+}
+
+function buildRetryImageUrl(url, attempt = 0) {
+  if (attempt <= 0) {
+    return url;
+  }
+  const retryUrl = new URL(url, window.location.origin);
+  retryUrl.searchParams.set("_retry", `${Date.now()}-${attempt}`);
+  return retryUrl.toString();
+}
+
 async function fetchMaskMetadata(path, ensure = false, options = {}) {
   const { frameIndex = null, createNew = false } = options;
   const params = new URLSearchParams({
@@ -1509,7 +1883,7 @@ async function fetchMaskMetadata(path, ensure = false, options = {}) {
   if (createNew) {
     params.set("create_new", "true");
   }
-  const resp = await fetch(`/api/mask?${params.toString()}`);
+  const resp = await fetchWithNetworkRetry(`/api/mask?${params.toString()}`);
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     throw new Error(data.detail || "Failed to load mask metadata");
@@ -1517,13 +1891,98 @@ async function fetchMaskMetadata(path, ensure = false, options = {}) {
   return data;
 }
 
-function loadMaskImage(url) {
+function loadMaskImage(url, retryCount = 1) {
   return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("Failed to load image asset"));
-    image.src = url;
+    const tryLoad = (attempt = 0) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => {
+        if (attempt < retryCount) {
+          tryLoad(attempt + 1);
+          return;
+        }
+        reject(new Error("Failed to load image asset"));
+      };
+      image.src = buildRetryImageUrl(url, attempt);
+    };
+    tryLoad(0);
   });
+}
+
+async function loadImageMaskBaseEntry(path) {
+  const maskInfo = await fetchMaskMetadata(path, true);
+  const sourceWidth = Math.max(1, Number(maskInfo.image_width || 1));
+  const sourceHeight = Math.max(1, Number(maskInfo.image_height || 1));
+  const workingSize = getCappedEditorDimensions(sourceWidth, sourceHeight);
+  const imageWidth = workingSize.width;
+  const imageHeight = workingSize.height;
+  const image = await loadMaskImage(buildImageApiUrl("mask/image", path, {
+    ensure: true,
+    mask_v: maskInfo.mtime || Date.now(),
+  }));
+  const canvas = document.createElement("canvas");
+  canvas.width = imageWidth;
+  canvas.height = imageHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, imageWidth, imageHeight);
+  ctx.drawImage(image, 0, 0, imageWidth, imageHeight);
+  return {
+    canvas,
+    sourceWidth,
+    sourceHeight,
+    imageWidth,
+    imageHeight,
+    version: maskInfo.mtime || Date.now(),
+    maskInfo,
+  };
+}
+
+function applyImageMaskBaseEntryToEditor(path, baseEntry, options = {}) {
+  const { preserveHistory = false } = options;
+  const imageWidth = Math.max(1, Number(baseEntry?.imageWidth || baseEntry?.canvas?.width || 1));
+  const imageHeight = Math.max(1, Number(baseEntry?.imageHeight || baseEntry?.canvas?.height || 1));
+  const sourceWidth = Math.max(1, Number(baseEntry?.sourceWidth || imageWidth));
+  const sourceHeight = Math.max(1, Number(baseEntry?.sourceHeight || imageHeight));
+  const previewScaleX = imageWidth / Math.max(1, imgNatW || imageWidth);
+  const previewScaleY = imageHeight / Math.max(1, imgNatH || imageHeight);
+
+  previewMaskCanvas.width = imageWidth;
+  previewMaskCanvas.height = imageHeight;
+  const ctx = previewMaskCanvas.getContext("2d");
+  ctx.clearRect(0, 0, imageWidth, imageHeight);
+  ctx.drawImage(baseEntry.canvas, 0, 0, imageWidth, imageHeight);
+
+  state.maskEditor.mode = "mask";
+  state.maskEditor.path = path;
+  state.maskEditor.mediaType = "image";
+  state.maskEditor.frameIndex = null;
+  state.maskEditor.requestedFrameIndex = null;
+  state.maskEditor.sourceFrameIndex = null;
+  state.maskEditor.sourceWidth = sourceWidth;
+  state.maskEditor.sourceHeight = sourceHeight;
+  state.maskEditor.imageWidth = imageWidth;
+  state.maskEditor.imageHeight = imageHeight;
+  state.maskEditor.previewScaleX = previewScaleX;
+  state.maskEditor.previewScaleY = previewScaleY;
+  state.maskEditor.imageBaseCanvas = null;
+  state.maskEditor.latentImageDirty = true;
+  stopMaskPaint();
+  refreshMaskBaseCanvas();
+  syncCurrentMaskEditorBatchBaseEntry(path);
+  if (!preserveHistory) {
+    resetMaskHistory();
+  }
+  updateMaskSignalProbeStats();
+  setImageMaskPresence(path, true, baseEntry?.version || Date.now());
+  applyMaskCanvasTransform();
+  applyMaskLatentPreviewTransform();
+  renderMaskEditorUi();
+  scheduleMaskLatentPreviewRender({ imageDirty: true });
+  return baseEntry?.maskInfo || {
+    image_width: sourceWidth,
+    image_height: sourceHeight,
+    mtime: baseEntry?.version || Date.now(),
+  };
 }
 
 function getEditorSourceDimensions(path = state.previewPath) {
@@ -1575,50 +2034,14 @@ async function loadImageEditEditorForPath(path) {
   return { image_width: imageWidth, image_height: imageHeight };
 }
 
-async function loadImageMaskEditorForPath(path) {
-  const maskInfo = await fetchMaskMetadata(path, true);
-  const sourceWidth = Math.max(1, Number(maskInfo.image_width || 1));
-  const sourceHeight = Math.max(1, Number(maskInfo.image_height || 1));
-  const workingSize = getCappedEditorDimensions(sourceWidth, sourceHeight);
-  const imageWidth = workingSize.width;
-  const imageHeight = workingSize.height;
-  const previewScaleX = imageWidth / Math.max(1, imgNatW || imageWidth);
-  const previewScaleY = imageHeight / Math.max(1, imgNatH || imageHeight);
-  const image = await loadMaskImage(buildImageApiUrl("mask/image", path, {
-    ensure: true,
-    mask_v: maskInfo.mtime || Date.now(),
-  }));
-
-  previewMaskCanvas.width = imageWidth;
-  previewMaskCanvas.height = imageHeight;
-  const ctx = previewMaskCanvas.getContext("2d");
-  ctx.clearRect(0, 0, imageWidth, imageHeight);
-  ctx.drawImage(image, 0, 0, imageWidth, imageHeight);
-
-  state.maskEditor.mode = "mask";
-  state.maskEditor.path = path;
-  state.maskEditor.mediaType = "image";
-  state.maskEditor.frameIndex = null;
-  state.maskEditor.requestedFrameIndex = null;
-  state.maskEditor.sourceFrameIndex = null;
-  state.maskEditor.sourceWidth = sourceWidth;
-  state.maskEditor.sourceHeight = sourceHeight;
-  state.maskEditor.imageWidth = imageWidth;
-  state.maskEditor.imageHeight = imageHeight;
-  state.maskEditor.previewScaleX = previewScaleX;
-  state.maskEditor.previewScaleY = previewScaleY;
-  state.maskEditor.imageBaseCanvas = null;
-  state.maskEditor.latentImageDirty = true;
-  stopMaskPaint();
-  refreshMaskBaseCanvas();
-  resetMaskHistory();
-  updateMaskSignalProbeStats();
-  setImageMaskPresence(path, true, maskInfo.mtime || Date.now());
-  applyMaskCanvasTransform();
-  applyMaskLatentPreviewTransform();
-  renderMaskEditorUi();
-  scheduleMaskLatentPreviewRender({ imageDirty: true });
-  return maskInfo;
+async function loadImageMaskEditorForPath(path, options = {}) {
+  const { preserveHistory = false, useBatchCache = false } = options;
+  const cachedEntry = useBatchCache ? getMaskEditorBatchBaseEntry(path) : null;
+  const baseEntry = cachedEntry || await loadImageMaskBaseEntry(path);
+  if (useBatchCache && !cachedEntry) {
+    setMaskEditorBatchBaseEntry(path, baseEntry);
+  }
+  return applyImageMaskBaseEntryToEditor(path, baseEntry, { preserveHistory });
 }
 
 async function loadVideoMaskEditorForPath(path, options = {}) {
@@ -1681,29 +2104,179 @@ async function loadMaskEditorForPath(path, options = {}) {
   if (getMediaType(path) === "video") {
     return loadVideoMaskEditorForPath(path, options);
   }
-  return loadImageMaskEditorForPath(path);
+  return loadImageMaskEditorForPath(path, options);
+}
+
+function getMaskEditorResumeModeForPath(path) {
+  if (!state.maskEditor.active) {
+    return null;
+  }
+  const nextMediaType = getMediaType(path);
+  if (state.maskEditor.mode === "image") {
+    return nextMediaType === "image" ? "image" : null;
+  }
+  if (state.maskEditor.mode !== "mask") {
+    return null;
+  }
+  if (state.maskEditor.batchMode) {
+    return nextMediaType === "image" ? "mask" : null;
+  }
+  return nextMediaType === "image" || nextMediaType === "video"
+    ? "mask"
+    : null;
+}
+
+async function prepareMaskEditorForPreviewSwitch(nextPath) {
+  if (!state.maskEditor.active) {
+    state.maskEditor.selectionBeforePreviewSwitch = null;
+    return false;
+  }
+  const selectionBeforePreviewSwitch = Array.isArray(state.maskEditor.selectionBeforePreviewSwitch)
+    ? state.maskEditor.selectionBeforePreviewSwitch.filter((path) => isMaskEditorImagePath(path))
+    : [];
+  state.maskEditor.selectionBeforePreviewSwitch = null;
+  const sharedHistoryPaths = selectionBeforePreviewSwitch.length > 1
+    ? [...new Set(selectionBeforePreviewSwitch)]
+    : getMaskEditorSharedHistoryPaths();
+  const nextMediaType = getMediaType(nextPath);
+  const pendingBatchMode = state.maskEditor.mode === "mask"
+    && nextMediaType === "image"
+    && getMaskBatchLiveSelectionPaths().length > 1;
+  const resumeMode = getMaskEditorResumeModeForPath(nextPath);
+  const preserveSingleImageHistory = state.maskEditor.mode === "mask"
+    && nextMediaType === "image"
+    && state.maskEditor.dirty
+    && sharedHistoryPaths.length > 1
+    && sharedHistoryPaths.includes(nextPath);
+  if (!state.maskEditor.batchMode && !pendingBatchMode && state.maskEditor.dirty && !preserveSingleImageHistory) {
+    await saveMaskEdit({ closeAfterSave: false });
+  }
+  if (!resumeMode) {
+    closeMaskEditor();
+    return false;
+  }
+  if (pendingBatchMode && !state.maskEditor.batchMode) {
+    const currentPath = state.maskEditor.path || state.previewPath;
+    const baseEntry = captureMaskEditorBaseEntry(currentPath);
+    if (baseEntry) {
+      setMaskEditorBatchBaseEntry(currentPath, baseEntry);
+    }
+  }
+  if (pendingBatchMode) {
+    state.maskEditor.historySessionPaths = getMaskBatchLiveSelectionPaths();
+  } else if (preserveSingleImageHistory) {
+    state.maskEditor.historySessionPaths = sharedHistoryPaths;
+  }
+  state.maskEditor.batchMode = pendingBatchMode;
+  state.maskEditor.pendingResume = {
+    path: nextPath,
+    mode: resumeMode,
+    batchMode: pendingBatchMode,
+    preserveHistory: preserveSingleImageHistory,
+    useBatchCache: pendingBatchMode || preserveSingleImageHistory,
+  };
+  state.maskEditor.loading = true;
+  renderMaskEditorUi();
+  return true;
+}
+
+async function resumePendingMaskEditorAfterPreviewReady() {
+  const pending = state.maskEditor.pendingResume;
+  if (!pending || state.maskEditor.resuming || state.previewPath !== pending.path) {
+    return false;
+  }
+  const preserveHistory = !!(pending.batchMode || pending.preserveHistory);
+  const useBatchCache = !!(pending.batchMode || pending.useBatchCache);
+
+  const imageReady = state.previewMediaType === "image" && !!imgNatW && !!imgNatH;
+  const videoReady = state.previewMediaType === "video" && previewVideo.readyState >= 2 && state.selectedPaths.size === 1;
+  if (pending.mode === "image" && !imageReady) {
+    return false;
+  }
+  if (pending.mode === "mask" && !imageReady && !videoReady) {
+    return false;
+  }
+
+  state.maskEditor.resuming = true;
+  state.maskEditor.batchMode = !!pending.batchMode;
+  try {
+    if (pending.mode === "image") {
+      await loadImageEditEditorForPath(pending.path);
+      statusBar.textContent = `Editing image for ${getFileLabel(pending.path)}`;
+      return true;
+    }
+
+    const maskInfo = await loadMaskEditorForPath(pending.path, {
+      preserveHistory,
+      useBatchCache,
+    });
+    if (preserveHistory) {
+      rebuildMaskCanvasFromHistory();
+      finalizeHistoryPlayback();
+    }
+    if (state.previewMediaType === "video") {
+      statusBar.textContent = `Editing key-frame mask for ${getFileLabel(pending.path)} at ${formatVideoMaskFrameHint(maskInfo.frame_index, pending.path)}`;
+    } else {
+      const batchCount = getMaskEditorBatchCount();
+      if (batchCount > 1 && state.maskEditor.batchMode) {
+        statusBar.textContent = `Editing mask for ${batchCount} selected images`;
+      } else if (batchCount > 1) {
+        statusBar.textContent = `Editing mask for ${getFileLabel(pending.path)} (${batchCount} unsaved batch images)`;
+      } else {
+        statusBar.textContent = `Editing mask for ${getFileLabel(pending.path)}`;
+      }
+    }
+    return true;
+  } catch (err) {
+    closeMaskEditor();
+    showErrorToast(`Mask error: ${err.message}`);
+    statusBar.textContent = `Mask error: ${err.message}`;
+    return false;
+  } finally {
+    state.maskEditor.pendingResume = null;
+    state.maskEditor.resuming = false;
+    state.maskEditor.loading = false;
+    renderMaskEditorUi();
+  }
 }
 
 async function enterMaskEditMode(options = {}) {
   const { createNew = false } = options;
   if (!isMaskEditAvailable()) return;
+  const batchMode = canBatchMaskEditSelection();
   await clearPromptPreviewDisplay({ preserveView: true });
   if (state.cropDraft || state.cropInteraction) {
     clearCropDraft();
   }
+  resetMaskEditorBatchState();
   state.maskEditor.active = true;
+  state.maskEditor.mode = "mask";
+  state.maskEditor.batchMode = batchMode;
+  state.maskEditor.historySessionPaths = batchMode ? getMaskBatchLiveSelectionPaths() : [];
   state.maskEditor.loading = true;
   state.maskEditor.path = state.previewPath;
+  state.maskEditor.mediaType = getMediaType(state.previewPath);
+  state.maskEditor.pendingResume = null;
+  state.maskEditor.resuming = false;
   renderMaskEditorUi();
   try {
-    const maskInfo = await loadMaskEditorForPath(state.previewPath, { createNew });
-    if (state.maskEditor.mediaType === "video") {
+    const maskInfo = await loadMaskEditorForPath(state.previewPath, {
+      createNew,
+      preserveHistory: false,
+      useBatchCache: batchMode,
+    });
+    if (batchMode) {
+      statusBar.textContent = `Editing mask for ${getMaskEditorBatchCount()} selected images`;
+    } else if (state.maskEditor.mediaType === "video") {
       statusBar.textContent = `Editing key-frame mask for ${getFileLabel(state.previewPath)} at ${formatVideoMaskFrameHint(maskInfo.frame_index, state.previewPath)}`;
     } else {
       statusBar.textContent = `Editing mask for ${getFileLabel(state.previewPath)}`;
     }
   } catch (err) {
     state.maskEditor.active = false;
+    state.maskEditor.mode = null;
+    state.maskEditor.mediaType = null;
+    resetMaskEditorBatchState();
     previewMaskCanvas.style.display = "none";
     showErrorToast(`Mask error: ${err.message}`);
     statusBar.textContent = `Mask error: ${err.message}`;
@@ -1719,10 +2292,13 @@ async function enterImageEditMode() {
   if (state.cropDraft || state.cropInteraction) {
     clearCropDraft();
   }
+  resetMaskEditorBatchState();
   state.maskEditor.active = true;
   state.maskEditor.mode = "image";
   state.maskEditor.loading = true;
   state.maskEditor.path = state.previewPath;
+  state.maskEditor.pendingResume = null;
+  state.maskEditor.resuming = false;
   renderMaskEditorUi();
   try {
     await loadImageEditEditorForPath(state.previewPath);
@@ -1812,8 +2388,11 @@ function closeMaskEditor(options = {}) {
     ctx.drawImage(state.maskEditor.baseCanvas, 0, 0);
   }
   stopMaskPaint();
+  resetMaskEditorBatchState();
   state.maskEditor.active = false;
   state.maskEditor.mode = null;
+  state.maskEditor.pendingResume = null;
+  state.maskEditor.resuming = false;
   state.maskEditor.loading = false;
   state.maskEditor.saving = false;
   state.maskEditor.dirty = false;
@@ -1906,6 +2485,9 @@ async function composeEditedImageBlob() {
 
 async function saveImageEdit(options = {}) {
   const { closeAfterSave = true } = options;
+  if (state.maskEditor.savePromise) {
+    return state.maskEditor.savePromise;
+  }
   if (!state.maskEditor.active || !state.previewPath || !previewImageEditCanvas.width || !previewImageEditCanvas.height) {
     return;
   }
@@ -1916,47 +2498,225 @@ async function saveImageEdit(options = {}) {
     return;
   }
 
-  state.maskEditor.saving = true;
-  renderMaskEditorUi();
-  statusBar.textContent = "Saving image...";
-  try {
-    const blob = await composeEditedImageBlob();
-    const targetPath = state.maskEditor.path || state.previewPath;
-    const formData = new FormData();
-    formData.append("image_path", targetPath);
-    formData.append("image", blob, `${getFileLabel(targetPath)}.png`);
-
-    const resp = await fetch("/api/image/edit", {
-      method: "POST",
-      body: formData,
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      throw new Error(data.detail || "Failed to save image edit");
-    }
-
-    state.imageCrops[targetPath] = data.crop || null;
-    state.imageVersions[targetPath] = Number(data.mtime || Date.now()) || Date.now();
-    invalidateImageCaches(targetPath);
-    renderGrid({ preservePath: targetPath, preserveScrollTop: fileGridContainer.scrollTop });
-    closeMaskEditor();
-    await showPreview(targetPath);
-    statusBar.textContent = data.committed_crop
-      ? `Saved image edit for ${getFileLabel(targetPath)} and committed the active crop`
-      : `Saved image edit for ${getFileLabel(targetPath)}`;
-  } catch (err) {
-    showErrorToast(`Image edit error: ${err.message}`);
-    statusBar.textContent = `Image edit error: ${err.message}`;
-    throw err;
-  } finally {
-    state.maskEditor.saving = false;
+  return runMaskEditorSave(async () => {
+    state.maskEditor.saving = true;
     renderMaskEditorUi();
+    statusBar.textContent = "Saving image...";
+    try {
+      const blob = await composeEditedImageBlob();
+      const targetPath = state.maskEditor.path || state.previewPath;
+      const formData = new FormData();
+      formData.append("image_path", targetPath);
+      formData.append("image", blob, `${getFileLabel(targetPath)}.png`);
+
+      const resp = await fetch("/api/image/edit", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.detail || "Failed to save image edit");
+      }
+
+      state.imageCrops[targetPath] = data.crop || null;
+      state.imageVersions[targetPath] = Number(data.mtime || Date.now()) || Date.now();
+      invalidateImageCaches(targetPath);
+      renderGrid({ preservePath: targetPath, preserveScrollTop: fileGridContainer.scrollTop });
+      if (closeAfterSave) {
+        closeMaskEditor();
+        await showPreview(targetPath);
+      } else {
+        refreshMaskBaseCanvas();
+        state.maskEditor.cleanHistoryIndex = state.maskEditor.historyIndex;
+        syncMaskEditorDirtyState();
+        renderMaskEditorUi();
+      }
+      statusBar.textContent = data.committed_crop
+        ? `Saved image edit for ${getFileLabel(targetPath)} and committed the active crop`
+        : `Saved image edit for ${getFileLabel(targetPath)}`;
+    } catch (err) {
+      showErrorToast(`Image edit error: ${err.message}`);
+      statusBar.textContent = `Image edit error: ${err.message}`;
+      throw err;
+    } finally {
+      state.maskEditor.saving = false;
+      renderMaskEditorUi();
+    }
+  });
+}
+
+function encodeCanvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((nextBlob) => {
+      if (nextBlob) {
+        resolve(nextBlob);
+        return;
+      }
+      reject(new Error("Failed to encode mask PNG"));
+    }, "image/png");
+  });
+}
+
+function runMaskEditorSave(task) {
+  if (state.maskEditor.savePromise) {
+    return state.maskEditor.savePromise;
   }
+  const savePromise = Promise.resolve()
+    .then(task)
+    .finally(() => {
+      if (state.maskEditor.savePromise === savePromise) {
+        state.maskEditor.savePromise = null;
+      }
+    });
+  state.maskEditor.savePromise = savePromise;
+  return savePromise;
+}
+
+async function uploadMaskCanvasForPath(targetPath, canvas) {
+  const blob = await encodeCanvasToPngBlob(canvas);
+  const formData = new FormData();
+  formData.append("image_path", targetPath);
+  formData.append("mask", blob, `${getFileLabel(targetPath)}.mask.png`);
+  const resp = await fetchWithNetworkRetry("/api/mask", {
+    method: "POST",
+    body: formData,
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new Error(data.detail || "Failed to save mask");
+  }
+  return data;
+}
+
+async function buildBatchMaskCanvasForPath(path) {
+  let baseEntry = getMaskEditorBatchBaseEntry(path);
+  if (!baseEntry) {
+    baseEntry = await loadImageMaskBaseEntry(path);
+    setMaskEditorBatchBaseEntry(path, baseEntry);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = baseEntry.imageWidth;
+  canvas.height = baseEntry.imageHeight;
+  canvas.getContext("2d").drawImage(baseEntry.canvas, 0, 0, canvas.width, canvas.height);
+  for (let index = 0; index < state.maskEditor.historyIndex; index += 1) {
+    const operation = state.maskEditor.history[index]?.operation;
+    if (!operation) {
+      continue;
+    }
+    applyMaskOperationToCanvas(operation, canvas);
+  }
+  return canvas;
+}
+
+async function saveBatchMaskEdit(options = {}) {
+  const { closeAfterSave = true } = options;
+  if (state.maskEditor.savePromise) {
+    return state.maskEditor.savePromise;
+  }
+  const targetPaths = getMaskEditorTargetPaths();
+  if (!targetPaths.length) {
+    return;
+  }
+  if (!state.maskEditor.dirty) {
+    if (closeAfterSave) {
+      closeMaskEditor();
+    }
+    return;
+  }
+
+  const currentPath = state.maskEditor.path || state.previewPath;
+  let processedCount = 0;
+  let failedTargetPath = currentPath || targetPaths[0] || null;
+  return runMaskEditorSave(async () => {
+    state.maskEditor.saving = true;
+    renderMaskEditorUi();
+    statusBar.textContent = `Saving masks for ${targetPaths.length} selected images...`;
+    resetAutoCaptionProgress();
+    updateAutoCaptionProgress({
+      visible: true,
+      scopeLabel: "Batch Mask",
+      totalImages: targetPaths.length,
+      processedImages: 0,
+      completedImages: 0,
+      queuedItems: Math.max(0, targetPaths.length - 1),
+      currentPath: currentPath || targetPaths[0],
+      currentMessage: "Preparing mask",
+      currentStepIndex: 0,
+      currentStepTotal: 1,
+    });
+
+    try {
+      for (let index = 0; index < targetPaths.length; index += 1) {
+        const targetPath = targetPaths[index];
+        failedTargetPath = targetPath;
+        updateAutoCaptionProgress({
+          processedImages: processedCount,
+          completedImages: processedCount,
+          queuedItems: Math.max(0, targetPaths.length - index - 1),
+          currentPath: targetPath,
+          currentMessage: "Preparing mask",
+          currentStepIndex: 0,
+          currentStepTotal: 1,
+        });
+        const canvas = targetPath === currentPath
+          ? cloneMaskCanvasSnapshot(previewMaskCanvas)
+          : await buildBatchMaskCanvasForPath(targetPath);
+        updateAutoCaptionProgress({
+          currentPath: targetPath,
+          currentMessage: "Saving mask",
+          currentStepIndex: 1,
+          currentStepTotal: 1,
+        });
+        const data = await uploadMaskCanvasForPath(targetPath, canvas);
+        processedCount = index + 1;
+        setImageMaskPresence(targetPath, true, data.mtime || Date.now(), data.mask_count);
+        updateAutoCaptionProgress({
+          processedImages: processedCount,
+          completedImages: processedCount,
+          queuedItems: Math.max(0, targetPaths.length - processedCount),
+          currentPath: targetPath,
+          currentMessage: "Saved",
+          currentStepIndex: 1,
+          currentStepTotal: 1,
+        });
+      }
+      refreshMaskBaseCanvas();
+      syncCurrentMaskEditorBatchBaseEntry(currentPath);
+      state.maskEditor.cleanHistoryIndex = state.maskEditor.historyIndex;
+      state.maskEditor.batchPendingPaths = [];
+      if (!state.maskEditor.batchMode) {
+        state.maskEditor.historySessionPaths = [];
+      }
+      syncMaskEditorDirtyState();
+      statusBar.textContent = `Saved mask for ${targetPaths.length} selected images`;
+      if (closeAfterSave) {
+        closeMaskEditor();
+      } else {
+        renderMaskEditorUi();
+      }
+    } catch (err) {
+      state.maskEditor.batchPendingPaths = targetPaths.slice(processedCount);
+      const failedLabel = failedTargetPath ? ` for ${getFileLabel(failedTargetPath)}` : "";
+      showErrorToast(`Batch mask error${failedLabel}: ${err.message}`);
+      statusBar.textContent = `Batch mask error${failedLabel}: ${err.message}`;
+      throw err;
+    } finally {
+      state.maskEditor.saving = false;
+      renderMaskEditorUi();
+      resetAutoCaptionProgress();
+    }
+  });
 }
 
 async function saveMaskEdit(options = {}) {
+  if (state.maskEditor.savePromise) {
+    return state.maskEditor.savePromise;
+  }
   if (isMaskEditorImageMode()) {
     return saveImageEdit(options);
+  }
+  if (shouldUseBatchMaskSave()) {
+    return saveBatchMaskEdit(options);
   }
   const { closeAfterSave = true } = options;
   if (!state.maskEditor.active || !state.previewPath || !previewMaskCanvas.width || !previewMaskCanvas.height) {
@@ -1969,68 +2729,65 @@ async function saveMaskEdit(options = {}) {
     return;
   }
 
-  state.maskEditor.saving = true;
-  renderMaskEditorUi();
-  statusBar.textContent = "Saving mask...";
-  try {
-    const blob = await new Promise((resolve, reject) => {
-      previewMaskCanvas.toBlob((nextBlob) => {
-        if (nextBlob) {
-          resolve(nextBlob);
-          return;
-        }
-        reject(new Error("Failed to encode mask PNG"));
-      }, "image/png");
-    });
-    const formData = new FormData();
-    const targetPath = state.maskEditor.path || state.previewPath;
-    if (state.maskEditor.mediaType === "video") {
-      formData.append("media_path", targetPath);
-      formData.append("frame_index", String(Math.max(0, Number(state.maskEditor.frameIndex || 0))));
-    } else {
-      formData.append("image_path", targetPath);
-    }
-    formData.append("mask", blob, `${getFileLabel(targetPath)}.mask.png`);
+  return runMaskEditorSave(async () => {
+    state.maskEditor.saving = true;
+    renderMaskEditorUi();
+    statusBar.textContent = "Saving mask...";
+    try {
+      const blob = await encodeCanvasToPngBlob(previewMaskCanvas);
+      const formData = new FormData();
+      const targetPath = state.maskEditor.path || state.previewPath;
+      if (state.maskEditor.mediaType === "video") {
+        formData.append("media_path", targetPath);
+        formData.append("frame_index", String(Math.max(0, Number(state.maskEditor.frameIndex || 0))));
+      } else {
+        formData.append("image_path", targetPath);
+      }
+      formData.append("mask", blob, `${getFileLabel(targetPath)}.mask.png`);
 
-    const resp = await fetch("/api/mask", {
-      method: "POST",
-      body: formData,
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      throw new Error(data.detail || "Failed to save mask");
-    }
-    refreshMaskBaseCanvas();
-    state.maskEditor.cleanHistoryIndex = state.maskEditor.historyIndex;
-    syncMaskEditorDirtyState();
-    if (state.maskEditor.mediaType === "video") {
-      setVideoMaskKeyframes(targetPath, data.keyframes || []);
-    }
-    setImageMaskPresence(targetPath, true, data.mtime || Date.now(), data.mask_count);
-    renderVideoEditPanel();
-    statusBar.textContent = state.maskEditor.mediaType === "video"
-      ? `Saved key-frame mask for ${getFileLabel(targetPath)} at ${formatVideoMaskFrameHint(state.maskEditor.frameIndex, targetPath)}`
-      : `Saved mask for ${getFileLabel(targetPath)}`;
-    if (closeAfterSave) {
-      closeMaskEditor();
-    } else {
+      const resp = await fetchWithNetworkRetry("/api/mask", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(data.detail || "Failed to save mask");
+      }
+      refreshMaskBaseCanvas();
+      state.maskEditor.cleanHistoryIndex = state.maskEditor.historyIndex;
+      syncMaskEditorDirtyState();
+      if (state.maskEditor.mediaType === "video") {
+        setVideoMaskKeyframes(targetPath, data.keyframes || []);
+      }
+      setImageMaskPresence(targetPath, true, data.mtime || Date.now(), data.mask_count);
+      renderVideoEditPanel();
+      statusBar.textContent = state.maskEditor.mediaType === "video"
+        ? `Saved key-frame mask for ${getFileLabel(targetPath)} at ${formatVideoMaskFrameHint(state.maskEditor.frameIndex, targetPath)}`
+        : `Saved mask for ${getFileLabel(targetPath)}`;
+      if (closeAfterSave) {
+        closeMaskEditor();
+      } else {
+        renderMaskEditorUi();
+      }
+    } catch (err) {
+      showErrorToast(`Mask error: ${err.message}`);
+      statusBar.textContent = `Mask error: ${err.message}`;
+      throw err;
+    } finally {
+      state.maskEditor.saving = false;
       renderMaskEditorUi();
     }
-  } catch (err) {
-    showErrorToast(`Mask error: ${err.message}`);
-    statusBar.textContent = `Mask error: ${err.message}`;
-    throw err;
-  } finally {
-    state.maskEditor.saving = false;
-    renderMaskEditorUi();
-  }
+  });
 }
 
 function cancelMaskEdit() {
   if (!state.maskEditor.active) return;
   const imageMode = isMaskEditorImageMode();
+  const batchCount = getMaskEditorBatchCount();
   closeMaskEditor({ restoreBase: true });
-  statusBar.textContent = imageMode ? "Image edit cancelled" : "Mask edit cancelled";
+  statusBar.textContent = imageMode
+    ? "Image edit cancelled"
+    : (batchCount > 1 ? `Batch mask edit cancelled for ${batchCount} images` : "Mask edit cancelled");
 }
 
 function resetMaskEditToDefault() {
@@ -2056,13 +2813,22 @@ function resetMaskEditToDefault() {
   ctx.fillStyle = `rgb(${resetChannelValue}, ${resetChannelValue}, ${resetChannelValue})`;
   ctx.fillRect(0, 0, previewMaskCanvas.width, previewMaskCanvas.height);
   ctx.restore();
-  pushMaskHistorySnapshot({ beforeCanvas, tileKeys: fullTileKeys });
+  pushMaskHistorySnapshot({
+    beforeCanvas,
+    tileKeys: fullTileKeys,
+    operation: {
+      type: "fill",
+      valuePercent: resetValue,
+    },
+  });
   syncMaskEditorDirtyState();
   updateMaskSignalProbeStats();
   scheduleMaskMiniPreviewRender();
   scheduleMaskLatentPreviewRender();
   renderMaskEditorUi();
-  statusBar.textContent = `Mask reset to ${Math.round(resetValue)}%`;
+  statusBar.textContent = getMaskEditorBatchCount() > 1
+    ? `Mask reset to ${Math.round(resetValue)}% for ${getMaskEditorBatchCount()} selected images`
+    : `Mask reset to ${Math.round(resetValue)}%`;
 }
 
 function toggleMaskEditorViewMode() {

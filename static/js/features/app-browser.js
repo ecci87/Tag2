@@ -820,6 +820,9 @@ async function selectUploadedImages(paths, options = {}) {
   if (typeof renderSentences === "function") {
     renderSentences();
   }
+  if (typeof syncMaskEditorBatchModeFromSelection === "function") {
+    syncMaskEditorBatchModeFromSelection();
+  }
   updateActionButtons();
   preloadAdjacent(lastPath);
 }
@@ -1352,6 +1355,11 @@ async function handleThumbClick(index, event) {
   const img = state.images[index];
   if (!img) return;
   const previousPreviewPath = state.previewPath;
+  const previousBatchSelectionPaths = state.maskEditor.active
+    && state.maskEditor.mode === "mask"
+    && state.maskEditor.batchMode
+    ? [...state.selectedPaths]
+    : null;
   if (typeof savePendingMetadataChangesBeforeContextChange === "function") {
     const didSaveMetadata = await savePendingMetadataChangesBeforeContextChange();
     if (!didSaveMetadata) return;
@@ -1393,6 +1401,17 @@ async function handleThumbClick(index, event) {
   }
 
   updateGridSelection();
+
+  const nextPreviewPath = state.selectedPaths.size === 1
+    ? [...state.selectedPaths][0]
+    : (state.selectedPaths.size > 1 ? img.path : null);
+  state.maskEditor.selectionBeforePreviewSwitch = previousPreviewPath
+    && nextPreviewPath
+    && previousPreviewPath !== nextPreviewPath
+    && Array.isArray(previousBatchSelectionPaths)
+    && previousBatchSelectionPaths.length > 1
+    ? previousBatchSelectionPaths
+    : null;
 
   if (state.aiRegionPicker?.active && (state.selectedPaths.size !== 1 || previousPreviewPath !== img.path)) {
     stopAiRegionPicker({ keepStatus: true });
@@ -1516,7 +1535,7 @@ async function showPreview(path, options = {}) {
   }
   if (previousPath && previousPath !== path && state.maskEditor.active) {
     try {
-      await saveMaskEdit();
+      await prepareMaskEditorForPreviewSwitch(path);
     } catch {
       return;
     }
@@ -1535,7 +1554,7 @@ async function showPreview(path, options = {}) {
   clearCropGuide();
 
   if (state.previewMediaType === "video") {
-    if (state.maskEditor.active) {
+    if (state.maskEditor.active && state.maskEditor.mode === "image") {
       closeMaskEditor();
     }
     clearCropDraft();
@@ -1559,6 +1578,9 @@ async function showPreview(path, options = {}) {
       previewVideo.style.display = "block";
       syncPreviewVideoPlaybackState();
       renderPreviewCaptionOverlay();
+      resumePendingMaskEditorAfterPreviewReady().catch((err) => {
+        showErrorToast(`Mask error: ${err.message || err}`);
+      });
     };
     previewVideo.onloadedmetadata = () => {
       if (state.previewPath !== path || state.previewMediaType !== "video") {
@@ -1612,6 +1634,9 @@ async function showPreview(path, options = {}) {
       previewImg.onload = () => {
         restorePreviewViewState(previousViewState);
         renderPreviewCaptionOverlay();
+        resumePendingMaskEditorAfterPreviewReady().catch((err) => {
+          showErrorToast(`Mask error: ${err.message || err}`);
+        });
       };
       previewImg.src = src;
     };
@@ -1633,7 +1658,13 @@ async function showPreview(path, options = {}) {
   renderPreviewCaptionOverlay();
   renderVideoEditPanel();
   renderMaskEditorUi();
+  if (typeof syncMaskEditorBatchModeFromSelection === "function") {
+    syncMaskEditorBatchModeFromSelection();
+  }
   renderGifConvertButton();
+  resumePendingMaskEditorAfterPreviewReady().catch((err) => {
+    showErrorToast(`Mask error: ${err.message || err}`);
+  });
   if (state.promptPreview.sourcePath === path && state.promptPreview.displayPath && state.promptPreview.displayPath !== path && state.previewMediaType === "image") {
     loadPromptPreviewImage(state.promptPreview.displayPath, { preserveView });
   }
